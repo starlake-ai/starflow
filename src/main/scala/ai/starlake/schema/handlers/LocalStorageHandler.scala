@@ -343,8 +343,8 @@ class LocalStorageHandler(implicit
   ): Boolean = {
     pathSecurityCheck(srcDir)
     pathSecurityCheck(dstFile)
-    val sourceDir = File(java.nio.file.Paths.get(srcDir.toUri))
-    val destFile = File(java.nio.file.Paths.get(dstFile.toUri))
+    val sourceDir = StorageHandler.localFile(srcDir)
+    val destFile = StorageHandler.localFile(dstFile)
 
     if (destFile.exists()) {
       throw new IOException(s"Target $dstFile already exists")

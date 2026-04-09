@@ -1144,7 +1144,7 @@ object Settings extends LazyLogging {
 
   def duckDBMode(settings: Settings): Settings = {
     val duckdbPath = DatasetArea.duckdbPath()(settings)
-    val pathAsString = java.nio.file.Paths.get(duckdbPath.toUri).toString.replace('\\', '/')
+    val pathAsString = StorageHandler.localFile(duckdbPath).pathAsString.replace('\\', '/')
     val duckDBConnection = ConnectionInfo(
       `type` = ConnectionType.JDBC,
       sparkFormat = None,

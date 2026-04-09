@@ -544,7 +544,7 @@ class HdfsStorageHandler(fileSystem: String)(implicit
 
     val currentFS = fs(dest)
     // currentFS.copyFromLocalFile(localPathWithoutScheme(source), dest)
-    val localFile = java.nio.file.Paths.get(source.toUri).toFile
+    val localFile = StorageHandler.localFile(source).toJava
     val in = new BufferedInputStream(new FileInputStream(localFile))
     val out = currentFS.create(dest, true)
     try {
