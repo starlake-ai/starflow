@@ -758,7 +758,7 @@ object AutoTask extends LazyLogging {
   ): Try[Boolean] = {
     val connection = settings.appConfig
       .connection(connectionRef)
-      .getOrElse(throw new Exception(s"Connection not found $connectionRef"))
+      .getOrElse(throw new StarlakeNotFoundException(s"Connection not found $connectionRef"))
     val engine = connection.getEngine()
     // Dispatch to the appropriate engine-specific implementation
     engine match {
@@ -865,7 +865,7 @@ object AutoTask extends LazyLogging {
       Try(
         settings.appConfig
           .connection(connectionName)
-          .getOrElse(throw new Exception(s"Connection not found $connectionName"))
+          .getOrElse(throw new StarlakeNotFoundException(s"Connection not found $connectionName"))
           .withAccessToken(accessToken)
       )
     connection match {

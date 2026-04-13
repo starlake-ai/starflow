@@ -147,9 +147,9 @@ get_binary_from_url() {
     local target_file=$2
     if [ -n "$PROXY" ] && [ -n "$SL_INSECURE" ]; then
         echo "Downloading $url to $target_file using proxy $PROXY"
-        local response=$(curl --insecure --proxy "$PROXY" -s -w "%{http_code}" -o "$target_file" "$url")
+        local response=$(curl --insecure --proxy "$PROXY" --progress-bar -w "%{http_code}" -o "$target_file" "$url")
     else
-        local response=$(curl -s -w "%{http_code}" -o "$target_file" "$url")
+        local response=$(curl --progress-bar -w "%{http_code}" -o "$target_file" "$url")
     fi
     local status_code=${response: -3}
 
@@ -388,6 +388,14 @@ case "$1" in
     echo If any errors happen during installation. Please try to install again or open an issue.
     ;;
   upgrade)
+    # Self-update: download latest starlake.sh and re-launch
+    echo "Updating starlake script..."
+    get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/starlake.sh" "$SCRIPT_DIR/starlake.sh.tmp"
+    chmod +x "$SCRIPT_DIR/starlake.sh.tmp"
+    mv "$SCRIPT_DIR/starlake.sh.tmp" "$SCRIPT_DIR/starlake.sh"
+    exec "$SCRIPT_DIR/starlake.sh" _do_upgrade
+    ;;
+  _do_upgrade)
     select_starlake_version
     if [ -n "$NEW_SL_VERSION" ]; then
         if [ -f "$SCRIPT_DIR/versions.sh" ]; then
@@ -406,34 +414,59 @@ case "$1" in
         fi
 
         SL_LIB_DIR="$STARLAKE_EXTRA_LIB_FOLDER"
-        API_LIB_DIR="$SCRIPT_DIR/bin/api/lib"
-        
+        BIN_DIR="$SCRIPT_DIR/bin"
+        API_DIR="$BIN_DIR/api"
+        DEMO_DIR="$SCRIPT_DIR/demo"
+
         mkdir -p "$SL_LIB_DIR"
-        mkdir -p "$API_LIB_DIR"
 
         CORE_ASSEMBLY_NAME="starlake-core_${SCALA_VERSION}-${NEW_SL_VERSION}-assembly.jar"
         CORE_ASSEMBLY_URL="$BASE_URL/starlake-core_${SCALA_VERSION}/${NEW_SL_VERSION}/${CORE_ASSEMBLY_NAME}"
 
-        CORE_JAR_NAME="starlake-core_${SCALA_VERSION}-${NEW_SL_VERSION}.jar"
-        CORE_JAR_URL="$BASE_URL/starlake-core_${SCALA_VERSION}/${NEW_SL_VERSION}/${CORE_JAR_NAME}"
+        API_ZIP_NAME="starlake-api_${SCALA_VERSION}-${NEW_SL_VERSION}.zip"
+        API_ZIP_URL="$BASE_URL/starlake-api_${SCALA_VERSION}/${NEW_SL_VERSION}/${API_ZIP_NAME}"
 
-        API_JAR_NAME="starlake-api_${SCALA_VERSION}-${NEW_SL_VERSION}.jar"
-        API_JAR_URL="$BASE_URL/starlake-api_${SCALA_VERSION}/${NEW_SL_VERSION}/${API_JAR_NAME}"
-
-        # Delete old files
-        rm -f "$API_LIB_DIR"/ai.starlake.starlake-api-*.jar "$API_LIB_DIR"/starlake-api_*.jar
-        rm -f "$API_LIB_DIR"/starlake-core_*.jar
+        # Delete old starlake core assembly
         rm -f "$SL_LIB_DIR"/starlake-core_*-assembly.jar
 
-        # Download new files
+        # Download new core assembly
         echo "Downloading $CORE_ASSEMBLY_NAME to $SL_LIB_DIR..."
         get_binary_from_url "$CORE_ASSEMBLY_URL" "$SL_LIB_DIR/$CORE_ASSEMBLY_NAME"
-        
-        echo "Downloading $CORE_JAR_NAME to $API_LIB_DIR..."
-        get_binary_from_url "$CORE_JAR_URL" "$API_LIB_DIR/$CORE_JAR_NAME"
-        
-        echo "Downloading $API_JAR_NAME to $API_LIB_DIR..."
-        get_binary_from_url "$API_JAR_URL" "$API_LIB_DIR/ai.starlake.$API_JAR_NAME"
+
+        # Delete old api directory and reinstall from zip
+        rm -rf "$API_DIR"
+
+        echo "Downloading $API_ZIP_NAME to $BIN_DIR..."
+        get_binary_from_url "$API_ZIP_URL" "$BIN_DIR/$API_ZIP_NAME"
+
+        echo "Extracting $API_ZIP_NAME..."
+        unzip -q "$BIN_DIR/$API_ZIP_NAME" -d "$BIN_DIR"
+        rm -f "$BIN_DIR/$API_ZIP_NAME"
+
+        # Rename extracted directory to api (matches Setup.java behavior)
+        EXTRACTED_DIR="$BIN_DIR/starlake-api-${NEW_SL_VERSION}"
+        if [ -d "$EXTRACTED_DIR" ]; then
+            echo "Renaming $EXTRACTED_DIR to $API_DIR"
+            mv "$EXTRACTED_DIR" "$API_DIR"
+        fi
+
+        # Move demo zips out of api dir (matches Setup.java behavior)
+        mkdir -p "$DEMO_DIR"
+        if [ -f "$API_DIR/starbake.zip" ]; then
+            mv "$API_DIR/starbake.zip" "$DEMO_DIR/starbake.zip"
+        fi
+        if [ -f "$API_DIR/tpch001.zip" ]; then
+            mv "$API_DIR/tpch001.zip" "$DEMO_DIR/tpch001.zip"
+        fi
+
+        # Set API bin scripts as executable
+        if [ -d "$API_DIR/bin" ]; then
+            for file in "$API_DIR/bin"/local-*; do
+                if [ -f "$file" ]; then
+                    chmod +x "$file"
+                fi
+            done
+        fi
 
         # Update python libs
         PYTHON_LIBS_BASE_URL="https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/python-libs"

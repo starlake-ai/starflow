@@ -5,7 +5,7 @@ import ai.starlake.schema.model
 import ai.starlake.schema.model.{SchemaInfo as _, TableInfo as _, *}
 import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.conversion.BigQueryUtils.sparkToBq
-import ai.starlake.utils.{GcpCredentials, Utils}
+import ai.starlake.utils.{GcpCredentials, StarlakeConfigException, Utils}
 import better.files.File
 import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.api.gax.core.FixedCredentialsProvider
@@ -95,7 +95,7 @@ trait BigQueryJobBase extends LazyLogging {
         _bigquery = Some(bqService)
       bqService
     } else {
-      _bigquery.getOrElse(throw new Exception("Should never happen"))
+      _bigquery.getOrElse(throw new IllegalStateException("Should never happen"))
     }
   }
 
@@ -199,7 +199,9 @@ trait BigQueryJobBase extends LazyLogging {
         val bindings = iamPolicyTags.map { iamPolicyTag =>
           val binding = Binding.newBuilder()
           binding.setRole(
-            iamPolicyTag.role.getOrElse(throw new Exception("Should never happen: Role not set"))
+            iamPolicyTag.role.getOrElse(
+              throw new IllegalStateException("Should never happen: Role not set")
+            )
           )
           // binding.setCondition()
           binding.addAllMembers(iamPolicyTag.members.asJava)
@@ -362,7 +364,7 @@ trait BigQueryJobBase extends LazyLogging {
   }
 
   lazy val tableId: TableId = {
-    cliConfig.outputTableId.getOrElse(throw new Exception("TableId must be defined"))
+    cliConfig.outputTableId.getOrElse(throw new StarlakeConfigException("TableId must be defined"))
   }
 
   protected lazy val datasetId: DatasetId = BigQueryJobBase.getBqDatasetId(tableId)
@@ -418,7 +420,7 @@ trait BigQueryJobBase extends LazyLogging {
 
   def getBQSchema(tableId: TableId)(implicit settings: Settings): BQSchema = {
     val table = bigquery(accessToken = cliConfig.accessToken).getTable(tableId)
-    assert(table.exists)
+    require(table.exists)
     table.getDefinition[StandardTableDefinition].getSchema
   }
 
@@ -783,7 +785,7 @@ trait BigQueryJobBase extends LazyLogging {
   private def newTableDefinition(
     tableInfo: model.TableInfo,
     dataFrame: scala.Option[DataFrame]
-  ): TableDefinition = {
+  )(implicit settings: Settings): TableDefinition = {
     val maybeTimePartitioning = tableInfo.maybePartition
       .map(partitionInfo =>
         timePartitioning(
@@ -821,7 +823,7 @@ trait BigQueryJobBase extends LazyLogging {
     withClusteringDefinition.build()
   }
 
-  private def getTableConstraints(): TableConstraints = {
+  private def getTableConstraints()(implicit settings: Settings): TableConstraints = {
     val tableConstraints = cliConfig.starlakeSchema match {
       case Some(starlakeSchema) =>
         val pkTableConstraints = if (starlakeSchema.primaryKey.nonEmpty) {
@@ -836,16 +838,6 @@ trait BigQueryJobBase extends LazyLogging {
         }
         val foreignKeys = fkComponents.flatMap { case (attr, domain, table, referencedColumn) =>
           if (datasetId.getDataset.equalsIgnoreCase(domain)) {
-            logger.info(
-              s"Adding foreign key constraint on ${datasetId.getDataset}.${tableId.getTable}.${attr
-                  .getFinalName()} referencing $domain.$table.$referencedColumn"
-            )
-            val columnReference =
-              ColumnReference.newBuilder
-                .setReferencingColumn(attr.getFinalName())
-                .setReferencedColumn(referencedColumn)
-                .build
-
             val tableIdPk =
               TableId.of(
                 cliConfig.outputDatabase.getOrElse(
@@ -855,16 +847,34 @@ trait BigQueryJobBase extends LazyLogging {
                 domain,
                 table
               )
-            val tableName =
-              tableIdPk.getDataset.toUpperCase() + "_" + tableIdPk.getTable.toUpperCase()
-            val fk = ForeignKey.newBuilder
-              .setName(
-                s"FK_${datasetId.getDataset.toUpperCase()}_${tableId.getTable().toUpperCase()}_${attr.getFinalName().toUpperCase()}"
+            val referencedTable =
+              bigquery(accessToken = cliConfig.accessToken).getTable(tableIdPk)
+            if (referencedTable == null || !referencedTable.exists()) {
+              logger.warn(
+                s"Foreign key constraint on ${datasetId.getDataset}.${tableId.getTable}.${attr.getFinalName()} " +
+                s"referencing $domain.$table.$referencedColumn not added because the referenced table does not exist"
               )
-              .setColumnReferences(List(columnReference).asJava)
-              .setReferencedTable(tableIdPk)
-              .build
-            Some(fk)
+              None
+            } else {
+              logger.info(
+                s"Adding foreign key constraint on ${datasetId.getDataset}.${tableId.getTable}.${attr
+                    .getFinalName()} referencing $domain.$table.$referencedColumn"
+              )
+              val columnReference =
+                ColumnReference.newBuilder
+                  .setReferencingColumn(attr.getFinalName())
+                  .setReferencedColumn(referencedColumn)
+                  .build
+
+              val fk = ForeignKey.newBuilder
+                .setName(
+                  s"FK_${datasetId.getDataset.toUpperCase()}_${tableId.getTable().toUpperCase()}_${attr.getFinalName().toUpperCase()}"
+                )
+                .setColumnReferences(List(columnReference).asJava)
+                .setReferencedTable(tableIdPk)
+                .build
+              Some(fk)
+            }
           } else {
             logger.warn(s"""Foreign key constraint
                  |${datasetId.getDataset}.${tableId.getTable}.${attr.getFinalName()}
@@ -1021,7 +1031,7 @@ object BigQueryJobBase extends LazyLogging {
         .orElse(connectionProjectId)
         .orElse(getPropertyOrEnv("SL_DATABASE"))
         .orElse(scala.Option(ServiceOptions.getDefaultProjectId))
-        .getOrElse(throw new Exception("""GCP Project ID must be defined in one of the following ways:
+        .getOrElse(throw new StarlakeConfigException("""GCP Project ID must be defined in one of the following ways:
                             |  - Set the environment variable GOOGLE_CLOUD_PROJECT
                             |  - Use the gcloud command `gcloud config set project YOUR_PROJECT_ID`
                             |  - Use the `database:YOUR_PROJECT_ID` attribute in your metadata/application.sl.yml

@@ -44,10 +44,10 @@ jobs:
         if: ${{ success() }}
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.STARLAKE_API_TOKEN }} # Fine-grained GitHub PAT that was saved as repository secret
+          github-token: ${{ secrets.STARLAKE_API_TOKEN }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
             owner: 'starlake-ai',
             repo: 'starlake-api',
-            workflow_id: 'docker-hub-amd-arm.yml',
+            workflow_id: 'snapshot-jar-only.yml',
             ref: 'main'})

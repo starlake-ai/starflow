@@ -7,6 +7,7 @@ import ai.starlake.utils.{JobResult, Utils}
 import better.files.File
 import scopt.OParser
 
+import scala.sys.process.Process
 import scala.util.{Success, Try}
 
 /** Command to compare two Starlake project versions.
@@ -85,18 +86,17 @@ object ProjectCompareCmd extends Cmd[ProjectCompareConfig] {
   private def getCommitFromTag(tag: String, gitWorkTree: String): String = {
     val tagName =
       if (tag == "latest") {
-        //  git describe --abbrev=0
         val latestTagCommand = Array(
           "git",
           "-C",
           gitWorkTree,
           "describe",
-          "--abbrev",
-          "0"
+          "--abbrev=0"
         )
-        val latestTag = Utils
-          .runCommand(latestTagCommand.toIndexedSeq)
-          .getOrElse(throw new IllegalArgumentException("latest tag not found!"))
+        Utils.runCommand(latestTagCommand.toIndexedSeq) match {
+          case Success(cmdOutput) => cmdOutput.output.trim
+          case _                  => throw new IllegalArgumentException("latest tag not found!")
+        }
       } else
         tag
     val commitOfTagCommand = Array(
@@ -108,35 +108,23 @@ object ProjectCompareCmd extends Cmd[ProjectCompareConfig] {
       "1",
       s"tags/${tagName}"
     )
-    val commitOfTagOutput = Utils.runCommand(commitOfTagCommand.toIndexedSeq)
-    commitOfTagOutput match {
-      case Success(cmdOutput) =>
-        cmdOutput.output
-      case _ =>
-        throw new IllegalArgumentException("Invalid tag")
+    Utils.runCommand(commitOfTagCommand.toIndexedSeq) match {
+      case Success(cmdOutput) => cmdOutput.output.trim
+      case _                  => throw new IllegalArgumentException("Invalid tag")
     }
   }
 
   private def getPathFromCommit(commit: String, gitWorkTree: String): String = {
     val path = File.newTemporaryDirectory().pathAsString
-    val checkoutCommand = Array(
-      "git",
-      "-C",
-      gitWorkTree,
-      "--work-tree",
-      path,
-      "checkout",
-      commit,
-      "--",
-      "."
-    )
-    val checkoutOutput = Utils.runCommand(checkoutCommand.toIndexedSeq)
-    checkoutOutput match {
-      case Success(_) =>
-        path
-      case _ =>
-        throw new IllegalArgumentException("Invalid commit")
+    val result =
+      (Process(Seq("git", "-C", gitWorkTree, "archive", commit)) #| Process(
+        Seq("tar", "-x", "-C", path)
+      )).!
+    if (result != 0) {
+      File(path).delete()
+      throw new IllegalArgumentException(s"Failed to extract commit $commit")
     }
+    path
   }
 
   private def getPathFromCommitOrTag(
@@ -194,19 +182,21 @@ object ProjectCompareCmd extends Cmd[ProjectCompareConfig] {
       getPathFromCommitOrTag(config.gitWorkTree, config.path1, config.commit1, config.tag1)
 
     val path2 =
-      getPathFromCommitOrTag(config.gitWorkTree, config.path2, config.commit2, config.tag2)
+      try {
+        getPathFromCommitOrTag(config.gitWorkTree, config.path2, config.commit2, config.tag2)
+      } catch {
+        case e: Exception =>
+          if (config.path1.isEmpty) cleanTempPath(path1)
+          throw e
+      }
 
     val configWithPaths = config.copy(path1 = path1, path2 = path2)
 
-    val result = Try(ProjectCompare.compare(configWithPaths)).map(_ => JobResult.empty)
-
-    if (config.path1.isEmpty) {
-      cleanTempPath(path1)
+    try {
+      Try(ProjectCompare.compare(configWithPaths)).map(_ => JobResult.empty)
+    } finally {
+      if (config.path1.isEmpty) cleanTempPath(path1)
+      if (config.path2.isEmpty) cleanTempPath(path2)
     }
-
-    if (config.path2.isEmpty) {
-      cleanTempPath(path2)
-    }
-    result
   }
 }

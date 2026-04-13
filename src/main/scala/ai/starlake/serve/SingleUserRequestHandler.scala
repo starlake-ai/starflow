@@ -26,7 +26,7 @@ class SingleUserRequestHandler extends HttpServlet {
     val queryIndex = params.indexOf("--query")
     val paramsWithSpaces =
       if (queryIndex > 0) {
-        assert(queryIndex + 1 < params.length)
+        require(queryIndex + 1 < params.length)
         var query = params(queryIndex + 1)
         query = query.replaceAll("__SL__", " ")
         params.dropRight(1) :+ query

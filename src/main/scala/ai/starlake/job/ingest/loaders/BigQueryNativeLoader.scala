@@ -237,7 +237,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                 firstStepTempTable.map(t => BigQueryUtils.tableIdToTableName(t))
               )
             }
-            .getOrElse(throw new Exception("Should never happen"))
+            .getOrElse(throw new IllegalStateException("Should never happen"))
 
         secondStepResult
           .flatMap { _ =>

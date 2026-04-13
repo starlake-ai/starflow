@@ -969,7 +969,7 @@ object Settings extends LazyLogging {
                   vars + ("SL_ROOT" -> root)
                 case None =>
                   val slRoot = Option(System.getenv("SL_ROOT"))
-                    .getOrElse(throw new Exception("SL_ROOT not defined"))
+                    .getOrElse(throw new StarlakeConfigException("SL_ROOT not defined"))
                   vars + ("SL_ROOT" -> slRoot)
               }
             }
@@ -1096,12 +1096,18 @@ object Settings extends LazyLogging {
     */
   def secureDuckDbPath(settings: Settings): Settings = {
     def removeSchemeFromFilename(filename: String): String = {
-      if (filename.contains("file://"))
-        filename.substring(7)
-      else if (filename.contains("file:"))
-        filename.substring(5)
+      val stripped =
+        if (filename.contains("file://"))
+          filename.substring(7)
+        else if (filename.contains("file:"))
+          filename.substring(5)
+        else
+          filename
+      // On Windows, Hadoop paths may have a leading / before drive letter (e.g. /C:/...)
+      if (stripped.length > 2 && stripped.charAt(0) == '/' && stripped.charAt(2) == ':')
+        stripped.substring(1)
       else
-        filename
+        stripped
     }
     val updatedConnections = settings.appConfig.connections
       .map { case (k, v) =>
@@ -1111,16 +1117,16 @@ object Settings extends LazyLogging {
           case JSQLTranspiler.Dialect.DUCK_DB if isDuckLake =>
             v.copy(options = v.options.updated("url", s"jdbc:duckdb:"))
           case JSQLTranspiler.Dialect.DUCK_DB =>
-            val urlParts = v.jdbcUrl.split(":")
-            assert(
+            val urlParts = v.jdbcUrl.split(":", 3)
+            require(
               urlParts.length == 3,
               "DuckDB JDBC URL should be in the form jdbc:duckdb:dbname"
             )
             val dbName = urlParts(2)
-            assert(!dbName.contains(".."), "DuckDB database name should not contain '..'")
+            require(!dbName.contains(".."), "DuckDB database name should not contain '..'")
             val validPath = DatasetArea.duckdbPath(s"$k.db")(settings).toString
             val duckDbPath = DatasetArea.duckdbPath()(settings).toString
-            assert(
+            require(
               isDuckLake ||
               (k == "sl_duckdb" && urlParts(2) == removeSchemeFromFilename(duckDbPath)) ||
               dbName == removeSchemeFromFilename(validPath) ||

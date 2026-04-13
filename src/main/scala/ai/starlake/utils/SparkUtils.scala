@@ -305,7 +305,7 @@ object SparkUtils extends LazyLogging {
       .matcher(
         url.replace(":starlake:", ":")
       ) // in case we are coming with a starlake wrapped jdbc url
-    assert(dialectPattern.find())
+    require(dialectPattern.find())
     val dialectName = dialectPattern.group(1)
     val jdbcEng = settings.appConfig.jdbcEngines(dialectName)
 

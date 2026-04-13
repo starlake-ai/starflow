@@ -8,7 +8,7 @@ import ai.starlake.job.Main
 import ai.starlake.schema.model.*
 import ai.starlake.sql.SQLUtils
 import ai.starlake.tests.StarlakeTestData.DomainName
-import ai.starlake.utils.{SparkUtils, Utils}
+import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, Utils}
 import com.manticore.jsqlformatter.JSQLFormatter
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -344,10 +344,12 @@ object JdbcDbUtils extends LazyLogging {
       val existQuery = dialect.getTableExistsQuery(domainAndTablename)
       val statement = conn.prepareStatement(existQuery)
       try {
-        statement.executeQuery()
-      } catch {
-        case e: Exception =>
-          throw e
+        val rs = statement.executeQuery()
+        try {
+          rs
+        } finally {
+          rs.close()
+        }
       } finally {
         statement.close()
       }
@@ -397,20 +399,24 @@ object JdbcDbUtils extends LazyLogging {
     val statement = connection.createStatement()
     logger.info(s"executing $query")
     try {
-      // Establish the connection
       val resultSet = statement.executeQuery(query)
+      try {
+        // Get column names
+        val metaData = resultSet.getMetaData
+        val columnCount = metaData.getColumnCount
+        val columnNames = (1 to columnCount).map(metaData.getColumnName)
 
-      // Get column names
-      val metaData = resultSet.getMetaData
-      val columnCount = metaData.getColumnCount
-      val columnNames = (1 to columnCount).map(metaData.getColumnName)
-
-      // Process the result set
-      while (resultSet.next()) {
-        val row = columnNames
-          .map(name => name -> Option(resultSet.getObject(name)).map(_.toString).getOrElse("null"))
-          .toMap
-        resultTable += row
+        // Process the result set
+        while (resultSet.next()) {
+          val row = columnNames
+            .map(name =>
+              name -> Option(resultSet.getObject(name)).map(_.toString).getOrElse("null")
+            )
+            .toMap
+          resultTable += row
+        }
+      } finally {
+        resultSet.close()
       }
     } finally {
       statement.close()
@@ -421,18 +427,21 @@ object JdbcDbUtils extends LazyLogging {
 
   def execute(script: String, connection: Connection): Try[Boolean] = {
     val statement = connection.createStatement()
-    val result = Try {
-      logger.info(s"execute statement: $script")
-      statement.execute(script)
+    try {
+      val result = Try {
+        logger.info(s"execute statement: $script")
+        statement.execute(script)
+      }
+      result match {
+        case Failure(exception) =>
+          logger.error(s"Error running sql $script", exception)
+          throw exception
+        case Success(value) => value
+      }
+      result
+    } finally {
+      statement.close()
     }
-    result match {
-      case Failure(exception) =>
-        logger.error(s"Error running sql $script", exception)
-        throw exception
-      case Success(value) => value
-    }
-    statement.close()
-    result
   }
 
   def executeUpdate(script: String, connection: Connection): Try[Boolean] = {
@@ -527,7 +536,7 @@ object JdbcDbUtils extends LazyLogging {
               result = Some(tableSchema)
             }
           }
-          result.getOrElse(throw new Exception(s"Schema $schemaName not found"))
+          result.getOrElse(throw new StarlakeNotFoundException(s"Schema $schemaName not found"))
         }
       case _ =>
         Using(
@@ -540,7 +549,7 @@ object JdbcDbUtils extends LazyLogging {
               result = Some(tableSchema)
             }
           }
-          result.getOrElse(throw new Exception(s"Schema $schemaName not found"))
+          result.getOrElse(throw new StarlakeNotFoundException(s"Schema $schemaName not found"))
         }
     }
   }

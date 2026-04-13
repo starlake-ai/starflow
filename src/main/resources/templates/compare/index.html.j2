@@ -1,271 +1,311 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-    <title>Test results - Test Summary</title>
-    <link href="../css/base-style.css" rel="stylesheet" type="text/css"/>
-    <link href="../css/style.css" rel="stylesheet" type="text/css"/>
-    <script src="../js/report.js" type="text/javascript"></script>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Project Comparison Report</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; line-height: 1.5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { font-size: 1.6em; margin-bottom: 8px; color: #1a1a2e; }
+        h2 { font-size: 1.2em; margin: 20px 0 10px; color: #16213e; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
+        h3 { font-size: 1em; margin: 12px 0 6px; color: #2d3748; }
+        .header { background: #1a1a2e; color: #fff; padding: 20px 24px; border-radius: 8px 8px 0 0; }
+        .header p { color: #a0aec0; font-size: 0.85em; margin-top: 4px; }
+        .header .paths { margin-top: 10px; font-size: 0.8em; }
+        .header .paths span { color: #63b3ed; }
+        .content { background: #fff; padding: 24px; border-radius: 0 0 8px 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .summary { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+        .summary-card { flex: 1; min-width: 120px; padding: 14px; border-radius: 6px; text-align: center; }
+        .summary-card .count { font-size: 2em; font-weight: 700; }
+        .summary-card .label { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px; }
+        .card-added { background: #f0fff4; border: 1px solid #c6f6d5; color: #22543d; }
+        .card-deleted { background: #fff5f5; border: 1px solid #fed7d7; color: #742a2a; }
+        .card-updated { background: #fffff0; border: 1px solid #fefcbf; color: #744210; }
+        table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 0.9em; }
+        th { background: #edf2f7; text-align: left; padding: 8px 12px; font-weight: 600; color: #4a5568; }
+        td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+        tr:hover td { background: #f7fafc; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; }
+        .badge-added { background: #c6f6d5; color: #22543d; }
+        .badge-deleted { background: #fed7d7; color: #742a2a; }
+        .badge-updated { background: #fefcbf; color: #744210; }
+        .change-detail { font-size: 0.85em; color: #718096; }
+        .change-detail .before { color: #e53e3e; text-decoration: line-through; }
+        .change-detail .after { color: #38a169; }
+        .section { margin-bottom: 24px; }
+        .collapsible { cursor: pointer; user-select: none; }
+        .collapsible::before { content: '\25B6'; display: inline-block; margin-right: 6px; transition: transform 0.2s; font-size: 0.7em; }
+        .collapsible.open::before { transform: rotate(90deg); }
+        .collapsible-content { display: none; }
+        .collapsible-content.open { display: block; }
+        .empty { color: #a0aec0; font-style: italic; padding: 12px 0; }
+        .tag-list { display: flex; gap: 4px; flex-wrap: wrap; }
+        .tag { display: inline-block; padding: 1px 6px; background: #edf2f7; border-radius: 4px; font-size: 0.8em; }
+        footer { text-align: center; margin-top: 24px; font-size: 0.8em; color: #a0aec0; }
+        footer a { color: #63b3ed; text-decoration: none; }
+    </style>
 </head>
 <body>
-<div id="content">
-    <h1>Load Compare Summary</h1>
-    <div>
-        <ul class="tabLinks">
-            <li>
-                <a href="#tab0">Domains</a>
-            </li>
-        </ul>
-        <div  class="tab">
-            <table>
-                <thead>
-                <tr>
-                    <th>Status</th>
-                    <th>Count</th>
-                    <th>Domain</th>
-                </tr>
-                </thead>
-                <tbody>
-                <tr>
-                    <td>
-                        Added
-                    </td>
-                    <td>
-                        {{ diff.load.countAdded }}
-                    </td>
-                    <td>
-                        {%  for addedDomain in diff.load.added  %}
-                            {{ addedDomain }}{% if not loop.last  %},{% endif %}
-                        {% endfor %}
-                    </td>
-                    <td>
+<div class="container">
+    <div class="header">
+        <h1>Project Comparison Report</h1>
+        <div class="paths">
+            <div>Old: <span>{{ diff.project1 }}</span></div>
+            <div>New: <span>{{ diff.project2 }}</span></div>
+        </div>
+    </div>
+    <div class="content">
 
-                    </td>
-                </tr>
-                <tr>
-                    <td>
-                        Updated
-                    </td>
-                    <td>
-                        {{ diff.load.countUpdated }}
-                    </td>
-                    <td>
-                        {%  for updatedDomain in diff.load.updated  %}
-                            {{ updatedDomain.name }}{% if not loop.last  %},{% endif %}
-                        {% endfor %}
+        <!-- ==================== LOAD CHANGES ==================== -->
+        <h2>Load Changes (Domains)</h2>
 
-                    </td>
-                </tr>
-                <tr>
-                    <td >
-                        Deleted
-                    </td>
-                    <td>
-                        {{ diff.load.countDeleted }}
-                    </td>
-                    <td>
-                        {%  for deletedDomain in diff.load.deleted  %}
-                            {{ deletedDomain }}{% if not loop.last  %},{% endif %}
-                        {% endfor %}
-
-                    </td>
-                </tr>
-
-                </tbody>
-            </table>
+        <div class="summary">
+            <div class="summary-card card-added">
+                <div class="count">{{ diff.load.countAdded }}</div>
+                <div class="label">Added</div>
+            </div>
+            <div class="summary-card card-deleted">
+                <div class="count">{{ diff.load.countDeleted }}</div>
+                <div class="label">Deleted</div>
+            </div>
+            <div class="summary-card card-updated">
+                <div class="count">{{ diff.load.countUpdated }}</div>
+                <div class="label">Updated</div>
+            </div>
         </div>
 
-    </div>
-    <div >
-        <ul class="tabLinks">
-            <li>
-                <a href="#tab0">Tables</a>
-            </li>
-        </ul>
-        <div  class="tab">
-            {%  for domainDiff in diff.load.updated  %}
+        {% if diff.load.added | length > 0 %}
+        <div class="section">
+            <h3><span class="badge badge-added">Added Domains</span></h3>
+            <div class="tag-list">
+                {% for d in diff.load.added %}<span class="tag">{{ d }}</span>{% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if diff.load.deleted | length > 0 %}
+        <div class="section">
+            <h3><span class="badge badge-deleted">Deleted Domains</span></h3>
+            <div class="tag-list">
+                {% for d in diff.load.deleted %}<span class="tag">{{ d }}</span>{% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% for domainDiff in diff.load.updated %}
+        <div class="section">
+            <h3 class="collapsible" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+                <span class="badge badge-updated">{{ domainDiff.name }}</span>
+            </h3>
+            <div class="collapsible-content">
+
+                <!-- Tables summary -->
+                {% if domainDiff.tables.countAdded > 0 or domainDiff.tables.countDeleted > 0 or domainDiff.tables.countUpdated > 0 %}
                 <table>
-                    <thead>
-                    <tr>
-                        <th>Status</th>
-                        <th>Count</th>
-                        <th>Domain</th>
-                        <th>Tables</th>
-                    </tr>
-                    </thead>
+                    <thead><tr><th>Status</th><th>Count</th><th>Tables</th></tr></thead>
                     <tbody>
+                    {% if domainDiff.tables.countAdded > 0 %}
                     <tr>
-                        <td>
-                            Added
-                        </td>
-                        <td>
-                            {{ domainDiff.tables.countAdded }}
-                        </td>
-                        <td>
-                            {{ domainDiff.name }}
-                        </td>
-                        <td>
-                            {%  for addedTable in domainDiff.tables.added  %}
-                                {{ addedTable }}{% if not loop.last  %},{% endif %}
-                            {% endfor %}
-                        </td>
-
+                        <td><span class="badge badge-added">Added</span></td>
+                        <td>{{ domainDiff.tables.countAdded }}</td>
+                        <td>{% for t in domainDiff.tables.added %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
                     </tr>
+                    {% endif %}
+                    {% if domainDiff.tables.countDeleted > 0 %}
                     <tr>
-                        <td>
-                            Updated
-                        </td>
-                        <td>
-                            {{ domainDiff.tables.countUpdated }}
-                        </td>
-                        <td>
-                            {{ domainDiff.name }}
-                        </td>
-                        <td>
-                            {%  for updatedTable in domainDiff.tables.updated  %}
-                                {{ updatedTable.name }}{% if not loop.last  %},{% endif %}
-                            {% endfor %}
-                        </td>
+                        <td><span class="badge badge-deleted">Deleted</span></td>
+                        <td>{{ domainDiff.tables.countDeleted }}</td>
+                        <td>{% for t in domainDiff.tables.deleted %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
                     </tr>
+                    {% endif %}
+                    {% if domainDiff.tables.countUpdated > 0 %}
                     <tr>
-                        <td >
-                            Deleted
-                        </td>
-                        <td>
-                            {{ domainDiff.tables.countDeleted }}
-                        </td>
-                        <td>
-                            {{ domainDiff.name }}
-                        </td>
-                        <td>
-                            {%  for deletedTable in domainDiff.tables.deleted  %}
-                                {{ deletedTable }}{% if not loop.last  %},{% endif %}
-                            {% endfor %}
-                        </td>
+                        <td><span class="badge badge-updated">Updated</span></td>
+                        <td>{{ domainDiff.tables.countUpdated }}</td>
+                        <td>{% for t in domainDiff.tables.updated %}{{ t.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
                     </tr>
-
+                    {% endif %}
                     </tbody>
                 </table>
-            {% endfor %}
+                {% endif %}
+
+                <!-- Attribute-level changes per table -->
+                {% for tableDiff in domainDiff.tables.updated %}
+                <h3 class="collapsible" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+                    {{ domainDiff.name }}.{{ tableDiff.name }}
+                </h3>
+                <div class="collapsible-content">
+                    {% if tableDiff.attributes %}
+                    <table>
+                        <thead><tr><th>Status</th><th>Attribute</th><th>Details</th></tr></thead>
+                        <tbody>
+                        {% for attr in tableDiff.attributes.added %}
+                        <tr>
+                            <td><span class="badge badge-added">Added</span></td>
+                            <td>{{ attr }}</td>
+                            <td></td>
+                        </tr>
+                        {% endfor %}
+                        {% for attr in tableDiff.attributes.deleted %}
+                        <tr>
+                            <td><span class="badge badge-deleted">Deleted</span></td>
+                            <td>{{ attr }}</td>
+                            <td></td>
+                        </tr>
+                        {% endfor %}
+                        {% for updatedAttr in tableDiff.attributes.updated %}
+                        <tr>
+                            <td><span class="badge badge-updated">Updated</span></td>
+                            <td>{{ updatedAttr.name }}</td>
+                            <td class="change-detail">
+                                {% for change in updatedAttr.changes %}
+                                <div>{{ change.key }}: <span class="before">{{ change.before }}</span> &rarr; <span class="after">{{ change.after }}</span></div>
+                                {% endfor %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+
+                    {% if tableDiff.metadata %}
+                    <table>
+                        <thead><tr><th>Status</th><th>Section</th><th>Field</th><th>Before</th><th>After</th></tr></thead>
+                        <tbody>
+                        {% for m in tableDiff.metadata.updated %}
+                        {% for c in m.changes %}
+                        <tr>
+                            <td><span class="badge badge-updated">Updated</span></td>
+                            <td>{{ m.name }}</td>
+                            <td><strong>{{ c.key }}</strong></td>
+                            <td class="change-detail"><span class="before">{{ c.before }}</span></td>
+                            <td class="change-detail"><span class="after">{{ c.after }}</span></td>
+                        </tr>
+                        {% endfor %}
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+                </div>
+                {% endfor %}
+
+                <!-- Domain-level property changes -->
+                {% if domainDiff.metadata %}
+                <div><strong>Domain metadata changed</strong></div>
+                {% endif %}
+                {% if domainDiff.comment %}
+                <div><strong>Domain comment changed</strong></div>
+                {% endif %}
+                {% if domainDiff.tags %}
+                <div><strong>Domain tags changed</strong></div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+
+        {% if diff.load.countAdded == 0 and diff.load.countDeleted == 0 and diff.load.countUpdated == 0 %}
+        <p class="empty">No load changes detected.</p>
+        {% endif %}
+
+        <!-- ==================== TRANSFORM CHANGES ==================== -->
+        <h2>Transform Changes (Jobs)</h2>
+
+        {% if diff.transform.added | length > 0 or diff.transform.deleted | length > 0 or diff.transform.updated | length > 0 %}
+
+        <div class="summary">
+            <div class="summary-card card-added">
+                <div class="count">{{ diff.transform.added | length }}</div>
+                <div class="label">Added Jobs</div>
+            </div>
+            <div class="summary-card card-deleted">
+                <div class="count">{{ diff.transform.deleted | length }}</div>
+                <div class="label">Deleted Jobs</div>
+            </div>
+            <div class="summary-card card-updated">
+                <div class="count">{{ diff.transform.updated | length }}</div>
+                <div class="label">Updated Jobs</div>
+            </div>
         </div>
 
-    </div>
+        {% if diff.transform.added | length > 0 %}
+        <div class="section">
+            <h3><span class="badge badge-added">Added Jobs</span></h3>
+            <div class="tag-list">
+                {% for j in diff.transform.added %}<span class="tag">{{ j }}</span>{% endfor %}
+            </div>
+        </div>
+        {% endif %}
 
-    <div >
-        <ul class="tabLinks">
-            <li>
-                <a href="#tab0">Attributes</a>
-            </li>
-        </ul>
-        <div  class="tab">
-            {%  for domainDiff in diff.load.updated  %}
-            {%  for tableDiff in domainDiff.tables.updated %}
+        {% if diff.transform.deleted | length > 0 %}
+        <div class="section">
+            <h3><span class="badge badge-deleted">Deleted Jobs</span></h3>
+            <div class="tag-list">
+                {% for j in diff.transform.deleted %}<span class="tag">{{ j }}</span>{% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% for jobDiff in diff.transform.updated %}
+        <div class="section">
+            <h3 class="collapsible" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+                <span class="badge badge-updated">{{ jobDiff.name }}</span>
+            </h3>
+            <div class="collapsible-content">
+                {% if jobDiff.tasks.countAdded > 0 or jobDiff.tasks.countDeleted > 0 or jobDiff.tasks.countUpdated > 0 %}
                 <table>
-                    <thead>
-                    <tr>
-                        <th>Status</th>
-                        <th>Count</th>
-                        <th>Domain</th>
-                        <th>Table</th>
-                        <th>Attributes</th>
-                    </tr>
-                    </thead>
+                    <thead><tr><th>Status</th><th>Count</th><th>Tasks</th></tr></thead>
                     <tbody>
+                    {% if jobDiff.tasks.countAdded > 0 %}
                     <tr>
-                        <td>
-                            Added
-                        </td>
-                        <td>
-                            {% if tableDiff.attributes is truthy %}
-                                {{ tableDiff.attributes.countAdded }}
-                            {% else %}
-                                0
-                            {% endif %}
-                        </td>
-                        <td>
-                            {{ domainDiff.name }}
-                        </td>
-                        <td>
-                            {{ tableDiff.name }}
-                        </td>
-                    <td>
-                        {%  for addedAttribute in tableDiff.attributes.added  %}
-                            {{ addedAttribute }}{% if not loop.last  %},{% endif %}
-                        {% endfor %}
-                    </td>
-
+                        <td><span class="badge badge-added">Added</span></td>
+                        <td>{{ jobDiff.tasks.countAdded }}</td>
+                        <td>{% for t in jobDiff.tasks.added %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
                     </tr>
+                    {% endif %}
+                    {% if jobDiff.tasks.countDeleted > 0 %}
                     <tr>
+                        <td><span class="badge badge-deleted">Deleted</span></td>
+                        <td>{{ jobDiff.tasks.countDeleted }}</td>
+                        <td>{% for t in jobDiff.tasks.deleted %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+                    </tr>
+                    {% endif %}
+                    {% if jobDiff.tasks.countUpdated > 0 %}
+                    <tr>
+                        <td><span class="badge badge-updated">Updated</span></td>
+                        <td>{{ jobDiff.tasks.countUpdated }}</td>
                         <td>
-                            Updated
-                        </td>
-                        <td>
-                            {% if tableDiff.attributes is truthy %}
-                                {{ tableDiff.attributes.countUpdated }}
-                            {% else %}
-                                0
-                            {% endif %}
-                        </td>
-                        <td>
-                            {{ domainDiff.name }}
-                        </td>
-                        <td>
-                            {{ tableDiff.name }}
-                        </td>
-                        <td>
-                            {%  for updatedAttribute in tableDiff.attributes.updated  %}
-                                <div class="popup" onclick="showPopup(this)">
-                                    <div class="popuptext">
-                                        {%  for change in updatedAttribute.changes  %}
-                                        <div>{{ change.key }}: {{ change.before }} ->  {{ change.after }}</div>
-                                        {% endfor %}
-                                    </div>
-                                    {{ updatedAttribute.name }}
+                            {% for taskDiff in jobDiff.tasks.updated %}
+                            <div>
+                                <strong>{{ taskDiff.field }}</strong>
+                                {% for prop in taskDiff.updated %}
+                                <div class="change-detail">
+                                    {% for c in prop.changes %}
+                                    {{ c.key }}: <span class="before">{{ c.before }}</span> &rarr; <span class="after">{{ c.after }}</span>
+                                    {% endfor %}
                                 </div>
-                                {% if not loop.last  %},{% endif %}
+                                {% endfor %}
+                            </div>
                             {% endfor %}
                         </td>
                     </tr>
-                    <tr>
-                        <td >
-                            Deleted
-                        </td>
-                        <td>
-                            {% if tableDiff.attributes is truthy %}
-                                {{ tableDiff.attributes.countDeleted }}
-                            {% else %}
-                                0
-                            {% endif %}
-                        </td>
-                        <td>
-                            {{ domainDiff.name }}
-                        </td>
-                        <td>
-                            {{ tableDiff.name }}
-                        </td>
-                        <td>
-                            {%  for deletedAttribute in tableDiff.attributes.deleted  %}
-                                {{ deletedAttribute.name }}{% if not loop.last  %},{% endif %}
-                            {% endfor %}
-                        </td>
-                    </tr>
-
+                    {% endif %}
                     </tbody>
                 </table>
-            {% endfor %}
-            {% endfor %}
+                {% endif %}
+            </div>
         </div>
-    </div>
+        {% endfor %}
 
-    <div id="footer">
-        <p>
-        <div>
-            <label class="hidden" id="label-for-line-wrapping-toggle" for="line-wrapping-toggle">Wrap lines
-                <input id="line-wrapping-toggle" type="checkbox" autocomplete="off"/>
-            </label>
-        </div>Generated by
-        <a href="https://starlake.ai">starlake</a> at {{ timestamp }}</p>
+        {% else %}
+        <p class="empty">No transform changes detected.</p>
+        {% endif %}
+
     </div>
+    <footer>
+        <p>Generated by <a href="https://starlake.ai">Starlake</a> at {{ timestamp }}</p>
+    </footer>
 </div>
 </body>
 </html>

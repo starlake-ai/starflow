@@ -6,7 +6,7 @@ import ai.starlake.job.metrics.{MetricsConfig, MetricsJob}
 import ai.starlake.job.sink.bigquery.{BigQueryJobBase, BigQueryLoadConfig, BigQuerySparkJob}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
-import ai.starlake.utils.{JobResult, Utils}
+import ai.starlake.utils.{JobResult, StarlakeConfigException, Utils}
 import com.typesafe.scalalogging.LazyLogging
 
 import scala.util.{Failure, Success, Try}
@@ -81,10 +81,10 @@ trait MetricsSecurityWorkflow extends LazyLogging {
           )
           val sink = metadata.sink
             .map(_.getSink())
-            .getOrElse(throw new Exception("Sink required"))
+            .getOrElse(throw new StarlakeConfigException("Sink required"))
 
           val connectionName = sink.connectionRef
-            .getOrElse(throw new Exception("JdbcSink requires a connectionRef"))
+            .getOrElse(throw new StarlakeConfigException("JdbcSink requires a connectionRef"))
           val connection =
             settings.appConfig.connections(connectionName).withAccessToken(config.accessToken)
           sink match {

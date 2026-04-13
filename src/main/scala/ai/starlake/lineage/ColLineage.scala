@@ -438,7 +438,7 @@ object ColLineage {
   ): List[Relation] = {
     val columns = resultSetMetaData.getColumns.asScala
     val labels = resultSetMetaData.getLabels.asScala
-    assert(columns.size == labels.size)
+    require(columns.size == labels.size)
     val relations =
       columns
         .zip(labels)

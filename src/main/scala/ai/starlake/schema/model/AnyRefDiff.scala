@@ -7,12 +7,28 @@ import java.util
 import scala.jdk.CollectionConverters._
 
 object AnyRefDiff {
+  private def isComplexType(value: AnyRef): Boolean = value match {
+    case null                             => false
+    case _: String                        => false
+    case _: java.lang.Number              => false
+    case _: java.lang.Boolean             => false
+    case _: java.lang.Enum[_]             => false
+    case _: java.util.regex.Pattern       => false
+    case _: scala.collection.Iterable[_]  => false
+    case _: Option[_]                     => false
+    case _: scala.Tuple1[_]               => false
+    case _: scala.Tuple2[_, _]            => false
+    case _: scala.Tuple3[_, _, _]         => false
+    case p: Product if p.productArity > 0 => true
+    case _                                => false
+  }
+
   def extractFieldValues(obj: AnyRef): List[NamedValue] = {
     val cls = obj.getClass
     val fields = cls
       .getDeclaredFields()
       .filter(field => !Modifier.isTransient(field.getModifiers))
-      .filter(_.getDeclaredAnnotations.isEmpty)
+      .filter(field => !field.isAnnotationPresent(classOf[JsonIgnore]))
     val fieldNames = fields.map(_.getName)
     cls.getDeclaredMethods.flatMap { method =>
       if (
@@ -44,16 +60,27 @@ object AnyRefDiff {
     val common2 = Named.diff(set2, added).toList.sortBy(_.name)
 
     val common = common1.zip(common2).map { case (v1, v2) =>
-      assert(v1.name == v2.name)
+      require(v1.name == v2.name)
       (v1.name, v1, v2)
     }
     val updated = common.flatMap { case (k, v1, v2) =>
-      // diffAny(k, v1, v2).updated
       if (v1.isInstanceOf[NamedValue]) {
-        if (v1 != v2)
-          List((Some(fieldName), v1, v2))
-        else
+        val nv1 = v1.asInstanceOf[NamedValue]
+        val nv2 = v2.asInstanceOf[NamedValue]
+        if (v1 == v2) {
           Nil
+        } else if (isComplexType(nv1.value) && isComplexType(nv2.value)) {
+          val nested = diffAnyRef(nv1.name, nv1.value, nv2.value)
+          nested.updated.map { case (parentOpt, v1, v2) =>
+            val qualifiedName = parentOpt match {
+              case Some(parent) => Some(s"${nv1.name}.$parent")
+              case None         => Some(nv1.name)
+            }
+            (qualifiedName, v1, v2)
+          }
+        } else {
+          List((Some(fieldName), v1, v2))
+        }
       } else {
         val res = diffAnyRef(k, v1, v2)
         res.updated
@@ -221,7 +248,7 @@ case class ProjectDiff(
   transform: JobsDiff
 ) {
   @JsonIgnore
-  def isEmpty(): Boolean = load.isEmpty()
+  def isEmpty(): Boolean = load.isEmpty() && transform.isEmpty()
 
   def getProject1(): String = project1
   def getProject2(): String = project2
@@ -250,7 +277,7 @@ case class TableDiff(
   @JsonIgnore
   def isEmpty(): Boolean =
     attributes.isEmpty &&
-    attributes.isEmpty &&
+    expectations.isEmpty &&
     pattern.isEmpty &&
     metadata.isEmpty &&
     comment.isEmpty &&

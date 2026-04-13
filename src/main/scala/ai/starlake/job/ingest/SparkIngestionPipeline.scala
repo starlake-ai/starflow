@@ -264,7 +264,7 @@ trait SparkIngestionPipeline { self: IngestionJob =>
         attr.getFinalName(),
         expr(
           attr.transform
-            .getOrElse(throw new Exception("Should never happen"))
+            .getOrElse(throw new IllegalStateException("Should never happen"))
             .richFormat(schemaHandler.activeEnvVars(), options)
         )
           .cast(attr.primitiveSparkType(schemaHandler))

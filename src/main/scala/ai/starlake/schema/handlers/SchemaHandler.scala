@@ -50,7 +50,7 @@ import ai.starlake.sql.SQLUtils
 import ai.starlake.transpiler.diff.Attribute
 import ai.starlake.transpiler.schema.{JdbcColumn, JdbcMetaData}
 import ai.starlake.utils.Formatter.*
-import ai.starlake.utils.{Utils, YamlSerde}
+import ai.starlake.utils.{StarlakeConfigException, StarlakeNotFoundException, Utils, YamlSerde}
 import better.files.Resource
 import com.databricks.spark.xml.util.XSDToSchema
 import com.typesafe.scalalogging.LazyLogging
@@ -718,7 +718,11 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                         configPath.toString,
                         isForExtract = false
                       )
-                      .getOrElse(throw new Exception("Failed to deserialize domain: " + configPath))
+                      .getOrElse(
+                        throw new StarlakeConfigException(
+                          "Failed to deserialize domain: " + configPath
+                        )
+                      )
                       .copy(name = domainName)
                   YamlSerde.serializeToPath(configPath, domainUpdated)(storage)
                   domainUpdated
@@ -1494,7 +1498,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     val allTasks = tasks()
     allTasks
       .find(t => t.fullName().equalsIgnoreCase(taskFullName))
-      .getOrElse(throw new Exception(s"Task $taskFullName not found"))
+      .getOrElse(throw new StarlakeNotFoundException(s"Task $taskFullName not found"))
   }
   def taskByTableName(domain: String, table: String): Option[AutoTaskInfo] = {
     val allTasks = tasks()
@@ -1516,7 +1520,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     val refs = loadRefs()
     if (refs.refs.isEmpty) {
       val components = taskFullName.split('.')
-      assert(
+      require(
         components.length == 2,
         s"Task name $taskFullName should be composed of domain and task name separated by a dot"
       )
@@ -1695,7 +1699,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
 
   def table(domainNameAndSchemaName: String): Option[SchemaInfo] = {
     val components = domainNameAndSchemaName.split('.')
-    assert(
+    require(
       components.length >= 2,
       s"Table name $domainNameAndSchemaName should be composed of domain and table name separated by a dot"
     )
@@ -2333,14 +2337,14 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         storage.write(sql, sqlPath)
       }
       taskUpdated(task.domain, task.name)
-      this.taskOnly(task.fullName()).getOrElse(throw new Exception("Should not happen"))
+      this.taskOnly(task.fullName()).getOrElse(throw new IllegalStateException("Should not happen"))
     } else {
       val sqlPath = new Path(DatasetArea.transform, s"${task.domain}/${task.name}.sql")
       optSql.foreach { sql =>
         storage.write(sql, sqlPath)
       }
       taskUpdated(task.domain, task.name)
-      this.taskOnly(task.fullName()).getOrElse(throw new Exception("Should not happen"))
+      this.taskOnly(task.fullName()).getOrElse(throw new IllegalStateException("Should not happen"))
       task
     }
   }

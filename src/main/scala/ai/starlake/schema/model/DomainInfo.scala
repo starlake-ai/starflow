@@ -397,7 +397,7 @@ object DomainInfo {
           table,
           incoming.tables
             .find(_.name.toLowerCase() == table.name.toLowerCase())
-            .getOrElse(throw new Exception("Should not happen"))
+            .getOrElse(throw new IllegalStateException("Should not happen"))
         )
       }
 

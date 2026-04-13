@@ -69,12 +69,12 @@ object DagTemplateInfo {
   )(implicit settings: Settings): DagTemplateInfo = {
     val name = pythonFile.getName
     val dagType = pythonFile.getParent.getName
-    assert(
+    require(
       dagType == "load" || dagType == "transform",
       s"Invalid dag type: ${dagType}, only 'load' and 'transform' are supported."
     )
     val parts = name.split("__")
-    assert(parts.length == 3, s"Invalid dag template name: ${name}")
+    require(parts.length == 3, s"Invalid dag template name: ${name}")
     val orchestrator = parts(0)
     val template = parts(1)
     val runner = parts(2).stripSuffix(".py.j2")
@@ -95,12 +95,12 @@ object DagTemplateInfo {
     val name = resourceName.substring(resourceName.lastIndexOf("/") + 1)
     val parent = resourceName.substring(0, resourceName.lastIndexOf("/"))
     val dagType = parent.substring(parent.lastIndexOf("/") + 1)
-    assert(
+    require(
       dagType == "load" || dagType == "transform",
       s"Invalid dag type: ${dagType}, only 'load' and 'transform' are supported."
     )
     val parts = name.split("__")
-    assert(parts.length == 3, s"Invalid dag template name: ${name}")
+    require(parts.length == 3, s"Invalid dag template name: ${name}")
     val orchestrator = parts(0)
     val template = parts(1)
     val runner = parts(2).stripSuffix(".py.j2")

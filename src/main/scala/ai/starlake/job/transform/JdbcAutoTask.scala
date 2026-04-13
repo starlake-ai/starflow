@@ -13,7 +13,7 @@ import ai.starlake.schema.model.{
 }
 import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.Formatter.RichFormatter
-import ai.starlake.utils.{JdbcJobResult, JobResult, SparkUtils, Utils}
+import ai.starlake.utils.{JdbcJobResult, JobResult, SparkUtils, StarlakeNotFoundException, Utils}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
@@ -600,7 +600,7 @@ object JdbcAutoTask extends LazyLogging {
   ): Try[Boolean] = {
     val connection = settings.appConfig
       .connection(connectionName)
-      .getOrElse(throw new Exception(s"Connection not found $connectionName"))
+      .getOrElse(throw new StarlakeNotFoundException(s"Connection not found $connectionName"))
       .withAccessToken(accessToken)
 
     // This is an update statement. No readonly connection is needed

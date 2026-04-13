@@ -233,7 +233,8 @@ class SiteHandler(config: SiteConfig, schemaHandler: SchemaHandler)(implicit val
         "patternSample" -> table.patternSample.getOrElse(""),
         "tags"          -> table.tags.toList.sorted,
         "primaryKey"    -> table.primaryKey,
-        "attributes"    -> table.attributes.map(attrData)
+        "attributes"    -> table.attributes.map(attrData),
+        "expectations"  -> table.expectations.map(_.asMap())
       ),
       "domains" -> allDomains.map(domainNavData),
       "jobs"    -> allJobs.map(jobNavData)
@@ -336,7 +337,8 @@ class SiteHandler(config: SiteConfig, schemaHandler: SchemaHandler)(implicit val
         "comment"       -> task.comment.getOrElse("No description provided"),
         "tags"          -> task.tags.toList.sorted,
         "writeStrategy" -> task.writeStrategy.map(writeStrategyData).getOrElse(null),
-        "attributes"    -> task.attributes.map(attrData)
+        "attributes"    -> task.attributes.map(attrData),
+        "expectations"  -> task.expectations.map(_.asMap())
       ),
       "domains" -> allDomains.map(domainNavData),
       "jobs"    -> allJobs.map(jobNavData)

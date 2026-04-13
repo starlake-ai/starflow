@@ -27,7 +27,7 @@ object TransformEngine {
 
     val hasParam = maskingAlgo.indexOf('(')
     if (hasParam > 0) {
-      assert(maskingAlgo.indexOf(')') > hasParam)
+      require(maskingAlgo.indexOf(')') > hasParam)
       (
         maskingAlgo.substring(0, hasParam),
         parseParams(
@@ -87,7 +87,7 @@ object Hide extends TransformEngine {
     if (params.isEmpty)
       ""
     else {
-      assert(params.length == 2)
+      require(params.length == 2)
       val c = params.head
       val i = params(1).toInt
       c * i
@@ -109,7 +109,7 @@ object Initials extends TransformEngine {
 object Email extends TransformEngine {
 
   def crypt(s: String, colMap: => Map[String, Option[String]], params: List[String]): String = {
-    assert(params.length == 1)
+    require(params.length == 1)
     val split = s.split('@')
     TransformEngine.algo(params.head.toString, split(0)) + "@" + split(1)
   }
@@ -119,7 +119,7 @@ trait IP extends TransformEngine {
   def separator: Char
 
   def crypt(s: String, colMap: => Map[String, Option[String]], params: List[String]): String = {
-    assert(params.length == 1)
+    require(params.length == 1)
     crypt(s, params.head.toInt)
   }
 
@@ -145,7 +145,7 @@ trait NumericRandomTransform extends TransformEngine {
   def genUnbounded(): Double
 
   final def crypt(params: List[String]): Double = {
-    assert(params.length == 2 || params.isEmpty)
+    require(params.length == 2 || params.isEmpty)
     params match {
       case Nil =>
         genUnbounded()
@@ -202,7 +202,7 @@ class ApproxDouble extends TransformEngine {
   val rnd = new SecureRandom()
 
   def crypt(s: String, colMap: => Map[String, Option[String]], params: List[String]): String = {
-    assert(params.length == 1)
+    require(params.length == 1)
     crypt(s.toDouble, params.head.toInt).toString
   }
 
@@ -225,7 +225,7 @@ object ApproxLong extends ApproxDouble {
     colMap: => Map[String, Option[String]],
     params: List[String]
   ): String = {
-    assert(params.length == 1)
+    require(params.length == 1)
     crypt(s.toDouble, params.head.toInt).toLong.toString
   }
 
@@ -234,7 +234,7 @@ object ApproxLong extends ApproxDouble {
 object Mask extends TransformEngine {
 
   def crypt(s: String, colMap: => Map[String, Option[String]], params: List[String]): String = {
-    assert(params.length == 4)
+    require(params.length == 4)
     val maskingChar = params(0).charAt(0)
     val numberOfChars = params(1).toInt
     val leftSide = params(2).toInt

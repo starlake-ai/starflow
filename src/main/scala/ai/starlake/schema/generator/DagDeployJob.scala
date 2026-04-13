@@ -2,7 +2,7 @@ package ai.starlake.schema.generator
 
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.utils.{EmptyJobResult, JobResult, Utils}
+import ai.starlake.utils.{EmptyJobResult, JobResult, StarlakeConfigException, Utils}
 import better.files.File
 import com.typesafe.scalalogging.StrictLogging
 import org.apache.hadoop.fs.Path
@@ -35,7 +35,9 @@ class DagDeployJob(schemaHandler: SchemaHandler) extends StrictLogging {
     val inputDir = config.inputDir.getOrElse(new Path(DatasetArea.build, "dags").toString)
 
     val orchestratorName =
-      schemaHandler.orchestratorName().getOrElse(throw new Exception("Orchestrator not configured"))
+      schemaHandler
+        .orchestratorName()
+        .getOrElse(throw new StarlakeConfigException("Orchestrator not configured"))
 
     logger.info(s"Orchestrator Name: $orchestratorName")
 
@@ -69,7 +71,7 @@ class DagDeployJob(schemaHandler: SchemaHandler) extends StrictLogging {
                 Some(file.pathAsString)
               }
               .toList
-          assert(
+          require(
             paths.length == 2,
             s"Expected 2 packages in ${libsDir.pathAsString} but found ${paths}"
           )

@@ -398,7 +398,7 @@ class BigQueryNativeJob(
     } else if (cliConfig.materialization == Materialization.MATERIALIZED_VIEW) {
       runAndSinkAsMaterializedView().map(table => BigQueryJobResult(None, 0L, None))
     } else {
-      assert(cliConfig.materialization == Materialization.VIEW)
+      require(cliConfig.materialization == Materialization.VIEW)
       runAndSinkAsView().map(table => BigQueryJobResult(None, 0L, None))
     }
   }

@@ -91,7 +91,7 @@ class ExtractDataJob(schemaHandler: SchemaHandler) extends ExtractPathHelper wit
             },
           userConfig.parallelism
         ) { jdbcSchema =>
-          assert(userConfig.numPartitions > 0)
+          require(userConfig.numPartitions > 0)
           extractData(
             ExtractJdbcDataConfig(
               jdbcSchema,

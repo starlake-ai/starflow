@@ -12,7 +12,7 @@ import ai.starlake.lineage.{
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
 import ai.starlake.schema.model.Engine.BQ
-import ai.starlake.utils.{JdbcJobResult, SparkJobResult}
+import ai.starlake.utils.{JdbcJobResult, SparkJobResult, StarlakeNotFoundException}
 import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.Utils
 import com.manticore.jsqlformatter.JSQLFormatter
@@ -65,7 +65,7 @@ trait TransformWorkflow extends LazyLogging {
       } else {
         val taskDesc = schemaHandler
           .taskOnly(config.name, reload = true)
-          .getOrElse(throw new Exception(s"Invalid task name ${config.name}"))
+          .getOrElse(throw new StarlakeNotFoundException(s"Invalid task name ${config.name}"))
         config.query match {
           case Some(_) =>
             taskDesc.copy(sql = config.query)
@@ -184,7 +184,9 @@ trait TransformWorkflow extends LazyLogging {
     } else if (allIsSuccess) {
       res.iterator.next()
     } else {
-      res.iterator.find(_.isFailure).getOrElse(throw new Exception("Should never happen"))
+      res.iterator
+        .find(_.isFailure)
+        .getOrElse(throw new IllegalStateException("Should never happen"))
     }
   }
 

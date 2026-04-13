@@ -583,7 +583,7 @@ class AttributeSpec extends TestHelper {
     }
 
     it should "fail" in {
-      var caughtError = intercept[AssertionError] {
+      var caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "struct1"
             |  type: "struct"
@@ -606,10 +606,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name struct_attr2 is not in array in both schema"
+        caughtError.getMessage === "requirement failed: attribute with name struct_attr2 is not in array in both schema"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "struct1"
             |  type: "struct"
@@ -630,10 +630,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name struct_attr2 found with type 'long' where type 'struct' is expected"
+        caughtError.getMessage === "requirement failed: attribute with name struct_attr2 found with type 'long' where type 'struct' is expected"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "array2"
             |  type: "long"
@@ -650,10 +650,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name array2 is not in array in both schema"
+        caughtError.getMessage === "requirement failed: attribute with name array2 is not in array in both schema"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "array1"
             |  type: "struct"
@@ -674,10 +674,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name array1 is not in array in both schema"
+        caughtError.getMessage === "requirement failed: attribute with name array1 is not in array in both schema"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "struct1"
             |  array: true
@@ -699,10 +699,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name struct1 is not in array in both schema"
+        caughtError.getMessage === "requirement failed: attribute with name struct1 is not in array in both schema"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "struct1"
             |  type: "long"
@@ -719,7 +719,7 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name struct1 found with type 'long' where type 'struct' is expected"
+        caughtError.getMessage === "requirement failed: attribute with name struct1 found with type 'long' where type 'struct' is expected"
       )
     }
 
@@ -756,7 +756,7 @@ class AttributeSpec extends TestHelper {
     }
 
     it should "fail" in {
-      var caughtError = intercept[AssertionError] {
+      var caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "struct1"
             |  type: "struct"
@@ -777,10 +777,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name struct_attr2 has mismatch on attributes emptiness"
+        caughtError.getMessage === "requirement failed: attribute with name struct_attr2 has mismatch on attributes emptiness"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "struct1"
             |  type: "struct"
@@ -798,10 +798,10 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name struct1 has mismatch on attributes emptiness"
+        caughtError.getMessage === "requirement failed: attribute with name struct1 has mismatch on attributes emptiness"
       )
 
-      caughtError = intercept[AssertionError] {
+      caughtError = intercept[IllegalArgumentException] {
         val sourceAttributes = mapper.readValue[List[TableAttribute]]("""
             |- name: "array1"
             |  array: true
@@ -820,7 +820,7 @@ class AttributeSpec extends TestHelper {
         )
       }
       assert(
-        caughtError.getMessage === "assertion failed: attribute with name array1 has mismatch on attributes emptiness"
+        caughtError.getMessage === "requirement failed: attribute with name array1 has mismatch on attributes emptiness"
       )
     }
 

@@ -24,7 +24,7 @@ object Dependencies {
 
   def scalaReflection(scalaVersion: String): Seq[ModuleID] =
     Seq(
-      "org.scala-lang" % "scala-reflect"  % scalaVersion,
+      "org.scala-lang" % "scala-reflect" % scalaVersion,
       "org.scala-lang" % "scala-compiler" % scalaVersion
     )
 

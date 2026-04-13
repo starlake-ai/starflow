@@ -30,7 +30,7 @@ object JdbcConnectionLoadCmd extends Cmd[JdbcConnectionLoadConfig] {
     jdbcEngine: Settings.JdbcEngine,
     outputDomainAndTablename: String
   )(implicit settings: Settings): Unit = {
-    assert(
+    require(
       jdbcOptions.`type` == ConnectionType.JDBC,
       s"Only JDBC connections are supported ${jdbcOptions.`type`}"
     )

@@ -85,7 +85,7 @@ object DatasetArea extends LazyLogging {
             new Path(datasets, dbName)
           }
       }
-    assert(result.toString.indexOf("..") < 0, s"DuckDB path should not contain '..': $result")
+    require(result.toString.indexOf("..") < 0, s"DuckDB path should not contain '..': $result")
     result
   }
 

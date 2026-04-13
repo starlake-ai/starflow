@@ -31,7 +31,7 @@ case class RowLevelSecurity(
   def grantees(): Set[(UserType, String)] = {
     grants.flatMap(grant => grant.split(",").map(_.replaceAll("\"", ""))).map { user =>
       val res = user.split(':')
-      assert(res.length == 2)
+      require(res.length == 2)
       (UserType.fromString(res(0).trim), res(1).trim)
     }
   }
@@ -45,7 +45,7 @@ object RowLevelSecurity {
 
   def parse(input: String): RowLevelSecurity = {
     val components = input.split('/')
-    assert(components.length >= 3)
+    require(components.length >= 3)
     val name = components(0)
     val filter = components(1)
     val users = components.drop(2)

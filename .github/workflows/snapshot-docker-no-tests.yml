@@ -3,7 +3,11 @@ name: snapshot-docker-no-tests
 #  and trigger the API workflow.
 on:
   workflow_dispatch:
-  pull_request:
+  workflow_run:
+    workflows: ["snapshot-jar-only"]
+    types:
+      - completed
+  pull_request_target:
     types: [closed]
     branches:
       - master
@@ -11,6 +15,10 @@ on:
 
 jobs:
   snapshot:
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     steps:
       - name: Slack event

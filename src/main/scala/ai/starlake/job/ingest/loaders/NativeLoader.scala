@@ -174,13 +174,13 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
               Charset.forName(mergedMetadata.resolveEncoding())
             ) { is =>
               Using.resource(is) { reader =>
-                assert(
+                require(
                   mergedMetadata.resolveQuote().length <= 1,
                   "quote must be a single character"
                 )
-                assert(
+                require(
                   mergedMetadata.resolveEscape().length <= 1,
-                  "quote must be a single character"
+                  "escape must be a single character"
                 )
                 val csvParserSettings = new CsvParserSettings()
                 val format = new CsvFormat()

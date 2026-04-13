@@ -77,6 +77,10 @@ function install_starlake {
     Write-Host "Downloading $url to $INSTALL_DIR"
     try {
         Invoke-WebRequest -Uri $url -OutFile "$INSTALL_DIR\starlake.cmd" -UseBasicParsing -ErrorAction Stop
+        # Ensure CRLF line endings for Windows batch file
+        $content = [System.IO.File]::ReadAllText("$INSTALL_DIR\starlake.cmd")
+        $content = $content -replace "`r`n", "`n" -replace "`n", "`r`n"
+        [System.IO.File]::WriteAllText("$INSTALL_DIR\starlake.cmd", $content)
     } catch {
         Write-Host "Error: Failed to download starlake.cmd from $url"
         Write-Host $_.Exception.Message

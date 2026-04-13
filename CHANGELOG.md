@@ -1,6 +1,36 @@
 
 # Release notes
 
+# 1.5.15-SNAPSHOT:
+__Improvement__:
+- **Upgrade self-update**: The `starlake upgrade` command now downloads the latest starlake script from GitHub before proceeding, ensuring the upgrade logic itself is always up to date.
+- **CI**: Trigger `snapshot-docker-no-tests` workflow automatically after `snapshot-jar-only` succeeds.
+
+__Bug fix__:
+- **DuckDB on Windows**: Fix JDBC URL parsing and path normalization for Windows paths.
+
+# 1.5.14:
+__Improvement__:
+- **ACL export command**: New `starlake acl --export` command to export ACL/RLS definitions as YAML using Jackson serialization.
+- **ProjectCompare enhancements**: Support deep nesting in diff with qualified field paths, show field names in compare report metadata changes, recurse into nested case classes.
+- **Upgrade command overhaul**: Install `starlake-api` from zip archive instead of individual JARs (matching Setup.java behavior). Self-update the starlake script on upgrade before proceeding.
+- **Download progress bar**: Display curl progress bar during artifact downloads in starlake.sh and starlake.cmd.
+- **Windows support**: Add Windows installation instructions to README. Fix CRLF line endings for starlake.cmd. Ensure CRLF normalization in setup.ps1 after downloading starlake.cmd.
+- **Bootstrap CLAUDE.md**: Add starlake CLI path guidance to bootstrap CLAUDE.md templates.
+- **Default SL_API_STARLAKE_CORE_PATH**: Automatically default to starlake script location.
+- **Code quality**: Close resource leaks, add custom exceptions, replace assert with require, add pool shutdown. Refactor LocalStorageHandler and HdfsStorageHandler.
+
+__Bug fix__:
+- **BigQuery foreign keys**: Check referenced table exists before adding foreign key constraint.
+- **Jinjava templates**: Fix syntax replacing is-not-empty with length filter.
+- **Assembly shading**: Resolve MethodTooLargeException during assembly.
+- **SchemaHandler caching**: Fix caching issue in ProjectCompare.
+
+__Dependencies__:
+- Bump starlake-jdbc from 0.4 to 0.6
+- Bump jSqlParser from 5.3.210 to 5.3.218
+- Update DuckDB JDBC to 1.5.1.0
+
 # 1.5.13:
 __Improvement__:
 - **IngestionJob refactoring**: Decomposed the monolithic IngestionJob trait into focused single-responsibility traits: IngestionAudit (audit logging), IngestionExpectations (expectations and metrics), IngestionAcl (Hive/JDBC ACL management), SparkIngestionPipeline (Spark DataFrame pipeline methods).

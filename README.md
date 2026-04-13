@@ -36,10 +36,23 @@ Inspired by Terraform and Ansible, Starlake brings declarative programming to da
 
 ## Quick Start
 
+**macOS / Linux:**
 ```bash
-# Install (macOS/Linux)
 curl -sSL https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/setup.sh | bash
+```
 
+**Windows (PowerShell):**
+```powershell
+Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/setup.ps1" -UseBasicParsing).Content
+```
+
+**Docker:**
+```bash
+docker run -it starlakeai/starlake:latest starlake bootstrap
+```
+
+Then:
+```bash
 # Create a new project from a template
 starlake bootstrap
 
@@ -48,11 +61,6 @@ starlake load
 
 # Run transformations
 starlake transform --name my_domain.my_table
-```
-
-Or use Docker:
-```bash
-docker run -it starlakeai/starlake:latest starlake bootstrap
 ```
 
 For pre-built production-ready data stacks, see [Starlake Pragmatic Data Stacks](https://github.com/starlake-ai/starlake-data-stack).

@@ -40,7 +40,7 @@ case class BigQueryLoadCliConfig(
     outputTableId = Some(
       BigQueryJobBase.extractProjectDatasetAndTable(
         outputDatabase,
-        outputDataset.getOrElse(throw new Exception("outputDataset must be defined")),
+        outputDataset.getOrElse(throw new StarlakeConfigException("outputDataset must be defined")),
         outputTable.get
       )
     ),

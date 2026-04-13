@@ -11,7 +11,7 @@ import ai.starlake.lineage.{
 }
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.*
-import ai.starlake.utils.{JsonSerializer, Utils}
+import ai.starlake.utils.{JsonSerializer, StarlakeConfigException, Utils}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 
@@ -245,7 +245,7 @@ class DagGenerateJob(schemaHandler: SchemaHandler) extends LazyLogging {
   }
 
   private def airflowAccessControl(projectId: Long): String = {
-    assert(projectId > 0)
+    require(projectId > 0)
 
     // To reduce memory footprint in the SaaS version, we access global variables
     // from the application configuration object instead of the user session
@@ -686,7 +686,7 @@ class DagGenerateJob(schemaHandler: SchemaHandler) extends LazyLogging {
     config.masterProjectId match {
       case Some(projectId) =>
         val outputDir = new Path(
-          config.outputDir.getOrElse(throw new Exception("outputDir is required"))
+          config.outputDir.getOrElse(throw new StarlakeConfigException("outputDir is required"))
         )
         val dagFiles =
           settings

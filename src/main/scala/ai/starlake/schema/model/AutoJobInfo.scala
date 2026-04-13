@@ -119,7 +119,7 @@ object AutoJobInfo {
           task,
           incoming.tasks
             .find(_.name.toLowerCase() == task.name.toLowerCase())
-            .getOrElse(throw new Exception("Should not happen"))
+            .getOrElse(throw new IllegalStateException("Should not happen"))
         )
       }
 

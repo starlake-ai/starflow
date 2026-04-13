@@ -716,7 +716,8 @@ case class SchemaInfo(
     val simpleAttributes = exceptIgnoreScriptAndTransformAttributes()
 
     val sqlScripts: List[String] = scriptAttributes.map { scriptField =>
-      val script = scriptField.script.getOrElse(throw new Exception("Should never happen"))
+      val script =
+        scriptField.script.getOrElse(throw new IllegalStateException("Should never happen"))
       s"$script AS $attributeQuote${scriptField.getFinalName()}$attributeQuote"
     }
 
@@ -726,7 +727,7 @@ case class SchemaInfo(
 
     val sqlTransforms: List[String] = transformAttributes.map { transformField =>
       val transform =
-        transformField.transform.getOrElse(throw new Exception("Should never happen"))
+        transformField.transform.getOrElse(throw new IllegalStateException("Should never happen"))
       s"$transform AS $attributeQuote${transformField.getFinalName()}$attributeQuote"
     }
 

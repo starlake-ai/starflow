@@ -5,7 +5,7 @@ import ai.starlake.job.sink.DataFrameTransform
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.utils.Formatter._
 import ai.starlake.utils.kafka.KafkaClient
-import ai.starlake.utils.{JobResult, SparkJob, SparkJobResult, Utils}
+import ai.starlake.utils.{JobResult, SparkJob, SparkJobResult, StarlakeConfigException, Utils}
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient
 import org.apache.hadoop.fs.Path
 import org.apache.kafka.common.serialization.Deserializer
@@ -164,7 +164,7 @@ class KafkaJob(
           }
         case None =>
           if (kafkaJobConfig.streaming) {
-            assert(kafkaJobConfig.format != "kafka")
+            require(kafkaJobConfig.format != "kafka")
             val df = session.readStream.format(kafkaJobConfig.format).options(options).load()
             val transformedDF = transform(df)
             writeStreaming(transformedDF)
@@ -176,7 +176,7 @@ class KafkaJob(
                 .options(options)
                 .load()
             } else {
-              assert(kafkaJobConfig.path.isDefined, "Load path is required")
+              require(kafkaJobConfig.path.isDefined, "Load path is required")
               // Pass options to all formats for consistency with the streaming path (line 168)
               val reader = session.read
                 .format(kafkaJobConfig.format)
@@ -184,12 +184,16 @@ class KafkaJob(
               if (kafkaJobConfig.format == "bigquery") {
                 reader.load(
                   finalLoadPath
-                    .getOrElse(throw new Exception("Load path should be set in config"))
+                    .getOrElse(
+                      throw new StarlakeConfigException("Load path should be set in config")
+                    )
                 )
               } else {
                 reader.load(
                   finalLoadPath
-                    .getOrElse(throw new Exception("Load path should be set in config"))
+                    .getOrElse(
+                      throw new StarlakeConfigException("Load path should be set in config")
+                    )
                     .split(',')
                     .toIndexedSeq: _*
                 )
@@ -395,7 +399,11 @@ class KafkaJob(
         .getOrElse(
           writeTopicConfig
             .map(_.topicName)
-            .getOrElse(throw new Exception("Cannot register de/serializers if topic not defined"))
+            .getOrElse(
+              throw new StarlakeConfigException(
+                "Cannot register de/serializers if topic not defined"
+              )
+            )
         )
       CustomDeserializer.configure(
         customDeserializerName,

@@ -76,7 +76,7 @@ class OpenAPISchemaExtractor(
     *   the OpenAPI configuration and extractor settings.
     */
   override def extract()(implicit settings: Settings): Iterable[DomainInfo] = {
-    assert(
+    require(
       connectionSettings.`type` == ConnectionType.FS,
       "Connection should be FS with 'path' option defined"
     )
@@ -645,7 +645,7 @@ class OpenAPISchemaExtractor(
         }
       }
     }
-    assert(
+    require(
       isObjectSchemaLike(responseSchema),
       "Expected an object schema but found " + responseSchema.getClass.getName
     )

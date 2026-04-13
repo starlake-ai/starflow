@@ -10,7 +10,7 @@ import ai.starlake.sql.{SQLTypeMappings, SQLUtils}
 import ai.starlake.transpiler.JSQLSchemaDiff
 import ai.starlake.transpiler.diff.{Attribute as DiffAttribute, DBSchema}
 import ai.starlake.transpiler.schema.CaseInsensitiveLinkedHashMap
-import ai.starlake.utils.{SparkUtils, YamlSerde}
+import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, YamlSerde}
 import com.fasterxml.jackson.annotation.{JsonIgnore, JsonIgnoreProperties}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.types.StructType
@@ -225,7 +225,7 @@ case class AutoTaskInfo(
   def getSinkConnection()(implicit settings: Settings): ConnectionInfo = {
     val connection = settings.appConfig
       .connection(getSinkConnectionRef())
-      .getOrElse(throw new Exception(s"Connection not found: $connectionRef"))
+      .getOrElse(throw new StarlakeNotFoundException(s"Connection not found: $connectionRef"))
     connection
   }
   def getSinkConnectionRef()(implicit settings: Settings): String = {
@@ -246,7 +246,11 @@ case class AutoTaskInfo(
   def getRunConnection()(implicit settings: Settings): ConnectionInfo = {
     val connection = settings.appConfig
       .connection(getRunConnectionRef())
-      .getOrElse(throw new Exception(s"Connection not found: ${settings.appConfig.connectionRef}"))
+      .getOrElse(
+        throw new StarlakeNotFoundException(
+          s"Connection not found: ${settings.appConfig.connectionRef}"
+        )
+      )
     connection
   }
 
@@ -492,7 +496,7 @@ case class AutoTaskInfo(
 
   @JsonIgnore
   def getPath()(implicit settings: Settings): Path = {
-    assert(
+    require(
       this.fullName().split('.').length == 2,
       s"Invalid full task name: ${this.fullName()}. Expected format: domainName.tableName"
     )

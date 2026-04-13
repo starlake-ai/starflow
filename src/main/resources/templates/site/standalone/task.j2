@@ -83,6 +83,7 @@
         {% if sql %}<button class="tab-btn" data-tab="sql">SQL</button>{% endif %}
         {% if python %}<button class="tab-btn" data-tab="python">Python</button>{% endif %}
         {% if task.attributes %}<button class="tab-btn" data-tab="attributes">Attributes</button>{% endif %}
+        {% if task.expectations %}<button class="tab-btn" data-tab="expectations">Expectations</button>{% endif %}
         {% if lineageJson %}<button class="tab-btn" data-tab="lineage">Lineage</button>{% endif %}
         <button class="tab-btn" data-tab="relations">Relations</button>
         {% if aclJson %}<button class="tab-btn" data-tab="acl">Access Control</button>{% endif %}
@@ -152,6 +153,29 @@
                 <td>{{ attr.comment }}</td>
                 <td>{{ attr.required }}</td>
                 <td>{% for tag in attr.tags %}<span class="tag">{{ tag }}</span>{% endfor %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if task.expectations %}
+      <div id="expectations" class="tab-pane">
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Expectation</th>
+                <th>Fail on Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for exp in task.expectations %}
+              <tr>
+                <td><code>{{ exp.query }}</code></td>
+                <td>{{ exp.failOnError }}</td>
               </tr>
               {% endfor %}
             </tbody>

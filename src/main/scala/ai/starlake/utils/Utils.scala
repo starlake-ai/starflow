@@ -228,10 +228,14 @@ object Utils extends LazyLogging {
     try {
       val url = new URL(metadataUrl)
       val connection = url.openConnection().asInstanceOf[HttpURLConnection]
-      connection.setConnectTimeout(500)
-      connection.setReadTimeout(500)
-      connection.setRequestProperty("Metadata-Flavor", "Google")
-      connection.getResponseCode == 200
+      try {
+        connection.setConnectTimeout(500)
+        connection.setReadTimeout(500)
+        connection.setRequestProperty("Metadata-Flavor", "Google")
+        connection.getResponseCode == 200
+      } finally {
+        connection.disconnect()
+      }
     } catch {
       case _: Exception => false
     }

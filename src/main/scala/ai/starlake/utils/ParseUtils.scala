@@ -79,7 +79,7 @@ object ParseUtils {
           val colNamesAndTypes =
             columns.map { column =>
               val colNameAndType = column.split(' ')
-              assert(
+              require(
                 colNameAndType.length >= 2,
                 s"Invalid syntax $column in $createTable"
               )

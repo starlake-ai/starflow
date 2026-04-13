@@ -217,11 +217,11 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               Charset.forName(mergedMetadata.resolveEncoding())
             ) { is =>
               Using.resource(is) { reader =>
-                assert(
+                require(
                   mergedMetadata.resolveQuote().length <= 1,
                   "quote must be a single character"
                 )
-                assert(
+                require(
                   mergedMetadata.resolveEscape().length <= 1,
                   "escape must be a single character"
                 )

@@ -58,6 +58,21 @@ object StarlakeConnectionPool extends LazyLogging {
     duckDbPool.clear()
   }
 
+  def shutdown(): Unit = {
+    clearDuckdbPool()
+    hikariPools.values.foreach { pool =>
+      Try(pool.close()) match {
+        case Failure(e) => logger.warn("Error closing HikariCP pool", e)
+        case _          =>
+      }
+    }
+    hikariPools.clear()
+  }
+
+  Runtime.getRuntime.addShutdownHook(new Thread("starlake-pool-shutdown") {
+    override def run(): Unit = shutdown()
+  })
+
   private def cleanupIdleDuckDbConnections(): Unit = duckDbPool.synchronized {
     val now = System.currentTimeMillis()
     duckDbPool.foreach { case (key, entry) =>
@@ -97,7 +112,7 @@ object StarlakeConnectionPool extends LazyLogging {
     dataBranch: Option[String],
     connectionOptions: Map[String, String]
   ): java.sql.Connection = {
-    assert(
+    require(
       connectionOptions.contains("driver"),
       s"driver class not found in JDBC connection options $connectionOptions"
     )
@@ -140,11 +155,17 @@ object StarlakeConnectionPool extends LazyLogging {
       // Synchronized to prevent race conditions on compound get-then-put operations
       val mainConnection = duckDbPool.synchronized {
         duckDbPool.get(dbKey) match {
-          case Some(entry) =>
+          case Some(entry) if !entry.connection.isClosed =>
             logger.debug(s"Reusing existing DuckDB connection for $url")
             // Update last access time
             duckDbPool.put(dbKey, entry.copy(lastAccessTime = System.currentTimeMillis()))
             entry.connection
+          case Some(entry) =>
+            logger.debug(s"Removing closed DuckDB connection for $url")
+            duckDbPool.remove(dbKey)
+            val sqlConn = DriverManager.getConnection(url, properties)
+            duckDbPool.put(dbKey, DuckDbPoolEntry(sqlConn, System.currentTimeMillis()))
+            sqlConn
           case _ =>
             // Clean any existing closed connection
             duckDbPool.find { case (key, _) =>

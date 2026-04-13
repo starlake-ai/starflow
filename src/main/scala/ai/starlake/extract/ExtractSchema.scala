@@ -7,6 +7,7 @@ import ai.starlake.extract.spi.SchemaExtractorWorkflow
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model._
 import ai.starlake.utils.Formatter._
+import ai.starlake.utils.StarlakeNotFoundException
 import ai.starlake.utils.YamlSerde
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
@@ -57,7 +58,7 @@ class ExtractSchema(schemaHandler: SchemaHandler) extends ExtractPathHelper with
     val extractedDomains = extract(userConfig)
     extractedDomains match {
       case Some(domains) if domains.nonEmpty =>
-        domains.headOption.getOrElse(throw new Exception("No domain extracted"))
+        domains.headOption.getOrElse(throw new StarlakeNotFoundException("No domain extracted"))
       case _ =>
         throw new Exception(s"Could not extract table $domainAndTableName")
     }

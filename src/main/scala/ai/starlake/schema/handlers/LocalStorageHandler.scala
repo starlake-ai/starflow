@@ -21,10 +21,9 @@
 package ai.starlake.schema.handlers
 
 import ai.starlake.config.Settings
-import better.files.File
 import org.apache.commons.io.IOUtils
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs._
+import org.apache.hadoop.fs.*
 import org.apache.hadoop.io.compress.CompressionCodecFactory
 import org.apache.spark.sql.execution.streaming.FileStreamSource.Timestamp
 
@@ -40,7 +39,7 @@ class LocalStorageHandler(implicit
   settings: Settings
 ) extends StorageHandler {
 
-  import StorageHandler._
+  import StorageHandler.*
 
   def lockAcquisitionPollTime: Long = settings.appConfig.lock.pollTime
 

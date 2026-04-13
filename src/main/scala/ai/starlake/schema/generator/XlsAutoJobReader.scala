@@ -3,6 +3,7 @@ package ai.starlake.schema.generator
 import ai.starlake.schema.handlers.StorageHandler
 import ai.starlake.schema.model.ConnectionType._
 import ai.starlake.schema.model._
+import ai.starlake.utils.StarlakeConfigException
 import org.apache.hadoop.fs.Path
 import org.apache.poi.ss.usermodel._
 
@@ -201,11 +202,17 @@ class XlsAutoJobReader(input: Input, policyInput: Option[Input], storageHandler:
         else
           Some(
             AutoTaskInfo(
-              name = jobNameOpt.getOrElse(throw new Exception("Job name is required in XLS")),
+              name = jobNameOpt.getOrElse(
+                throw new StarlakeConfigException("Job name is required in XLS")
+              ),
               sql = None,
               database = databaseOpt,
-              domain = domainOpt.getOrElse(throw new Exception("Domain name is required in XLS")),
-              table = schemaOpt.getOrElse(throw new Exception("table name is required in XLS")),
+              domain = domainOpt.getOrElse(
+                throw new StarlakeConfigException("Domain name is required in XLS")
+              ),
+              table = schemaOpt.getOrElse(
+                throw new StarlakeConfigException("table name is required in XLS")
+              ),
               sink = Some(
                 sinkConnectionTypeOpt match {
                   case Some(BQ)     => BigQuerySink.fromAllSinks(allSinks).toAllSinks()

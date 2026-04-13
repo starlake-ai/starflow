@@ -19,7 +19,7 @@ class SparkJdbcWriter(
   override def name: String = s"cnxload-JDBC-${cliConfig.outputDomainAndTableName}"
 
   val conf: Configuration = {
-    assert(!SparkSessionBuilder.isSparkConnectActive, "JDBC is not supported with Spark Connect")
+    require(!SparkSessionBuilder.isSparkConnectActive, "JDBC is not supported with Spark Connect")
     session.sparkContext.hadoopConfiguration
   }
   logger.info(s"JDBC Config $cliConfig")

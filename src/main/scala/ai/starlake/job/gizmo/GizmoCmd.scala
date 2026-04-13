@@ -3,7 +3,7 @@ package ai.starlake.job.gizmo
 import ai.starlake.config.Settings
 import ai.starlake.job.Cmd
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.utils.JobResult
+import ai.starlake.utils.{JobResult, StarlakeConfigException}
 import com.typesafe.scalalogging.StrictLogging
 import scopt.OParser
 
@@ -226,7 +226,7 @@ object GizmoCmd extends Cmd[GizmoConfig] with StrictLogging {
     preActions
       .split(";")
       .find(_.contains("USE "))
-      .getOrElse(throw new Exception("No USE <<db>> command found in preActions"))
+      .getOrElse(throw new StarlakeConfigException("No USE <<db>> command found in preActions"))
       .split(" ")
       .last
   }

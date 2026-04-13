@@ -15,7 +15,7 @@ object AttributeMerger {
     refAttr: TableAttribute,
     sourceAttr: TableAttribute
   ): Unit = {
-    assert(
+    require(
       refAttr.attributes.isEmpty == sourceAttr.attributes.isEmpty,
       s"attribute with name ${sourceAttr.name} has mismatch on attributes emptiness"
     )
@@ -32,12 +32,12 @@ object AttributeMerger {
     def matchContainerType(refDataType: DataType, sourceDataType: DataType): Unit = {
       (refDataType, sourceDataType) match {
         case (_: ArrayType, _) | (_, _: ArrayType) =>
-          assert(
+          require(
             refDataType.getClass.getSimpleName == sourceDataType.getClass.getSimpleName,
             s"attribute with name ${sourceAttr.name} is not in array in both schema"
           )
         case (_: StructType, _) =>
-          assert(
+          require(
             refDataType.getClass.getSimpleName == sourceDataType.getClass.getSimpleName,
             s"attribute with name ${sourceAttr.name} found with type '${sourceAttr.`type`}' where type '${refAttr.`type`}' is expected"
           )

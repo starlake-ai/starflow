@@ -109,12 +109,12 @@ goto :handle_command
     set "target=%~2"
     if defined PROXY (
         if defined SL_INSECURE (
-            curl --insecure --proxy "%PROXY%" -s -o "%target%" "%url%"
+            curl --insecure --proxy "%PROXY%" --progress-bar -o "%target%" "%url%"
         ) else (
-            curl --proxy "%PROXY%" -s -o "%target%" "%url%"
+            curl --proxy "%PROXY%" --progress-bar -o "%target%" "%url%"
         )
     ) else (
-        curl -s -o "%target%" "%url%"
+        curl --progress-bar -o "%target%" "%url%"
     )
     if errorlevel 1 (
         echo Error: Failed to retrieve data from %url%.
@@ -218,6 +218,7 @@ goto :eof
     if /i "%1" == "reinstall" goto :install_command
     if /i "%1" == "serve" goto :serve_command
     if /i "%1" == "upgrade" goto :upgrade_command
+    if /i "%1" == "_do_upgrade" goto :do_upgrade_command
     goto :default_command
 
 :version_command
@@ -267,6 +268,18 @@ goto :eof
     goto :eof
 
 :upgrade_command
+    REM Self-update: download latest starlake.cmd and re-launch
+    echo Updating starlake script...
+    call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/starlake.cmd" "%SCRIPT_DIR%starlake.cmd.tmp"
+    REM Ensure CRLF line endings
+    powershell -Command "$c = [IO.File]::ReadAllText('%SCRIPT_DIR%starlake.cmd.tmp'); $c = $c -replace \"`r`n\",\"`n\" -replace \"`n\",\"`r`n\"; [IO.File]::WriteAllText('%SCRIPT_DIR%starlake.cmd.tmp', $c)"
+    copy /y "%SCRIPT_DIR%starlake.cmd.tmp" "%SCRIPT_DIR%starlake.cmd" >nul
+    del "%SCRIPT_DIR%starlake.cmd.tmp" 2>nul
+    REM Re-launch with updated script
+    "%SCRIPT_DIR%starlake.cmd" _do_upgrade
+    goto :eof
+
+:do_upgrade_command
     call :select_starlake_version
     if defined NEW_SL_VERSION (
         if exist "%SCRIPT_DIR%versions.cmd" (
@@ -284,35 +297,46 @@ goto :eof
         )
 
         set "SL_LIB_DIR=%STARLAKE_EXTRA_LIB_FOLDER%"
-        set "API_LIB_DIR=%SCRIPT_DIR%bin\api\lib"
+        set "BIN_DIR=%SCRIPT_DIR%bin"
+        set "API_DIR=!BIN_DIR!\api"
+        set "DEMO_DIR=%SCRIPT_DIR%demo"
 
-        if not exist "%SL_LIB_DIR%" mkdir "%SL_LIB_DIR%"
-        if not exist "%API_LIB_DIR%" mkdir "%API_LIB_DIR%"
+        if not exist "!SL_LIB_DIR!" mkdir "!SL_LIB_DIR!"
 
         set "CORE_ASSEMBLY_NAME=starlake-core_%SCALA_VERSION%-%NEW_SL_VERSION%-assembly.jar"
         set "CORE_ASSEMBLY_URL=!BASE_URL!/starlake-core_%SCALA_VERSION%/%NEW_SL_VERSION%/!CORE_ASSEMBLY_NAME!"
 
-        set "CORE_JAR_NAME=starlake-core_%SCALA_VERSION%-%NEW_SL_VERSION%.jar"
-        set "CORE_JAR_URL=!BASE_URL!/starlake-core_%SCALA_VERSION%/%NEW_SL_VERSION%/!CORE_JAR_NAME!"
+        set "API_ZIP_NAME=starlake-api_%SCALA_VERSION%-%NEW_SL_VERSION%.zip"
+        set "API_ZIP_URL=!BASE_URL!/starlake-api_%SCALA_VERSION%/%NEW_SL_VERSION%/!API_ZIP_NAME!"
 
-        set "API_JAR_NAME=starlake-api_%SCALA_VERSION%-%NEW_SL_VERSION%.jar"
-        set "API_JAR_URL=!BASE_URL!/starlake-api_%SCALA_VERSION%/%NEW_SL_VERSION%/!API_JAR_NAME!"
+        REM Delete old starlake core assembly
+        del /q "!SL_LIB_DIR!\starlake-core_*-assembly.jar" 2>nul
 
-        REM Delete old files
-        del /q "%API_LIB_DIR%\ai.starlake.starlake-api-*.jar" 2>nul
-        del /q "%API_LIB_DIR%\starlake-api_*.jar" 2>nul
-        del /q "%API_LIB_DIR%\starlake-core_*.jar" 2>nul
-        del /q "%SL_LIB_DIR%\starlake-core_*-assembly.jar" 2>nul
-
-        REM Download new files
+        REM Download new core assembly
         echo Downloading !CORE_ASSEMBLY_NAME! to !SL_LIB_DIR!...
         call :get_binary_from_url "!CORE_ASSEMBLY_URL!" "!SL_LIB_DIR!\!CORE_ASSEMBLY_NAME!"
 
-        echo Downloading !CORE_JAR_NAME! to !API_LIB_DIR!...
-        call :get_binary_from_url "!CORE_JAR_URL!" "!API_LIB_DIR!\!CORE_JAR_NAME!"
+        REM Delete old api directory and reinstall from zip
+        if exist "!API_DIR!" rmdir /s /q "!API_DIR!"
 
-        echo Downloading !API_JAR_NAME! to !API_LIB_DIR!...
-        call :get_binary_from_url "!API_JAR_URL!" "!API_LIB_DIR!\ai.starlake.!API_JAR_NAME!"
+        echo Downloading !API_ZIP_NAME! to !BIN_DIR!...
+        call :get_binary_from_url "!API_ZIP_URL!" "!BIN_DIR!\!API_ZIP_NAME!"
+
+        echo Extracting !API_ZIP_NAME!...
+        powershell -Command "Expand-Archive -Path '!BIN_DIR!\!API_ZIP_NAME!' -DestinationPath '!BIN_DIR!' -Force"
+        del /q "!BIN_DIR!\!API_ZIP_NAME!" 2>nul
+
+        REM Rename extracted directory to api (matches Setup.java behavior)
+        set "EXTRACTED_DIR=!BIN_DIR!\starlake-api-%NEW_SL_VERSION%"
+        if exist "!EXTRACTED_DIR!" (
+            echo Renaming !EXTRACTED_DIR! to !API_DIR!
+            rename "!EXTRACTED_DIR!" "api"
+        )
+
+        REM Move demo zips out of api dir (matches Setup.java behavior)
+        if not exist "!DEMO_DIR!" mkdir "!DEMO_DIR!"
+        if exist "!API_DIR!\starbake.zip" move /y "!API_DIR!\starbake.zip" "!DEMO_DIR!\starbake.zip" >nul
+        if exist "!API_DIR!\tpch001.zip" move /y "!API_DIR!\tpch001.zip" "!DEMO_DIR!\tpch001.zip" >nul
 
         REM Update python libs
         set "PYTHON_LIBS_BASE_URL=https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/python-libs"
@@ -371,3 +395,5 @@ goto :eof
         )
     )
     goto :eof
+
+

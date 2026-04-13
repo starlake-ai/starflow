@@ -20,8 +20,8 @@ object Project {
         settings.appConfig.copy(metadata = new Path(project2Path, "metadata").toString)
       )
 
-    val schemaHandler1 = settings1.schemaHandler()
-    val schemaHandler2 = settings2.schemaHandler()
+    val schemaHandler1 = settings1.schemaHandler(reload = true)
+    val schemaHandler2 = settings2.schemaHandler(reload = true)
 
     ProjectDiff(
       project1Path.toString,
@@ -49,7 +49,7 @@ object Project {
         domain,
         p2Domains
           .find(_.name.toLowerCase() == domain.name.toLowerCase())
-          .getOrElse(throw new Exception("Should not happen"))
+          .getOrElse(throw new IllegalStateException("Should not happen"))
       )
     }
 
@@ -75,7 +75,7 @@ object Project {
         job,
         p2Jobs
           .find(_.name.toLowerCase() == job.name.toLowerCase())
-          .getOrElse(throw new Exception("Should not happen"))
+          .getOrElse(throw new IllegalStateException("Should not happen"))
       )
     }
 

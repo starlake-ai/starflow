@@ -143,7 +143,11 @@ class SparkExportTask(
     val delimiter = separator.getOrElse("µ")
     val headerString =
       if (withHeader)
-        Some(header.getOrElse(throw new Exception("should never happen")).mkString(delimiter))
+        Some(
+          header
+            .getOrElse(throw new IllegalStateException("should never happen"))
+            .mkString(delimiter)
+        )
       else
         None
     storageHandler.copyMerge(headerString, location, finalCsvPath, deleteSource = true)

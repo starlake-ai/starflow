@@ -24,7 +24,7 @@ import ai.starlake.config.Settings
 import ai.starlake.extract.{ExtractExecutionContext, ExtractTableAttributes, JdbcDbUtils, ParUtils}
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.{DomainInfo, JDBCSchema, SchemaInfo}
-import ai.starlake.utils.{JinjaUtils, Utils}
+import ai.starlake.utils.{JinjaUtils, StarlakeNotFoundException, Utils}
 import better.files.File
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path as StoragePath
@@ -76,7 +76,7 @@ class Yml2DDLJob(config: Yml2DDLConfig, schemaHandler: SchemaHandler)(implicit
           val res = schemaHandler
             .domains()
             .find(_.name.toLowerCase() == domain)
-            .getOrElse(throw new Exception(s"Domain $domain not found"))
+            .getOrElse(throw new StarlakeNotFoundException(s"Domain $domain not found"))
           List(res)
       }
       val sqlString = new StringBuffer()
@@ -218,7 +218,7 @@ class Yml2DDLJob(config: Yml2DDLConfig, schemaHandler: SchemaHandler)(implicit
             val tableAttrs =
               existingTables
                 .iget(schema.finalName)
-                .getOrElse(throw new Exception("Should never happen"))
+                .getOrElse(throw new IllegalStateException("Should never happen"))
             val addColumns =
               schema.attributes.filter(attr =>
                 !tableAttrs.columNames

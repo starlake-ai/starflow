@@ -1,7 +1,7 @@
 package ai.starlake.job.bootstrap
 
 import ai.starlake.config.{DatasetArea, Settings}
-import ai.starlake.utils.{JarUtil, YamlSerde}
+import ai.starlake.utils.{JarUtil, StarlakeNotFoundException, YamlSerde}
 import better.files.File
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.typesafe.scalalogging.LazyLogging
@@ -20,7 +20,7 @@ object Bootstrap extends LazyLogging {
     resources.filterNot(_.endsWith(".DS_Store")).map { resource =>
       logger.info(s"copying $resource")
       val inputStream = Option(getClass.getClassLoader.getResourceAsStream(resource))
-        .getOrElse(throw new Exception(s"Resource $resource not found in assembly"))
+        .getOrElse(throw new StarlakeNotFoundException(s"Resource $resource not found in assembly"))
       val targetFile =
         File(
           targetFolder.pathAsString,

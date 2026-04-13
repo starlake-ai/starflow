@@ -157,7 +157,7 @@ case class Type(
           }
         case PrimitiveType.boolean =>
           val tf = pattern.split("<-TF->")
-          assert(tf.size == 2)
+          require(tf.size == 2)
           Pattern.compile(tf(0), Pattern.MULTILINE)
           Pattern.compile(tf(1), Pattern.MULTILINE)
         case PrimitiveType.decimal =>
@@ -165,7 +165,7 @@ case class Type(
             case None =>
             case Some(zone) =>
               val precisionScale = zone.split(",")
-              assert(precisionScale.length == 2)
+              require(precisionScale.length == 2)
               precisionScale(0).toInt
               precisionScale(0).toInt
           }
