@@ -54,6 +54,7 @@ object ConnectionType {
       case "BIGQUERY" | "BQ"                                               => ConnectionType.BQ
       case "ES" | "ELASTICSEARCH"                                          => ConnectionType.ES
       case "KAFKA"                                                         => ConnectionType.KAFKA
+      case "REST" | "HTTP" | "API"                                         => ConnectionType.REST
       case _ => throw new Exception(s"Unsupported ConnectionType $value")
     }
   }
@@ -67,6 +68,8 @@ object ConnectionType {
   object GCPLOG extends ConnectionType("GCPLOG")
 
   object SNOWFLAKE_LOG extends ConnectionType("SNOWFLAKE_LOG")
+
+  object REST extends ConnectionType("REST")
 
   val sinks: Set[ConnectionType] = Set(FS, BQ, ES, KAFKA, JDBC, GCPLOG)
 }

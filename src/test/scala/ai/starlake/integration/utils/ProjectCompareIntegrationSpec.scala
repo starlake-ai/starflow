@@ -7,8 +7,7 @@ class ProjectCompareIntegrationSpec extends BigQueryIntegrationSpecBase {
   override def beforeAll(): Unit = {}
   if (sys.env.getOrElse("SL_REMOTE_TEST", "false").toBoolean) {
 
-    "Native Bigquery Transform" should "succeed" in {
-      ignore
+    "Native Bigquery Transform" should "succeed" ignore {
       withEnvs(
         "SL_ENV"                                        -> "BQ",
         "SL_SPARK_SQL_SOURCES_PARTITION_OVERWRITE_MODE" -> "DYNAMIC",

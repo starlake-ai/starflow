@@ -1,12 +1,57 @@
 
 # Release notes
 
-# 1.5.15-SNAPSHOT:
+# 1.5.16-SNAPSHOT:
 __Improvement__:
-- **Upgrade self-update**: The `starlake upgrade` command now downloads the latest starlake script from GitHub before proceeding, ensuring the upgrade logic itself is always up to date.
-- **CI**: Trigger `snapshot-docker-no-tests` workflow automatically after `snapshot-jar-only` succeeds.
+- **Quack server CLI**: New `starlake quack` command — host a Quack DuckDB query server (exposing a DuckLake without sharing object-storage credentials with clients) directly from the Starlake JVM. Actions: `serve` (foreground), `start` (detached daemon, state under `$SL_ROOT/.quack/`), `stop`, `list`, `stop-all`. Companion client-side recognition: connections whose `preActions` contain a `'quack:` ATTACH are pooled distinctly so multiple Quack clients don't collide. Token + bind + port can be set via connection options (`quackServerToken`, `quackBind`, `quackPort`) or per invocation (`--token`, `--bind`, `--port`). Default bind is `127.0.0.1` — use a reverse proxy with TLS to expose on the network.
+- **Upgrade DuckDB**: Update DuckDB JDBC to 1.5.3 so the `quack` extension is available as a core extension (it lives in `core_nightly` on 1.5.2).
+
+__Breaking change__:
+- **`gizmosql stop` flag rename**: `--process-name` is removed. Use `--connection <name>` instead (the process identifier was always equal to the connection name). Scripts using the old flag must be updated.
 
 __Bug fix__:
+- **Domain lookup with shared physical schema**: Fix nine sites that picked the first logical domain matching a `finalName` and scoped table search inside it, silently dropping tables owned by sibling logical domains renamed to the same physical schema. Affected paths: `AutoTask.attDdl` (missing DDL mappings in temp tables), `SchemaHandler.findTableNames`, `AutoTaskDependencies.enrichItemWithColumns`, three sites in `TaskViewDependency` (schedule, parent-table resolution, writeStrategy/freshness), `ExtractBigQuerySchema` (incomplete exclusion list), and `FreshnessJob` (skipped freshness probes). In `AclDependencies`, `.toMap` on a key keyed by `finalName` collapsed duplicates — replaced with `groupBy` merge so RLS/ACL data from all matching domains is preserved.
+
+# 1.5.15-SNAPSHOT:
+__Improvement__:
+- **REST API extraction**: New generic REST API extractor for SaaS/API data ingestion. Two new CLI commands: `extract-rest-schema` (infer table schemas from API responses) and `extract-rest-data` (fetch data to CSV or JSON Lines files). Features:
+  - **Authentication**: Bearer token, API key, HTTP Basic, OAuth2 client credentials with automatic token refresh.
+  - **Pagination**: Offset, cursor, Link header (RFC 5988), and page number strategies.
+  - **Rate limiting**: Configurable requests-per-second throttling.
+  - **Retry**: Configurable max retries with exponential backoff on 429/5xx/connection failures.
+  - **Timeouts**: Configurable connect and read timeouts.
+  - **Proxy**: HTTP proxy support with optional authentication.
+  - **TLS/mTLS**: Custom CA certificates, client certificates, and insecure mode for development.
+  - **Incremental extraction**: Track last extracted value via `incrementalField`, state persisted between runs.
+  - **Resume on failure**: `--resume` flag skips already-extracted pages and continues from where extraction failed.
+  - **Parent-child endpoints**: `{parent.fieldName}` path placeholders for dependent sub-resources.
+  - **JSON Lines output**: `--outputFormat jsonl` preserves nested JSON structure without flattening.
+  - **Response validation**: `errorPath` detects error indicators in HTTP 200 responses.
+  - **XML support**: Automatic XML-to-JSON conversion for APIs returning `application/xml`.
+  - **Schema evolution detection**: Warns when API response structure changes between extractions.
+  - **Conditional requests**: ETag/If-Modified-Since support to skip unchanged data.
+  - New `REST` connection type (aliases: `HTTP`, `API`).
+  - JSON schema validation for `restAPI` extract configurations.
+  - Sample extraction configs for 7 SaaS APIs: Slack, Jira, Twitter/X, Salesforce, HubSpot, Stripe, and GitHub (`samples/api/`).
+- **Preload sentinel path**: The `preload` command now supports `--notReadySentinel <path>` to write a zero-byte marker file when no files match the expected pattern. Orchestrators can check for the sentinel to distinguish "not ready, retry later" (sentinel present, exit 0) from actual failures (no sentinel, non-zero exit). Supports local filesystem, GCS, S3, and HDFS paths.
+- **BigQuery data branching**: New `SL_DATA_BRANCH` support for BigQuery native API. When set (via env var or connection options), writes are redirected to a branch dataset using BigQuery zero-copy `CLONE`, mirroring starlakeJDBC's branching mechanism. Works for both Spark and native execution paths on transforms and loads.
+- **BigQuery JDBC branching**: Extend starlakeJDBC driver wrapping to BigQuery JDBC connections (alongside existing Snowflake support).
+- **Upgrade DuckDB**: Update DuckDB to 1.5.2.0.
+- **Upgrade starlakeJDBC**: Update starlakeJDBC to 0.7.
+- **CI PySpark support**: Install Python 3.12 and PySpark 3.5.8 in CI workflows for PySpark-based tests.
+- **Upgrade self-update**: The `starlake upgrade` command now downloads the latest starlake script from GitHub before proceeding, ensuring the upgrade logic itself is always up to date.
+- **CI**: Trigger `snapshot-docker-no-tests` workflow automatically after `snapshot-jar-only` succeeds.
+- **Bootstrap DuckDB extensions**: Install configured DuckDB extensions in `datasets/duckdb.db` during project bootstrap.
+- **Site ReactFlow toggle attributes**: Add show/hide attributes button on lineage and relation diagrams. When hidden, edges fall back to table-level connections.
+- **Site transform relations attributes**: Populate columns in transform relation diagrams from load table schemas and task attribute definitions.
+
+__Bug fix__:
+- **Spark BigQuery location**: Pass all connection options (including `location`) to the Spark BigQuery reader, ensuring queries run in the correct region instead of defaulting to US.
+- **Spark BigQuery materializationDataset**: Fix `application.sl.yml` to respect `SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET` env var via Jinja, preventing region mismatch when the hardcoded dataset is in a different location.
+- **Spark BigQuery validation**: Fail early with a clear error if `materializationDataset` is not configured before running a BigQuery SQL query via Spark.
+- **DuckDB JDBC sink**: Use parquet intermediate format for all DuckDB write paths.
+- **DuckDB secret_directory**: Fix setting order to prevent Secret Manager error.
+- **PySpark to BigQuery sink**: Fix `SparkAutoTask.buildDataFrameToSink()` to support PySpark tasks sinking to non-FS targets (BigQuery, JDBC). Previously PySpark tasks only worked with filesystem sinks.
 - **DuckDB on Windows**: Fix JDBC URL parsing and path normalization for Windows paths.
 
 # 1.5.14:

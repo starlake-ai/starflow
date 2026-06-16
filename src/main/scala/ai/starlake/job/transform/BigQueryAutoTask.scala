@@ -21,7 +21,8 @@ import com.google.cloud.bigquery.{
   Field,
   LegacySQLTypeName,
   Schema as BQSchema,
-  StandardTableDefinition
+  StandardTableDefinition,
+  TableId
 }
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.DataFrame
@@ -103,7 +104,7 @@ class BigQueryAutoTask(
       )
   }
 
-  private lazy val targetTableId = BigQueryJobBase
+  private lazy val originalTargetTableId = BigQueryJobBase
     .extractProjectDatasetAndTable(
       taskDesc.getDatabase(),
       taskDesc.domain,
@@ -111,7 +112,49 @@ class BigQueryAutoTask(
       sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
     )
 
+  private lazy val dataBranch: Option[String] = schemaHandler.dataBranch(sinkConnection.options)
+
+  private lazy val targetTableId: TableId =
+    dataBranch match {
+      case Some(branchName) =>
+        val projectId = Option(originalTargetTableId.getProject)
+          .getOrElse(
+            BigQueryJobBase.projectId(sinkOptions.get("projectId"), taskDesc.getDatabase())
+          )
+        val branchTableId = TableId.of(projectId, branchName, originalTargetTableId.getTable)
+        logger.info(
+          s"Branch '$branchName' active: redirecting target from ${BigQueryJobBase
+              .getBqTableForNative(originalTargetTableId)} to ${BigQueryJobBase.getBqTableForNative(branchTableId)}"
+        )
+        branchTableId
+      case None => originalTargetTableId
+    }
+
   lazy val fullTableName: String = BigQueryJobBase.getBqTableForNative(targetTableId)
+
+  /** Prepare branch context with source table cloning. Called from runBQ() when the SQL is
+    * available.
+    */
+  private def prepareBranchContext(sql: String): Option[BigQueryBranchHandler.BranchContext] =
+    dataBranch.map { branchName =>
+      val bqService = BigQueryJobBase.bigquery(
+        connectionRef = Some(sinkConnectionRef),
+        accessToken = accessToken,
+        outputDatabase = taskDesc.getDatabase()
+      )
+      val location = sinkConnection.options.getOrElse(
+        "location",
+        throw new Exception("location is required for BigQuery branching")
+      )
+      BigQueryBranchHandler.prepareBranch(
+        branchName,
+        bqService,
+        originalTargetTableId,
+        sql,
+        location,
+        sinkConnection.options
+      )
+    }
 
   override def tableExists: Boolean = {
     val tableExists =
@@ -443,7 +486,15 @@ class BigQueryAutoTask(
                     )
                     val allSql =
                       preSql.mkString(";\n") + mainSql() + ";\n" + postSql.mkString(";\n")
-                    saveNative(config, allSql)
+                    val finalSql = prepareBranchContext(taskDesc.getSql()) match {
+                      case Some(ctx) =>
+                        logger.info(
+                          s"Branch: rewriting native SQL with ${ctx.tableMappings.size} table mappings"
+                        )
+                        BigQueryBranchHandler.rewriteSql(allSql, ctx.tableMappings)
+                      case None => allSql
+                    }
+                    saveNative(config, finalSql)
                 }
             }
 
@@ -583,20 +634,24 @@ class BigQueryAutoTask(
   }
 
   private def saveDF(source: DataFrame, shard: Option[String]): Try[JobResult] = {
+    val sparkTargetTableId = BigQueryJobBase.extractProjectDatasetAndTable(
+      this.taskDesc.getDatabase(),
+      targetTableId.getDataset,
+      targetTableId.getTable + shard
+        .map("_" + StringUtils.replaceNonAlphanumericWithUnderscore(_))
+        .getOrElse(""),
+      sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
+    )
+    dataBranch.foreach { branchName =>
+      logger.info(
+        s"Branch '$branchName' active: Spark writing to ${BigQueryJobBase.getBqTableForNative(sparkTargetTableId)}"
+      )
+    }
     val bqLoadConfig =
       BigQueryLoadConfig(
         connectionRef = Some(sinkConnectionRef),
         source = Right(source),
-        outputTableId = Some(
-          BigQueryJobBase.extractProjectDatasetAndTable(
-            this.taskDesc.getDatabase(),
-            this.taskDesc.domain,
-            this.taskDesc.table + shard
-              .map("_" + StringUtils.replaceNonAlphanumericWithUnderscore(_))
-              .getOrElse(""),
-            sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
-          )
-        ),
+        outputTableId = Some(sparkTargetTableId),
         sourceFormat = settings.appConfig.defaultWriteFormat,
         createDisposition = createDisposition,
         writeDisposition = writeDisposition,
@@ -772,7 +827,7 @@ class BigQueryAutoTask(
         val tableId =
           BigQueryJobBase.extractProjectDatasetAndTable(
             taskDesc.getDatabase(),
-            taskDesc.domain,
+            targetTableId.getDataset,
             taskDesc.table + sharding.map("_" + _).getOrElse(""),
             sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
           )

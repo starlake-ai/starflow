@@ -262,6 +262,20 @@ class BigQueryNativeJob(
             formatOptions.build()
           case Format.JSON | Format.JSON_FLAT =>
             FormatOptions.json()
+          case Format.POSITION =>
+            // Load each line of the fixed-width file as a single VARCHAR column named `value`.
+            // The field delimiter is set to SOH () — a control char vanishingly unlikely
+            // to appear in fixed-width data, so each line becomes one field.
+            // Quote is disabled (empty) so any `"` in the data is treated as a literal byte.
+            val formatOptions = CsvOptions.newBuilder
+              .setFieldDelimiter("")
+              .setQuote("")
+              .setAllowJaggedRows(true)
+              .setAllowQuotedNewLines(false)
+              .setEncoding(metadata.resolveEncoding())
+            if (metadata.resolveWithHeader())
+              formatOptions.setSkipLeadingRows(1)
+            formatOptions.build()
           case _ =>
             throw new Exception(s"Should never happen: ${metadata.resolveFormat()}")
         }

@@ -707,13 +707,46 @@ case class SchemaInfo(
     */
   def buildSecondStepSqlSelectOnLoad(
     table: String,
-    jdbcEngine: Option[JdbcEngine] = None
+    jdbcEngine: Option[JdbcEngine] = None,
+    ddlTypesByAttribute: Map[String, String] = Map.empty
   ): String = {
     val attributeQuote = jdbcEngine.map(_.quote).getOrElse("")
     val (scriptAttributes, transformAttributes) =
       scriptAndTransformAttributes().partition(_.script.nonEmpty)
 
     val simpleAttributes = exceptIgnoreScriptAndTransformAttributes()
+
+    val isPosition = this.metadata.map(_.resolveFormat()).contains(Format.POSITION)
+
+    // SAFE_CAST is BigQuery-specific. POSITION is currently only enabled for BigQuery
+    // native; if added to other engines later, this should become engine-aware
+    // (Snowflake/DuckDB use TRY_CAST). A no-op cast to STRING is skipped for readability.
+    def isStringLikeDdlType(ddlType: String): Boolean = {
+      val upper = ddlType.trim.toUpperCase
+      upper == "STRING" || upper.startsWith("VARCHAR") || upper.startsWith("CHAR") ||
+      upper == "TEXT"
+    }
+
+    // For POSITION, the first-step temp table has a single VARCHAR column named `value`
+    // containing the raw fixed-width line. We project each attribute by slicing it,
+    // optionally wrapped in SAFE_CAST so a short/malformed line yields NULL on bad cells
+    // instead of failing the entire INSERT.
+    def positionProjection(field: TableAttribute): String = {
+      val pos = field.position.getOrElse(
+        throw new IllegalStateException(
+          s"Attribute ${field.name} has POSITION format but no position set"
+        )
+      )
+      val length = pos.last - pos.first + 1
+      val raw = s"SUBSTR(value, ${pos.first + 1}, $length)"
+      val finalName = s"$attributeQuote${field.getFinalName()}$attributeQuote"
+      ddlTypesByAttribute.get(field.name) match {
+        case Some(ddlType) if !isStringLikeDdlType(ddlType) =>
+          s"SAFE_CAST($raw AS $ddlType) as $finalName"
+        case _ =>
+          s"$raw as $finalName"
+      }
+    }
 
     val sqlScripts: List[String] = scriptAttributes.map { scriptField =>
       val script =
@@ -735,17 +768,23 @@ case class SchemaInfo(
       s"$attributeQuote${transformField.getFinalName()}$attributeQuote"
     }
 
-    val sqlSimple = simpleAttributes.map { field =>
-      s"$attributeQuote${field.getName()}$attributeQuote as $attributeQuote${field.getFinalName()}$attributeQuote"
-    }
+    val sqlSimple =
+      if (isPosition) simpleAttributes.map(positionProjection)
+      else
+        simpleAttributes.map { field =>
+          s"$attributeQuote${field.getName()}$attributeQuote as $attributeQuote${field.getFinalName()}$attributeQuote"
+        }
 
     val sqlFinalSimple = simpleAttributes.map { field =>
       s"$attributeQuote${field.getFinalName()}$attributeQuote"
     }
 
-    val sqlIgnored = ignoredAttributes().map { field =>
-      s"$attributeQuote${field.getName()}$attributeQuote"
-    }
+    val sqlIgnored =
+      if (isPosition) ignoredAttributes().map(positionProjection)
+      else
+        ignoredAttributes().map { field =>
+          s"$attributeQuote${field.getName()}$attributeQuote"
+        }
 
     val allFinalAttributes =
       (sqlFinalSimple ++ sqlScriptsFinalName ++ sqlTransformsFinalName).mkString(", ")

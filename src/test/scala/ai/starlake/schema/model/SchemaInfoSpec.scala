@@ -24,6 +24,7 @@ import ai.starlake.TestHelper
 import ai.starlake.schema.model.Severity._
 
 import java.io.{InputStream, StringWriter}
+import java.util.regex.Pattern
 
 class SchemaInfoSpec extends TestHelper {
 
@@ -138,6 +139,68 @@ class SchemaInfoSpec extends TestHelper {
       optionalAttribute.checkValidity(schemaHandler, "ignore", new SchemaInfo()) shouldBe Right(
         true
       )
+    }
+
+    "buildSecondStepSqlSelectOnLoad" should "emit SUBSTR projections for POSITION format" in {
+      val schema = SchemaInfo(
+        name = "account",
+        pattern = Pattern.compile(".*TBL\\.POS"),
+        metadata = Some(Metadata(format = Some(Format.POSITION))),
+        attributes = List(
+          TableAttribute(name = "code0", `type` = "string", position = Some(Position(0, 0))),
+          TableAttribute(name = "code1", `type` = "string", position = Some(Position(1, 4)))
+        ),
+        filter = Some("SUBSTR(value, 1, 2) = '01'")
+      )
+      val sql = schema.buildSecondStepSqlSelectOnLoad("tmp_table").replaceAll("\\s+", " ")
+      sql should include("SUBSTR(value, 1, 1) as code0")
+      sql should include("SUBSTR(value, 2, 4) as code1")
+      sql should include("FROM tmp_table")
+      sql should include("WHERE SUBSTR(value, 1, 2) = '01'")
+    }
+
+    "buildSecondStepSqlSelectOnLoad" should "leave DSV projections unchanged" in {
+      val schema = SchemaInfo(
+        name = "account",
+        pattern = Pattern.compile(".*\\.csv"),
+        metadata = Some(Metadata(format = Some(Format.DSV))),
+        attributes = List(
+          TableAttribute(name = "code0", `type` = "string"),
+          TableAttribute(name = "code1", `type` = "string")
+        )
+      )
+      val sql = schema.buildSecondStepSqlSelectOnLoad("tmp_table").replaceAll("\\s+", " ")
+      sql should include("code0 as code0")
+      sql should include("code1 as code1")
+      sql should not include "SUBSTR"
+    }
+
+    "buildSecondStepSqlSelectOnLoad" should "wrap POSITION projections in SAFE_CAST for non-string DDL types" in {
+      val schema = SchemaInfo(
+        name = "account",
+        pattern = Pattern.compile(".*TBL\\.POS"),
+        metadata = Some(Metadata(format = Some(Format.POSITION))),
+        attributes = List(
+          TableAttribute(name = "code", `type` = "byte", position = Some(Position(0, 0))),
+          TableAttribute(name = "amount", `type` = "long", position = Some(Position(1, 10))),
+          TableAttribute(name = "label", `type` = "string", position = Some(Position(11, 30)))
+        )
+      )
+      val sql = schema
+        .buildSecondStepSqlSelectOnLoad(
+          "tmp_table",
+          ddlTypesByAttribute = Map(
+            "code"   -> "INT64",
+            "amount" -> "INT64",
+            "label"  -> "STRING"
+          )
+        )
+        .replaceAll("\\s+", " ")
+      sql should include("SAFE_CAST(SUBSTR(value, 1, 1) AS INT64) as code")
+      sql should include("SAFE_CAST(SUBSTR(value, 2, 10) AS INT64) as amount")
+      // STRING is a no-op cast — skipped to keep SQL readable
+      sql should include("SUBSTR(value, 12, 20) as label")
+      sql should not include "SAFE_CAST(SUBSTR(value, 12, 20) AS STRING)"
     }
   }
 }

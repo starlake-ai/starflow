@@ -1,0 +1,145 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://api.stripe.com/v1"
+    auth:
+      type: bearer
+      token: "{{STRIPE_SECRET_KEY}}"        # sk_live_... or sk_test_...
+    rateLimit:
+      requestsPerSecond: 25                 # Stripe: 100 read req/s in live, 25 in test
+    retry:
+      maxRetries: 5
+      initialBackoffMs: 1000
+    endpoints:
+      # Customers
+      - path: "/customers"
+        as: "customer"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"      # Last item's id
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "created"
+
+      # Charges
+      - path: "/charges"
+        as: "charge"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "created"
+
+      # Payment Intents
+      - path: "/payment_intents"
+        as: "payment_intent"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "created"
+
+      # Subscriptions
+      - path: "/subscriptions"
+        as: "subscription"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+          status: "all"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+
+      # Invoices
+      - path: "/invoices"
+        as: "invoice"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "created"
+
+      # Products
+      - path: "/products"
+        as: "product"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+
+      # Prices
+      - path: "/prices"
+        as: "price"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+
+      # Refunds
+      - path: "/refunds"
+        as: "refund"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "created"
+
+      # Balance Transactions
+      - path: "/balance_transactions"
+        as: "balance_transaction"
+        domain: "stripe"
+        responsePath: "$.data"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "starting_after"
+          cursorPath: "$.data[-1:].id"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "created"

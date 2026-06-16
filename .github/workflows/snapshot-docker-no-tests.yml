@@ -7,12 +7,6 @@ on:
     workflows: ["snapshot-jar-only"]
     types:
       - completed
-  pull_request_target:
-    types: [closed]
-    branches:
-      - master
-      - branch-*
-
 jobs:
   snapshot:
     if: >-
@@ -76,18 +70,6 @@ jobs:
         run: gcloud info
       - name: Publish Snapshot on Sonatype Spark 3 for scala 2.13
         run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g" RELEASE_SONATYPE=true GITHUB_TOKEN=${{ env.GITHUB_TOKEN }} SONATYPE_USERNAME=${{ secrets.SONATYPE_USERNAME }} SONATYPE_PASSWORD=${{ secrets.SONATYPE_PASSWORD }} sbt ++2.13 update clean compile publish
-      - name: trigger-starlake-api
-        if: ${{ success() }}
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.STARLAKE_API_TOKEN }} # Fine-grained GitHub PAT that was saved as repository secret
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-            owner: 'starlake-ai',
-            repo: 'starlake-api',
-            workflow_id: 'docker-hub-amd-arm.yml',
-            ref: 'main'})
-
   docker-build:
     needs: snapshot
     name: Snapshot Docker Image

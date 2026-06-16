@@ -1,0 +1,101 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://{{SF_INSTANCE}}.salesforce.com/services/data/v61.0"
+    auth:
+      type: oauth2_client_credentials
+      tokenUrl: "https://{{SF_INSTANCE}}.salesforce.com/services/oauth2/token"
+      clientId: "{{SF_CLIENT_ID}}"
+      clientSecret: "{{SF_CLIENT_SECRET}}"
+    headers:
+      Accept: "application/json"
+    rateLimit:
+      requestsPerSecond: 10
+    retry:
+      maxRetries: 5
+      initialBackoffMs: 2000
+    endpoints:
+      # Accounts
+      - path: "/query"
+        as: "account"
+        domain: "salesforce"
+        responsePath: "$.records"
+        queryParams:
+          q: "SELECT Id, Name, Type, Industry, BillingCity, BillingCountry, Website, Phone, CreatedDate, LastModifiedDate FROM Account ORDER BY LastModifiedDate DESC"
+        pagination:
+          type: cursor
+          cursorParam: ""                   # Not used — Salesforce uses nextRecordsUrl
+          cursorPath: "$.nextRecordsUrl"
+          pageSize: 2000
+        incrementalField: "LastModifiedDate"
+        errorPath: "$.error"
+
+      # Contacts
+      - path: "/query"
+        as: "contact"
+        domain: "salesforce"
+        responsePath: "$.records"
+        queryParams:
+          q: "SELECT Id, FirstName, LastName, Email, Phone, AccountId, Title, Department, CreatedDate, LastModifiedDate FROM Contact ORDER BY LastModifiedDate DESC"
+        pagination:
+          type: cursor
+          cursorParam: ""
+          cursorPath: "$.nextRecordsUrl"
+          pageSize: 2000
+        incrementalField: "LastModifiedDate"
+
+      # Opportunities
+      - path: "/query"
+        as: "opportunity"
+        domain: "salesforce"
+        responsePath: "$.records"
+        queryParams:
+          q: "SELECT Id, Name, StageName, Amount, CloseDate, AccountId, OwnerId, Probability, CreatedDate, LastModifiedDate FROM Opportunity ORDER BY LastModifiedDate DESC"
+        pagination:
+          type: cursor
+          cursorParam: ""
+          cursorPath: "$.nextRecordsUrl"
+          pageSize: 2000
+        incrementalField: "LastModifiedDate"
+
+      # Leads
+      - path: "/query"
+        as: "lead"
+        domain: "salesforce"
+        responsePath: "$.records"
+        queryParams:
+          q: "SELECT Id, FirstName, LastName, Email, Company, Status, LeadSource, CreatedDate, LastModifiedDate FROM Lead ORDER BY LastModifiedDate DESC"
+        pagination:
+          type: cursor
+          cursorParam: ""
+          cursorPath: "$.nextRecordsUrl"
+          pageSize: 2000
+        incrementalField: "LastModifiedDate"
+
+      # Tasks (activities)
+      - path: "/query"
+        as: "task"
+        domain: "salesforce"
+        responsePath: "$.records"
+        queryParams:
+          q: "SELECT Id, Subject, Status, Priority, WhoId, WhatId, OwnerId, ActivityDate, CreatedDate, LastModifiedDate FROM Task WHERE LastModifiedDate >= LAST_N_DAYS:30 ORDER BY LastModifiedDate DESC"
+        pagination:
+          type: cursor
+          cursorParam: ""
+          cursorPath: "$.nextRecordsUrl"
+          pageSize: 2000
+        incrementalField: "LastModifiedDate"
+
+      # Cases
+      - path: "/query"
+        as: "case"
+        domain: "salesforce"
+        responsePath: "$.records"
+        queryParams:
+          q: "SELECT Id, CaseNumber, Subject, Status, Priority, Origin, AccountId, ContactId, OwnerId, CreatedDate, LastModifiedDate FROM Case ORDER BY LastModifiedDate DESC"
+        pagination:
+          type: cursor
+          cursorParam: ""
+          cursorPath: "$.nextRecordsUrl"
+          pageSize: 2000
+        incrementalField: "LastModifiedDate"

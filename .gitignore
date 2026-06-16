@@ -180,3 +180,6 @@ deps.txt
 src/main/scala/ignore
 samples/any-engine/datasets
 samples/starbake/datasets
+
+.claude/
+.vscode/

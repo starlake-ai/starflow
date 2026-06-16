@@ -165,7 +165,7 @@ trait IngestionJob
   }
 
   private val nativeSupportedFormats: Map[String, Set[Format]] = Map(
-    "bigquery"  -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT),
+    "bigquery"  -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION),
     "duckdb"    -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT),
     "snowflake" -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.XML, Format.PARQUET),
     "redshift"  -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT)

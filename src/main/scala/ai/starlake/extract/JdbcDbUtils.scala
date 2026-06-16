@@ -38,10 +38,16 @@ object JdbcDbUtils extends LazyLogging {
     "user",
     "password",
     "preActions",
+    "postActions",
     "DATA_PATH",
     "SL_DATA_PATH",
     "storageType",
-    "quoteIdentifiers"
+    "quoteIdentifiers",
+    "quote",
+    "separator",
+    "quackServerToken",
+    "quackBind",
+    "quackPort"
   )
   def removeNonDuckDbProperties(
     options: Map[String, String]
@@ -184,6 +190,49 @@ object JdbcDbUtils extends LazyLogging {
     preActions: Option[String]
   ): Unit = {
     val isDucklake = preActions.getOrElse("").contains("ducklake:")
+
+    // Set home_directory and secret_directory BEFORE any S3 settings or extension loading
+    // that might trigger the secret manager (after which secret_directory cannot be changed)
+    Try {
+      connectionOptions
+        .get("SL_DUCKDB_HOME")
+        .orElse(Option(System.getenv("SL_DUCKDB_HOME")))
+        .foreach { duckdbHome =>
+          logger.info(s"Setting duckdb_home")
+          Using.resource(connection.createStatement()) { duckdbHomeStatement =>
+            val escapedHome = escapeSqlStringLiteral(duckdbHome)
+            duckdbHomeStatement.execute(s"SET home_directory='$escapedHome'")
+          }
+        }
+    } match {
+      case Failure(e) => logger.warn("Failed to set duckdb home_directory", e)
+      case _          =>
+    }
+
+    Try {
+      connectionOptions
+        .get("SL_DUCKDB_SECRET_HOME")
+        .orElse(Option(System.getenv("SL_DUCKDB_SECRET_HOME")))
+        .orElse(connectionOptions.get("SL_DUCKDB_HOME"))
+        .orElse(Option(System.getenv("SL_DUCKDB_HOME")))
+        .foreach { duckdbSecretDir =>
+          logger.info(s"Setting duckdb secret directory")
+          Using.resource(connection.createStatement()) { statement =>
+            val escapedDir = escapeSqlStringLiteral(duckdbSecretDir)
+            statement.execute(s"SET secret_directory='$escapedDir'")
+          }
+        }
+    } match {
+      case Failure(e) =>
+        val msg = e.getMessage
+        if (msg != null && msg.contains("Secret Manager")) {
+          logger.info(s"DuckDB secret_directory already configured, skipping: ${msg}")
+        } else {
+          logger.warn("Failed to set duckdb secret_directory", e)
+        }
+      case _ =>
+    }
+
     connectionOptions.get("fs.s3a.endpoint").foreach { endpoint =>
       logger.info(s"Setting s3a.endpoint")
       Using.resource(connection.createStatement()) { endpointStatement =>
@@ -217,40 +266,6 @@ object JdbcDbUtils extends LazyLogging {
           endpointStatement.execute(s"SET s3_secret_access_key='$escapedSecretKey'")
         }
       }
-    }
-
-    Try {
-      connectionOptions
-        .get("SL_DUCKDB_HOME")
-        .orElse(Option(System.getenv("SL_DUCKDB_HOME")))
-        .foreach { duckdbHome =>
-          logger.info(s"Setting duckdb_home")
-          Using.resource(connection.createStatement()) { duckdbHomeStatement =>
-            val escapedHome = escapeSqlStringLiteral(duckdbHome)
-            duckdbHomeStatement.execute(s"SET home_directory='$escapedHome'")
-          }
-        }
-    } match {
-      case Failure(e) => logger.warn("Failed to set duckdb home_directory", e)
-      case _          =>
-    }
-
-    Try {
-      connectionOptions
-        .get("SL_DUCKDB_SECRET_HOME")
-        .orElse(Option(System.getenv("SL_DUCKDB_SECRET_HOME")))
-        .orElse(connectionOptions.get("SL_DUCKDB_HOME"))
-        .orElse(Option(System.getenv("SL_DUCKDB_HOME")))
-        .foreach { duckdbSecretDir =>
-          logger.info(s"Setting duckdb secret directory")
-          Using.resource(connection.createStatement()) { statement =>
-            val escapedDir = escapeSqlStringLiteral(duckdbSecretDir)
-            statement.execute(s"SET secret_directory='$escapedDir'")
-          }
-        }
-    } match {
-      case Failure(e) => logger.warn("Failed to set duckdb secret_directory", e)
-      case _          =>
     }
 
     preActions.foreach { actions =>

@@ -261,7 +261,13 @@ class JdbcAutoTask(
                     throw e
                 }
               }
-              val tablePath = new Path(s"${settings.appConfig.datasets}/tmp/${fullTableName}")
+              val timestamp = java.time.LocalDateTime
+                .now()
+                .format(
+                  java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+                )
+              val tablePath =
+                new Path(s"${settings.appConfig.datasets}/tmp/${fullTableName}_$timestamp")
 
               if (settings.storageHandler().exists(tablePath)) {
                 settings.storageHandler().delete(tablePath)

@@ -1,0 +1,96 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://api.hubapi.com"
+    auth:
+      type: bearer
+      token: "{{HUBSPOT_ACCESS_TOKEN}}"     # Private app access token
+    rateLimit:
+      requestsPerSecond: 5                  # HubSpot: 100 req/10s for private apps
+    retry:
+      maxRetries: 5
+      initialBackoffMs: 2000
+    endpoints:
+      # Companies
+      - path: "/crm/v3/objects/companies"
+        as: "company"
+        domain: "hubspot"
+        responsePath: "$.results"
+        queryParams:
+          limit: "100"
+          properties: "name,domain,industry,city,country,createdate,hs_lastmodifieddate,numberofemployees,annualrevenue"
+        pagination:
+          type: cursor
+          cursorParam: "after"
+          cursorPath: "$.paging.next.after"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "properties.hs_lastmodifieddate"
+
+      # Contacts
+      - path: "/crm/v3/objects/contacts"
+        as: "contact"
+        domain: "hubspot"
+        responsePath: "$.results"
+        queryParams:
+          limit: "100"
+          properties: "firstname,lastname,email,phone,company,jobtitle,lifecyclestage,createdate,lastmodifieddate"
+        pagination:
+          type: cursor
+          cursorParam: "after"
+          cursorPath: "$.paging.next.after"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "properties.lastmodifieddate"
+
+      # Deals
+      - path: "/crm/v3/objects/deals"
+        as: "deal"
+        domain: "hubspot"
+        responsePath: "$.results"
+        queryParams:
+          limit: "100"
+          properties: "dealname,amount,dealstage,pipeline,closedate,createdate,hs_lastmodifieddate,hubspot_owner_id"
+        pagination:
+          type: cursor
+          cursorParam: "after"
+          cursorPath: "$.paging.next.after"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "properties.hs_lastmodifieddate"
+
+      # Tickets
+      - path: "/crm/v3/objects/tickets"
+        as: "ticket"
+        domain: "hubspot"
+        responsePath: "$.results"
+        queryParams:
+          limit: "100"
+          properties: "subject,content,hs_pipeline,hs_pipeline_stage,hs_ticket_priority,createdate,hs_lastmodifieddate"
+        pagination:
+          type: cursor
+          cursorParam: "after"
+          cursorPath: "$.paging.next.after"
+          pageSize: 100
+          limitParam: "limit"
+        incrementalField: "properties.hs_lastmodifieddate"
+
+      # Owners (users)
+      - path: "/crm/v3/owners"
+        as: "owner"
+        domain: "hubspot"
+        responsePath: "$.results"
+        queryParams:
+          limit: "100"
+        pagination:
+          type: cursor
+          cursorParam: "after"
+          cursorPath: "$.paging.next.after"
+          pageSize: 100
+          limitParam: "limit"
+
+      # Pipelines
+      - path: "/crm/v3/pipelines/deals"
+        as: "deal_pipeline"
+        domain: "hubspot"
+        responsePath: "$.results"

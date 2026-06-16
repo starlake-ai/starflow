@@ -1,0 +1,168 @@
+name: release-docker
+# Build a Docker image from the latest starlake release on Maven Central.
+# No build/test needed — just downloads the released JAR and packages it.
+on:
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    name: Release Docker Image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
+    permissions:
+      packages: write
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout
+        id: vcs
+        uses: actions/checkout@v4
+
+      - name: Fetch latest release version from Maven Central
+        id: maven
+        run: |
+          LATEST_VERSION=$(curl -s 'https://repo1.maven.org/maven2/ai/starlake/starlake-core_2.13/maven-metadata.xml' \
+            | grep '<release>' | sed -E 's/.*<release>(.*)<\/release>.*/\1/')
+          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+            echo "Failed to fetch latest version from Maven Central"
+            exit 1
+          fi
+          echo "SL_VERSION=${LATEST_VERSION}" >> $GITHUB_OUTPUT
+          echo "Resolved latest release version: ${LATEST_VERSION}"
+
+      - name: Env
+        run: |
+          cat .versions >> $GITHUB_ENV
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          SL_VERSION=${{ steps.maven.outputs.SL_VERSION }}
+          echo "SL_VERSION=${SL_VERSION}" >> $GITHUB_ENV
+          SL_MAJOR_MINOR_VERSION=$(echo "${SL_VERSION}" | cut -d'.' -f1-2)
+          echo "SL_MAJOR_MINOR_VERSION=${SL_MAJOR_MINOR_VERSION}" >> $GITHUB_ENV
+          SL_MAJOR_VERSION=$(echo "${SL_VERSION}" | cut -d'.' -f1)
+          echo "SL_MAJOR_VERSION=${SL_MAJOR_VERSION}" >> $GITHUB_ENV
+          REGISTRY_IMAGE=starlakeai/starlake
+          echo "REGISTRY_IMAGE=${REGISTRY_IMAGE}" >> $GITHUB_ENV
+          REGISTRY_IMAGE_LATEST=${REGISTRY_IMAGE}:${SL_VERSION}
+          echo "REGISTRY_IMAGE_LATEST=${REGISTRY_IMAGE_LATEST}" >> $GITHUB_ENV
+          echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_ENV
+          echo "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Prepare
+        run: |
+          # Override version.sbt with the Maven Central release version
+          echo 'ThisBuild / version := "${{ env.SL_VERSION }}"' > version.sbt
+          ./scripts/docker-prepare.sh
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          labels: |
+            org.opencontainers.image.vendor=starlakeai
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=starlakeai/starlake-${{ env.SL_MAJOR_MINOR_VERSION }}
+            org.opencontainers.image.description="A declarative text based tool that enables analysts and engineers to extract, load, transform and orchestrate their data pipelines."
+            org.opencontainers.image.url=https://starlake.ai
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.SL_VERSION }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.SL_MAJOR_MINOR_VERSION }}
+            type=semver,pattern={{major}},value=${{ env.SL_MAJOR_VERSION }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Build and export to Docker
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: "./distrib/docker"
+          tags: ${{ env.REGISTRY_IMAGE }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            VCS_REF=${{ steps.vcs.outputs.commit }}
+            SL_VERSION=${{ env.SL_VERSION }}
+          platforms: linux/${{ matrix.platform }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-latest
+    needs:
+      - docker-build
+    steps:
+      - name: Checkout
+        id: vcs
+        uses: actions/checkout@v4
+
+      - name: Fetch latest release version from Maven Central
+        id: maven
+        run: |
+          LATEST_VERSION=$(curl -s 'https://repo1.maven.org/maven2/ai/starlake/starlake-core_2.13/maven-metadata.xml' \
+            | grep '<release>' | sed -E 's/.*<release>(.*)<\/release>.*/\1/')
+          echo "SL_VERSION=${LATEST_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Env
+        run: |
+          SL_VERSION=${{ steps.maven.outputs.SL_VERSION }}
+          echo "SL_VERSION=${SL_VERSION}" >> $GITHUB_ENV
+          REGISTRY_IMAGE=starlakeai/starlake
+          echo "REGISTRY_IMAGE=${REGISTRY_IMAGE}" >> $GITHUB_ENV
+          echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_ENV
+          echo "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY_IMAGE }}:${{ env.SL_VERSION }} \
+            -t ${{ env.REGISTRY_IMAGE }}:latest \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ env.SL_VERSION }}

@@ -4,13 +4,25 @@ import ai.starlake.config.Settings.ConnectionInfo
 import ai.starlake.config.{Settings, SparkSessionBuilder}
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.schema.model.ConnectionType
+import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.*
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
 
 import scala.util.Try
 
+/** Used exclusively by the `cnxload` CLI command to load files (Parquet/CSV/JSON) into a JDBC
+  * table. Call chain: CLI `starlake cnxload` → JdbcConnectionLoadCmd.run() →
+  * IngestionWorkflow.jdbcload() → SparkJdbcWriter.run()
+  *
+  * This is NOT part of the ingestion or transform pipelines which use DuckDbNativeLoader,
+  * SparkAutoTask.sinkToJDBC() or JdbcAutoTask.runJDBC() instead.
+  *
+  * For DuckDB targets, data is written to a temporary Parquet file first, then loaded into DuckDB
+  * via `INSERT INTO ... SELECT ... FROM '*.parquet'` to avoid Spark JDBC driver issues.
+  */
 class SparkJdbcWriter(
   cliConfig: JdbcConnectionLoadConfig
 )(implicit val settings: Settings)
@@ -104,27 +116,46 @@ class SparkJdbcWriter(
         }
       }
       val isDuckDb = url.contains("jdbc:duckdb")
-      // table exists at this point
-      val format = if (isDuckDb) "starlake-duckdb" else "jdbc"
-      val dfw = sourceDF.write
-        .format(format)
-        .option("dbtable", cliConfig.outputDomainAndTableName)
-
-      val dialect = SparkUtils.dialectForUrl(url)
 
       // We always append to the table to keep the schema (Spark loose the schema otherwise). We truncate using the truncate query option
       JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), jdbcOptions) { conn =>
         JdbcDbUtils.truncateTable(conn, cliConfig.outputDomainAndTableName)
       }
-      val dfToSave =
+
+      if (isDuckDb) {
+        val timestamp = java.time.LocalDateTime
+          .now()
+          .format(
+            java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+          )
+        val tablePath =
+          new Path(
+            s"${settings.appConfig.datasets}/tmp/${cliConfig.outputDomainAndTableName}_$timestamp"
+          )
+        if (settings.storageHandler().exists(tablePath)) {
+          settings.storageHandler().delete(tablePath)
+        }
+        val colNames = sourceDF.schema.fields.map(_.name)
+        sourceDF.write
+          .format("parquet")
+          .mode(SaveMode.Overwrite)
+          .save(tablePath.toString)
+        JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), jdbcOptions) { conn =>
+          val quotedColumns = SQLUtils.quoteCols(colNames.toList, "\"")
+          val sql =
+            s"INSERT INTO ${cliConfig.outputDomainAndTableName} SELECT ${quotedColumns.mkString(",")} FROM '$tablePath/*.parquet'"
+          JdbcDbUtils.executeUpdate(sql, conn)
+        }
+        settings.storageHandler().delete(tablePath)
+      } else {
+        val dfw = sourceDF.write
+          .format("jdbc")
+          .option("dbtable", cliConfig.outputDomainAndTableName)
         dfw
           .mode(SaveMode.Append)
           .options(cliConfig.options)
-
-      if (isDuckDb)
-        dfToSave.option("numPartitions", "1").save()
-      else
-        dfToSave.save()
+          .save()
+      }
 
       logger.info(
         s"JDBC save done to table ${cliConfig.outputDomainAndTableName} at ${cliConfig.options}"

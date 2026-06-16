@@ -1,0 +1,107 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://api.github.com"
+    auth:
+      type: bearer
+      token: "{{GITHUB_TOKEN}}"             # Personal Access Token or Fine-Grained Token
+    headers:
+      Accept: "application/vnd.github+json"
+      X-GitHub-Api-Version: "2022-11-28"
+    rateLimit:
+      requestsPerSecond: 5                  # GitHub: 5000 req/hour authenticated
+    retry:
+      maxRetries: 3
+    endpoints:
+      # Repositories for an organization
+      - path: "/orgs/{{GITHUB_ORG}}/repos"
+        as: "repository"
+        domain: "github"
+        queryParams:
+          per_page: "100"
+          sort: "updated"
+          direction: "desc"
+        pagination:
+          type: link_header
+          pageSize: 100
+          limitParam: "per_page"
+        incrementalField: "updated_at"
+
+      # Pull Requests (per repository, parent-child)
+      - path: "/orgs/{{GITHUB_ORG}}/repos"
+        as: "_repo_for_prs"
+        domain: "github"
+        queryParams:
+          per_page: "100"
+          sort: "updated"
+        pagination:
+          type: link_header
+          pageSize: 100
+          limitParam: "per_page"
+        excludeFields:
+          - ".*"
+        children:
+          - path: "/repos/{{GITHUB_ORG}}/{parent.name}/pulls"
+            as: "pull_request"
+            domain: "github"
+            queryParams:
+              state: "all"
+              per_page: "100"
+              sort: "updated"
+              direction: "desc"
+            pagination:
+              type: link_header
+              pageSize: 100
+              limitParam: "per_page"
+            incrementalField: "updated_at"
+
+      # Issues (per repository, parent-child)
+      - path: "/orgs/{{GITHUB_ORG}}/repos"
+        as: "_repo_for_issues"
+        domain: "github"
+        queryParams:
+          per_page: "100"
+          sort: "updated"
+        pagination:
+          type: link_header
+          pageSize: 100
+          limitParam: "per_page"
+        excludeFields:
+          - ".*"
+        children:
+          - path: "/repos/{{GITHUB_ORG}}/{parent.name}/issues"
+            as: "issue"
+            domain: "github"
+            queryParams:
+              state: "all"
+              per_page: "100"
+              sort: "updated"
+              direction: "desc"
+              filter: "all"
+            pagination:
+              type: link_header
+              pageSize: 100
+              limitParam: "per_page"
+            incrementalField: "updated_at"
+
+      # Organization members
+      - path: "/orgs/{{GITHUB_ORG}}/members"
+        as: "member"
+        domain: "github"
+        queryParams:
+          per_page: "100"
+        pagination:
+          type: link_header
+          pageSize: 100
+          limitParam: "per_page"
+
+      # Organization teams
+      - path: "/orgs/{{GITHUB_ORG}}/teams"
+        as: "team"
+        domain: "github"
+        queryParams:
+          per_page: "100"
+        pagination:
+          type: link_header
+          pageSize: 100
+          limitParam: "per_page"

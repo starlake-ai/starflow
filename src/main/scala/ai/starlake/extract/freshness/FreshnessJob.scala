@@ -167,73 +167,74 @@ object FreshnessJob extends LazyLogging {
 //    }
     val domains = schemaHandler.domains()
     val tablesFreshnessStatuses = tables.flatMap { case (dsInfo, tableInfos) =>
-      val domain = domains.find(_.finalName.equalsIgnoreCase(dsInfo))
-      domain match {
-        case None => Nil
-        case Some(domain) =>
-          tableInfos.flatMap { case (tableName, lastModifiedTime) =>
-            val table = domain.tables.find(_.finalName.equalsIgnoreCase(tableName))
-            table match {
-              case None => None
-              case Some(table) =>
-                val freshness =
-                  table.metadata.flatMap(_.freshness).orElse(domain.metadata.flatMap(_.freshness))
-                freshness match {
-                  case None =>
-                    Some(
-                      FreshnessStatus(
-                        domain.finalName,
-                        table.finalName,
-                        new Timestamp(lastModifiedTime),
-                        new Timestamp(System.currentTimeMillis()),
-                        0L,
-                        "INFO",
-                        schemaHandler.getDatabase(domain).getOrElse(""),
-                        mySettings.appConfig.tenant
-                      )
+      val matchingDomains = domains.filter(_.finalName.equalsIgnoreCase(dsInfo))
+      if (matchingDomains.isEmpty) Nil
+      else {
+        tableInfos.flatMap { case (tableName, lastModifiedTime) =>
+          val domainAndTable = matchingDomains.iterator
+            .flatMap(d => d.tables.find(_.finalName.equalsIgnoreCase(tableName)).map(t => (d, t)))
+            .nextOption()
+          domainAndTable match {
+            case None => None
+            case Some((domain, table)) =>
+              val freshness =
+                table.metadata.flatMap(_.freshness).orElse(domain.metadata.flatMap(_.freshness))
+              freshness match {
+                case None =>
+                  Some(
+                    FreshnessStatus(
+                      domain.finalName,
+                      table.finalName,
+                      new Timestamp(lastModifiedTime),
+                      new Timestamp(System.currentTimeMillis()),
+                      0L,
+                      "INFO",
+                      schemaHandler.getDatabase(domain).getOrElse(""),
+                      mySettings.appConfig.tenant
+                    )
+                  )
+
+                case Some(freshness) =>
+                  val errorStatus =
+                    getFreshnessStatus(
+                      schemaHandler.getDatabase(domain).getOrElse(""),
+                      domain.finalName,
+                      table.finalName,
+                      lastModifiedTime,
+                      freshness.error,
+                      "ERROR",
+                      "TABLE"
                     )
 
-                  case Some(freshness) =>
-                    val errorStatus =
+                  errorStatus
+                    .orElse {
                       getFreshnessStatus(
                         schemaHandler.getDatabase(domain).getOrElse(""),
                         domain.finalName,
                         table.finalName,
                         lastModifiedTime,
-                        freshness.error,
-                        "ERROR",
+                        freshness.warn,
+                        "WARN",
                         "TABLE"
                       )
-
-                    errorStatus
-                      .orElse {
-                        getFreshnessStatus(
-                          schemaHandler.getDatabase(domain).getOrElse(""),
+                    }
+                    .orElse(
+                      Some(
+                        FreshnessStatus(
                           domain.finalName,
                           table.finalName,
-                          lastModifiedTime,
-                          freshness.warn,
-                          "WARN",
-                          "TABLE"
-                        )
-                      }
-                      .orElse(
-                        Some(
-                          FreshnessStatus(
-                            domain.finalName,
-                            table.finalName,
-                            new Timestamp(lastModifiedTime),
-                            new Timestamp(System.currentTimeMillis()),
-                            0L,
-                            "INFO",
-                            schemaHandler.getDatabase(domain).getOrElse(""),
-                            mySettings.appConfig.tenant
-                          )
+                          new Timestamp(lastModifiedTime),
+                          new Timestamp(System.currentTimeMillis()),
+                          0L,
+                          "INFO",
+                          schemaHandler.getDatabase(domain).getOrElse(""),
+                          mySettings.appConfig.tenant
                         )
                       )
-                }
-            }
+                    )
+              }
           }
+        }
       }
     }
     val tasks = schemaHandler.tasks()

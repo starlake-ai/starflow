@@ -35,12 +35,7 @@ object GizmoCmd extends Cmd[GizmoConfig] with StrictLogging {
         .opt[String]("connection")
         .action((x, c) => c.copy(connectionName = Some(x)))
         .optional()
-        .text("Connection name (required for start)"),
-      builder
-        .opt[String]("process-name")
-        .action((x, c) => c.copy(processName = Some(x)))
-        .optional()
-        .text("Process name (required for stop)"),
+        .text("Connection name (required for start and stop)"),
       builder
         .opt[Int]("port")
         .action((x, c) => c.copy(port = Some(x)))
@@ -144,13 +139,12 @@ object GizmoCmd extends Cmd[GizmoConfig] with StrictLogging {
     val request = StartProcessRequest(processName, connectionName, finalPort, envVars)
     client.startProcess(request) match {
       case Right(response) =>
-        logger.info(s"Started process ${response.processName} on port ${response.port}")
+        logger.info(s"Started process for connection ${response.connectionName} on port ${response.port}")
         Success(
           GizmoJobResult(
-            List("processName", "connectionName", "port", "message"),
+            List("connectionName", "port", "message"),
             List(
               List(
-                response.processName,
                 response.connectionName,
                 response.port.toString,
                 response.message
@@ -167,17 +161,17 @@ object GizmoCmd extends Cmd[GizmoConfig] with StrictLogging {
     config: GizmoConfig,
     client: GizmoProcessClient
   ): Try[JobResult] = {
-    val processName = config.processName.getOrElse {
+    val processName = config.connectionName.getOrElse {
       return Failure(
-        new IllegalArgumentException("--process-name is required for the stop action")
+        new IllegalArgumentException("--connection is required for the stop action")
       )
     }
     client.stopProcess(StopProcessRequest(processName)) match {
       case Right(response) =>
-        logger.info(s"Stopped process ${response.processName}: ${response.message}")
+        logger.info(s"Stopped process for connection ${response.processName}: ${response.message}")
         Success(
           GizmoJobResult(
-            List("processName", "message"),
+            List("connectionName", "message"),
             List(List(response.processName, response.message))
           )
         )
@@ -196,7 +190,7 @@ object GizmoCmd extends Cmd[GizmoConfig] with StrictLogging {
         }
         Success(
           GizmoJobResult(
-            List("processName", "port", "pid", "status"),
+            List("connectionName", "port", "pid", "status"),
             rows
           )
         )
@@ -213,7 +207,7 @@ object GizmoCmd extends Cmd[GizmoConfig] with StrictLogging {
         logger.info(s"Stopped all processes: ${response.message}")
         Success(
           GizmoJobResult(
-            List("processName", "message"),
+            List("connectionName", "message"),
             List(List(response.processName, response.message))
           )
         )

@@ -3,12 +3,6 @@ name: snapshot-docker
 #  and trigger the API workflow.
 on:
   workflow_dispatch:
-  pull_request:
-    types: [closed]
-    branches:
-      - master
-      - branch-*
-
 jobs:
   snapshot:
     runs-on: ubuntu-latest
@@ -70,18 +64,6 @@ jobs:
         run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g" SL_SPARK_LOCAL_CATALOG=delta SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET=SL_BQ_TEST_DS SL_ACCESS_POLICIES_PROJECT_ID=${{ env.GCP_PROJECT }} TEMPORARY_GCS_BUCKET=${{ env.TEMPORARY_GCS_BUCKET }} SL_REMOTE_TEST=true RELEASE_SONATYPE=true GITHUB_TOKEN=${{ env.GITHUB_TOKEN }} SONATYPE_USERNAME=${{ secrets.SONATYPE_USERNAME }} SONATYPE_PASSWORD=${{ secrets.SONATYPE_PASSWORD }} sbt ++2.13 test
       - name: Publish Snapshot on Sonatype Spark 3 for scala 2.13
         run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g" RELEASE_SONATYPE=true GITHUB_TOKEN=${{ env.GITHUB_TOKEN }} SONATYPE_USERNAME=${{ secrets.SONATYPE_USERNAME }} SONATYPE_PASSWORD=${{ secrets.SONATYPE_PASSWORD }} sbt ++2.13 update clean compile publish
-      - name: trigger-starlake-api
-        if: ${{ success() }}
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.STARLAKE_API_TOKEN }} # Fine-grained GitHub PAT that was saved as repository secret
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-            owner: 'starlake-ai',
-            repo: 'starlake-api',
-            workflow_id: 'docker-hub.yml',
-            ref: 'main'})
-
   docker-build:
     needs: snapshot
     name: Snapshot Docker Image

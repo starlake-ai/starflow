@@ -1,0 +1,70 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://api.x.com/2"
+    auth:
+      type: bearer
+      token: "{{TWITTER_BEARER_TOKEN}}"     # Twitter/X API v2 Bearer Token
+    rateLimit:
+      requestsPerSecond: 1                  # X API is heavily rate-limited
+    retry:
+      maxRetries: 5
+      initialBackoffMs: 5000                # Longer backoff for 429s
+      maxBackoffMs: 60000
+    timeout:
+      readTimeoutMs: 30000
+    endpoints:
+      # Search recent tweets
+      - path: "/tweets/search/recent"
+        as: "tweet"
+        domain: "twitter"
+        responsePath: "$.data"
+        queryParams:
+          query: "{{TWITTER_SEARCH_QUERY}}"
+          max_results: "100"
+          "tweet.fields": "id,text,author_id,created_at,public_metrics,lang,source"
+          expansions: "author_id"
+        pagination:
+          type: cursor
+          cursorParam: "next_token"
+          cursorPath: "$.meta.next_token"
+          pageSize: 100
+        incrementalField: "created_at"
+        errorPath: "$.errors"
+
+      # Get user by username
+      - path: "/users/by/username/{{TWITTER_USERNAME}}"
+        as: "user_profile"
+        domain: "twitter"
+        responsePath: "$.data"
+        queryParams:
+          "user.fields": "id,name,username,description,created_at,public_metrics,verified,profile_image_url"
+
+      # Get user tweets (timeline)
+      - path: "/users/{{TWITTER_USER_ID}}/tweets"
+        as: "user_tweet"
+        domain: "twitter"
+        responsePath: "$.data"
+        queryParams:
+          max_results: "100"
+          "tweet.fields": "id,text,created_at,public_metrics,lang"
+        pagination:
+          type: cursor
+          cursorParam: "pagination_token"
+          cursorPath: "$.meta.next_token"
+          pageSize: 100
+        incrementalField: "created_at"
+
+      # Get user followers
+      - path: "/users/{{TWITTER_USER_ID}}/followers"
+        as: "follower"
+        domain: "twitter"
+        responsePath: "$.data"
+        queryParams:
+          max_results: "100"
+          "user.fields": "id,name,username,created_at,public_metrics"
+        pagination:
+          type: cursor
+          cursorParam: "pagination_token"
+          cursorPath: "$.meta.next_token"
+          pageSize: 100

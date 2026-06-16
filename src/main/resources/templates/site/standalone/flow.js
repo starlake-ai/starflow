@@ -81,21 +81,25 @@ const NODE_WIDTH = 260;
 const BASE_HEIGHT = 44;
 const ROW_HEIGHT = 40;
 
-function layoutElements(nodes, edges, direction) {
+function layoutElements(nodes, edges, direction, showColumns) {
+  const sc = showColumns !== false;
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(function () { return {}; });
   g.setGraph({ rankdir: direction, nodesep: 60, ranksep: 80 });
   const isH = direction === 'LR';
   nodes.forEach(function (n) {
-    g.setNode(n.id, { width: NODE_WIDTH, height: BASE_HEIGHT + (n.data.columns || []).length * ROW_HEIGHT });
+    const colCount = sc ? (n.data.columns || []).length : 0;
+    g.setNode(n.id, { width: NODE_WIDTH, height: BASE_HEIGHT + colCount * ROW_HEIGHT });
   });
   edges.forEach(function (e) { g.setEdge(e.source, e.target); });
   dagre.layout(g);
   return nodes.map(function (n) {
     const pos = g.node(n.id);
-    const nh = BASE_HEIGHT + (n.data.columns || []).length * ROW_HEIGHT;
+    const colCount = sc ? (n.data.columns || []).length : 0;
+    const nh = BASE_HEIGHT + colCount * ROW_HEIGHT;
     return {
       ...n,
+      data: { ...n.data, _showColumns: sc },
       targetPosition: isH ? Position.Left : Position.Top,
       sourcePosition: isH ? Position.Right : Position.Bottom,
       position: { x: pos.x - NODE_WIDTH / 2, y: pos.y - nh / 2 }
@@ -118,7 +122,8 @@ function ModelNode({ data }) {
   const dt = data.displayType || 'table';
   const headerBg = data.isTask ? '#7b1fa2' : (TYPE_COLORS[dt] || '#1565c0');
   const icon = TYPE_ICONS[dt] || '';
-  const hasCols = (data.columns || []).length > 0;
+  const sc = data._showColumns !== false;
+  const hasCols = sc && (data.columns || []).length > 0;
   const isH = data._direction !== 'TB';
   const tgtPos = isH ? Position.Left : Position.Top;
   const srcPos = isH ? Position.Right : Position.Bottom;
@@ -157,8 +162,8 @@ function ModelNode({ data }) {
         ),
       h(Handle, { type: 'source', position: srcPos, id: data.id, style: hdrSrc })
     ),
-    /* columns */
-    ...(data.columns || []).map(function (col, i) {
+    /* columns (only when visible) */
+    ...(sc ? (data.columns || []) : []).map(function (col, i) {
       return h('div', {
         key: col.id,
         style: { padding: '5px 10px', borderTop: '1px solid #eee', background: i % 2 === 0 ? '#fff' : '#fafafa', position: 'relative', height: ROW_HEIGHT, display: 'flex', alignItems: 'center', gap: 4 }
@@ -177,26 +182,29 @@ function ModelNode({ data }) {
 const nodeTypes = { model: ModelNode };
 
 /* ---- Inner Flow component (needs useReactFlow) ---- */
-function FlowInner({ models, connections, direction }) {
+function FlowInner({ models, connections, direction, showColumns }) {
   const rf = useReactFlow();
   const initNodes = useMemo(function () {
     return models.map(function (m, i) { return { id: m.id, position: { x: i * 300, y: 0 }, data: { ...m, _direction: direction }, type: 'model' }; });
   }, [models, direction]);
-  const initEdges = useMemo(function () {
+  const buildEdges = function (sc) {
     return connections.map(function (c, i) {
-      return { id: 'e' + i, source: c.sourceTable || '', target: c.targetTable || '', sourceHandle: c.source || '', targetHandle: c.target || '', animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#1565c0' } };
+      var sh = sc ? (c.source || '') : (c.sourceTable || '');
+      var th = sc ? (c.target || '') : (c.targetTable || '');
+      return { id: 'e' + i, source: c.sourceTable || '', target: c.targetTable || '', sourceHandle: sh, targetHandle: th, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#1565c0' } };
     });
-  }, [connections]);
-  const laid = useMemo(function () { return layoutElements(initNodes, initEdges, direction); }, [initNodes, initEdges, direction]);
+  };
+  const initEdges = useMemo(function () { return buildEdges(showColumns); }, [connections, showColumns]);
+  const laid = useMemo(function () { return layoutElements(initNodes, initEdges, direction, showColumns); }, [initNodes, initEdges, direction, showColumns]);
   const [nodes, setNodes, onNodesChange] = useNodesState(laid);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges);
 
   useEffect(function () {
-    const n = layoutElements(initNodes, initEdges, direction);
+    const n = layoutElements(initNodes, initEdges, direction, showColumns);
     setNodes(n);
-    setEdges(initEdges);
+    setEdges(buildEdges(showColumns));
     setTimeout(function () { rf.fitView({ padding: 0.15 }); }, 50);
-  }, [direction, initNodes, initEdges]);
+  }, [direction, showColumns, initNodes, initEdges]);
 
   return h(ReactFlow, {
     nodes, edges, onNodesChange, onEdgesChange, nodeTypes,
@@ -208,19 +216,34 @@ function FlowInner({ models, connections, direction }) {
 }
 
 /* ---- Public mount function ---- */
-export function mountFlow(container, rawData, format, initialDirection) {
+export function mountFlow(container, rawData, format, initialDirection, attributeMode) {
   const diagram = format === 'lineage' ? convertLineageFormat(rawData) : convertTableDepsFormat(rawData);
   const { models, connections } = enrichSchema(diagram);
   if (models.length === 0) {
     container.innerHTML = '<p style="padding:20px;color:#616161;font-style:italic">No data available.</p>';
     return;
   }
+  /* attributeMode: 'toggle' (default) = show toggle button, 'hidden' = always hide, 'visible' = always show */
+  const mode = attributeMode || 'toggle';
 
   function App() {
     var dir = initialDirection || 'LR';
+    var ref = useState(mode !== 'hidden');
+    var showColumns = ref[0];
+    var setShowColumns = ref[1];
+    var canToggle = mode === 'toggle';
+    var btnStyle = {
+      position: 'absolute', top: 8, right: 8, zIndex: 10,
+      padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+      background: showColumns ? '#1565c0' : '#fff',
+      color: showColumns ? '#fff' : '#1565c0',
+      border: '1px solid #1565c0', borderRadius: 4
+    };
     return h(ReactFlowProvider, null,
-      h('div', { style: { width: '100%', height: 600, border: '1px solid #e0e0e0', borderRadius: 8, background: '#fafafa' } },
-        h(FlowInner, { models, connections, direction: dir })
+      h('div', { style: { width: '100%', height: 600, border: '1px solid #e0e0e0', borderRadius: 8, background: '#fafafa', position: 'relative' } },
+        canToggle && h('button', { style: btnStyle, onClick: function () { setShowColumns(!showColumns); } },
+          showColumns ? 'Hide Attributes' : 'Show Attributes'),
+        h(FlowInner, { models, connections, direction: dir, showColumns: showColumns })
       )
     );
   }

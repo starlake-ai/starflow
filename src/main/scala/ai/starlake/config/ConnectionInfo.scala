@@ -33,6 +33,28 @@ final case class ConnectionInfo(
   def isDucklake(): Boolean =
     this.options.getOrElse("preActions", "").contains("'ducklake:")
 
+  @JsonIgnore
+  def isQuackClient(): Boolean = {
+    val pa = this.options.getOrElse("preActions", "")
+    pa.contains("'quack:") && !pa.contains("'ducklake:quack:")
+  }
+
+  @JsonIgnore
+  def isQuackServer(): Boolean =
+    this.options.contains("quackServerToken")
+
+  @JsonIgnore
+  def quackBind(): String =
+    this.options.getOrElse("quackBind", "127.0.0.1")
+
+  @JsonIgnore
+  def quackPort(): Int =
+    this.options.get("quackPort").map(_.toInt).getOrElse(9494)
+
+  @JsonIgnore
+  def quackServerToken(): Option[String] =
+    this.options.get("quackServerToken")
+
   def withEncryptedPassword(
     secretKey: String
   ): ConnectionInfo = {

@@ -54,6 +54,17 @@ trait PreLoadCmd extends Cmd[PreLoadConfig] with LazyLogging {
         .action((x, c) => c.copy(globalAckFilePath = Some(x)))
         .text("Global ack file path"),
       builder
+        .opt[String]("notReadySentinel")
+        .optional()
+        .action((x, c) => c.copy(notReadySentinel = Some(x)))
+        .text(
+          "If set, a zero-byte marker is written at this path when the pre-load decides files are not yet ready. " +
+          "Used by orchestrators to distinguish 'not ready, retry later' from real failures. " +
+          "In this mode, 'not ready' outcomes always exit with code 0 (the sentinel is the signal), " +
+          "while real exceptions still exit non-zero. " +
+          "Supports any StorageHandler-compatible URI (gs://, s3://, file://, hdfs://)."
+        ),
+      builder
         .opt[Map[String, String]]("options")
         .valueName("k1=v1,k2=v2...")
         .optional()
@@ -66,27 +77,48 @@ trait PreLoadCmd extends Cmd[PreLoadConfig] with LazyLogging {
   def parse(args: Seq[String]): Option[PreLoadConfig] =
     OParser.parse(parser, args, PreLoadConfig(domain = ""))
 
+  private def writeSentinelIfRequested(
+    config: PreLoadConfig
+  )(implicit settings: Settings): Unit = {
+    config.notReadySentinel.foreach { sentinelPath =>
+      val path = new Path(sentinelPath)
+      settings.storageHandler().touchz(path) match {
+        case scala.util.Success(_) =>
+          logger.info(s"Wrote not-ready sentinel to $sentinelPath")
+        case scala.util.Failure(e) =>
+          // Best-effort: never mask the real pre-load outcome if sentinel write fails.
+          logger.warn(s"Failed to write not-ready sentinel to $sentinelPath: ${e.getMessage}")
+      }
+    }
+  }
+
   override def run(config: PreLoadConfig, schemaHandler: SchemaHandler)(implicit
     settings: Settings
   ): Try[JobResult] = {
     logger.info(
       s"Pre loading domain ${config.domain} with strategy ${config.strategy.map(_.value).getOrElse("none")}"
     )
+    val sentinelMode = config.notReadySentinel.isDefined
 
     config.strategy match {
       case Some(PreLoadStrategy.Imported) =>
-        schemaHandler.domains(List(config.domain), config.tables.toList).headOption match {
-          case Some(domain) =>
-            Success(
+        val result =
+          schemaHandler.domains(List(config.domain), config.tables.toList).headOption match {
+            case Some(domain) =>
               PreLoadJobResult(
                 config.domain,
                 workflow(schemaHandler)
                   .listStageFiles(domain, dryMode = true)
                   .map(kv => kv._1 -> kv._2.size)
               )
-            )
-          case None =>
-            Success(PreLoadJobResult(config.domain, config.tables.map(t => t -> 0).toMap))
+            case None =>
+              PreLoadJobResult(config.domain, config.tables.map(t => t -> 0).toMap)
+          }
+        if (result.empty && sentinelMode) {
+          writeSentinelIfRequested(config)
+          Success(EmptyJobResult)
+        } else {
+          Success(result)
         }
 
       case Some(PreLoadStrategy.Pending) =>
@@ -101,8 +133,13 @@ trait PreLoadCmd extends Cmd[PreLoadConfig] with LazyLogging {
                 table -> 0
             }
           }
-
-        Success(PreLoadJobResult(config.domain, results.toMap))
+        val result = PreLoadJobResult(config.domain, results.toMap)
+        if (result.empty && sentinelMode) {
+          writeSentinelIfRequested(config)
+          Success(EmptyJobResult)
+        } else {
+          Success(result)
+        }
 
       case Some(PreLoadStrategy.Ack) =>
         config.globalAckFilePath match {
@@ -112,11 +149,19 @@ trait PreLoadCmd extends Cmd[PreLoadConfig] with LazyLogging {
             if (storageHandler.exists(path)) {
               storageHandler.delete(path)
               Success(EmptyJobResult)
+            } else if (sentinelMode) {
+              writeSentinelIfRequested(config)
+              Success(EmptyJobResult)
             } else {
               Success(FailedJobResult)
             }
           case None =>
-            Success(FailedJobResult)
+            if (sentinelMode) {
+              writeSentinelIfRequested(config)
+              Success(EmptyJobResult)
+            } else {
+              Success(FailedJobResult)
+            }
         }
 
       case _ =>

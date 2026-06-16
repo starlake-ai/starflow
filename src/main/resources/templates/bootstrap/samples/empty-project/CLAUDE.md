@@ -10,6 +10,8 @@ This is a **Starlake** data pipeline project ("StarBake") — a sample bakery an
 
 Before running any `starlake` command, verify the CLI is available in the PATH by running `starlake --version`. If not found, ask the user for the path to the starlake executable. On Windows, the command is `starlake.cmd` instead of `starlake`.
 
+The CLI is silent by default — exit code 0 with empty stdout means success, not a no-op. To see execution logs (SQL run, write strategies, audit inserts), prefix the command with `SL_LOG_LEVEL=info`.
+
 ## Key Commands
 
 ```bash
@@ -27,6 +29,8 @@ starlake load --domains starbake --tables products --files "${SL_ROOT}/datasets/
 starlake transform --name starbake_analytics.customer_purchase_history
 starlake transform --name starbake_analytics.order_items_analysis
 starlake transform --name starbake_kpis.overall_kpis
+# Run a transformation (use --recursive to execute all upstream dependencies in order)
+starlake transform --name starbake_kpis.overall_kpis --recursive
 
 # Auto-infer schema and load
 starlake autoload

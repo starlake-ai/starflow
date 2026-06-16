@@ -38,16 +38,17 @@ jobs:
 #        run: SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET=SL_BQ_TEST_DS TEMPORARY_GCS_BUCKET=starlake-app SL_REMOTE_TEST=true sbt coverage test coverageReport
       - name: Release Spark 2/3
         run: echo SBT_OPTS="-Xss4M -Xms1g -Xmx4g" SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET=SL_BQ_TEST_DS TEMPORARY_GCS_BUCKET=${{ env.TEMPORARY_GCS_BUCKET }} GITHUB_TOKEN=${{ env.GITHUB_TOKEN }} SONATYPE_USERNAME=${{ secrets.SONATYPE_USERNAME }} SONATYPE_PASSWORD=${{ secrets.SONATYPE_PASSWORD }}  SL_REMOTE_TEST=true RELEASE_SONATYPE=true sbt 'release with-defaults'
-      - name: Trigger starlake-api workflow
-        if: ${{ success() }} 
-        id: trigger-starlake-api
-        env:
-          GITHUB_TOKEN: ${{ secrets.STARLAKE_API_TOKEN }}
-        run: |
-          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
-          -H "Accept: application/vnd.github+json" \
-          https://api.github.com/repos/starlake-ai/starlake-api/actions/workflows/docker-hub.yml/dispatches \
-          -d '{"ref":"main"}'
+      - name: trigger-starlake-api
+        if: ${{ success() }}
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.STARLAKE_API_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+            owner: 'starlake-ai',
+            repo: 'starlake-api',
+            workflow_id: 'docker-hub-amd-arm.yml',
+            ref: 'main'})
   docker-hub:
     needs: release
     name: Release Docker Image

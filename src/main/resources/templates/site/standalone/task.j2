@@ -267,11 +267,11 @@
   {% if lineageJson or aclJson or relationsJson %}
   <script type="module">
   import { mountFlow } from '{{ basePath }}flow.js';
-  function lazyMount(tabName, rootId, dataId, format) {
+  function lazyMount(tabName, rootId, dataId, format, attributeMode) {
     var data = JSON.parse(document.getElementById(dataId).textContent);
     var root = document.getElementById(rootId);
     var mounted = false;
-    function doMount() { if (!mounted) { mounted = true; setTimeout(function() { mountFlow(root, data, format, 'LR'); }, 0); } }
+    function doMount() { if (!mounted) { mounted = true; setTimeout(function() { mountFlow(root, data, format, 'LR', attributeMode); }, 0); } }
     document.querySelector('[data-tab="'+tabName+'"]').addEventListener('click', doMount);
     if (document.querySelector('.tab-btn[data-tab="'+tabName+'"]').classList.contains('active')) doMount();
   }

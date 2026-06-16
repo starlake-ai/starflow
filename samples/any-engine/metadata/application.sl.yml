@@ -80,6 +80,7 @@ application:
         class: org.apache.spark.sql.delta.storage.LocalLogStore
     datasource:
       bigquery:
-        materializationDataset: "BQ_TEST_DS"
+        materializationDataset: "{{ SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET | default('BQ_TEST_DS') }}"
+        location: "europe-west1"
 
   connectionRef: "{{ myConnectionRef }}"

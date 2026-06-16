@@ -1,0 +1,73 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://{{JIRA_DOMAIN}}.atlassian.net/rest/api/3"
+    auth:
+      type: basic
+      username: "{{JIRA_EMAIL}}"
+      password: "{{JIRA_API_TOKEN}}"       # Atlassian API token (not password)
+    headers:
+      Accept: "application/json"
+    rateLimit:
+      requestsPerSecond: 5
+    retry:
+      maxRetries: 3
+    endpoints:
+      # All projects
+      - path: "/project/search"
+        as: "project"
+        domain: "jira"
+        responsePath: "$.values"
+        pagination:
+          type: offset
+          limitParam: "maxResults"
+          offsetParam: "startAt"
+          pageSize: 50
+
+      # All issues with JQL filtering
+      - path: "/search"
+        as: "issue"
+        domain: "jira"
+        responsePath: "$.issues"
+        queryParams:
+          jql: "updated >= -30d ORDER BY updated DESC"
+          fields: "summary,status,assignee,reporter,priority,created,updated,issuetype,project,labels"
+        pagination:
+          type: offset
+          limitParam: "maxResults"
+          offsetParam: "startAt"
+          pageSize: 100
+        incrementalField: "fields.updated"
+        errorPath: "$.errorMessages"
+
+      # Users
+      - path: "/users/search"
+        as: "user"
+        domain: "jira"
+        pagination:
+          type: offset
+          limitParam: "maxResults"
+          offsetParam: "startAt"
+          pageSize: 50
+
+      # Issue worklogs (parent-child: for each issue, fetch worklogs)
+      - path: "/search"
+        as: "_issue_for_worklogs"
+        domain: "jira"
+        responsePath: "$.issues"
+        queryParams:
+          jql: "worklogDate >= -7d"
+          fields: "key"
+          maxResults: "100"
+        excludeFields:
+          - ".*"
+        children:
+          - path: "/issue/{parent.key}/worklog"
+            as: "worklog"
+            domain: "jira"
+            responsePath: "$.worklogs"
+            pagination:
+              type: offset
+              limitParam: "maxResults"
+              offsetParam: "startAt"
+              pageSize: 100

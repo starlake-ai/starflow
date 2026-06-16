@@ -1,11 +1,13 @@
 package ai.starlake.job.bootstrap
 
 import ai.starlake.config.{DatasetArea, Settings}
+import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.utils.{JarUtil, StarlakeNotFoundException, YamlSerde}
 import better.files.File
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.typesafe.scalalogging.LazyLogging
 
+import java.sql.DriverManager
 import scala.io.Source
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
@@ -196,6 +198,32 @@ object Bootstrap extends LazyLogging {
               }
             }
             appFile.overwrite(YamlSerde.mapper.writeValueAsString(rootNode))
+          }
+        }
+
+        // Install DuckDB extensions if configured
+        val duckdbExtensions = effectiveSettings.appConfig.duckdbExtensions
+        if (duckdbExtensions.nonEmpty) {
+          val datasetsDir = File(rootFolder, "datasets")
+          datasetsDir.createDirectories()
+          val dbPath = datasetsDir / "duckdb.db"
+          try {
+            val conn = DriverManager.getConnection(s"jdbc:duckdb:${dbPath.pathAsString}")
+            try {
+              duckdbExtensions.split(",").foreach { extension =>
+                val ext = extension.trim
+                if (ext.nonEmpty) {
+                  logger.info(s"Installing DuckDB extension: $ext")
+                  JdbcDbUtils.execute(s"INSTALL $ext;", conn)
+                  JdbcDbUtils.execute(s"LOAD $ext;", conn)
+                }
+              }
+            } finally {
+              conn.close()
+            }
+          } catch {
+            case e: Exception =>
+              logger.warn(s"Failed to install DuckDB extensions: ${e.getMessage}")
           }
         }
       }

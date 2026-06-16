@@ -1,0 +1,33 @@
+name: Test BQ Transform
+on:
+  workflow_dispatch:
+
+jobs:
+  test-bq-transform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Env
+        run: |
+          echo "GCP_PROJECT=${{ secrets.GCP_PROJECT }}" >>  $GITHUB_ENV
+          echo "TEMPORARY_GCS_BUCKET=${{ secrets.TEMPORARY_GCS_BUCKET }}" >>  $GITHUB_ENV
+      - uses: actions/checkout@v4
+      - name: Install graphviz
+        run: sudo apt-get install -y graphviz
+      - name: Set up Temurin 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Setup sbt launcher
+        uses: sbt/setup-sbt@v1
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v1'
+        with:
+          credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT }}'
+          cleanup_credentials: false
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v1'
+      - name: Use gcloud CLI
+        run: gcloud info
+      - name: Run TransformIntegrationBQSpec
+        run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g" SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET=SL_BQ_TEST_DS SL_ACCESS_POLICIES_PROJECT_ID=${{ env.GCP_PROJECT }} TEMPORARY_GCS_BUCKET=${{ env.TEMPORARY_GCS_BUCKET }} SL_REMOTE_TEST=true sbt '++2.13 testOnly *TransformIntegrationBQSpec*'

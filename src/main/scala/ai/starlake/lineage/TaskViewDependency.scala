@@ -92,15 +92,24 @@ object TaskViewDependency extends LazyLogging {
         case 2 | 3 =>
           val domainPart = parts.dropRight(1).last
           val tablePart = parts.last
-          val theDomain: Option[DomainInfo] = domains
-            .find(_.finalName.toLowerCase() == domainPart.toLowerCase())
-          val theTable = theDomain.flatMap(
-            _.tables.find(table => table.finalName.toLowerCase() == tablePart.toLowerCase())
-          )
-          theTable
-            .flatMap(_.metadata)
+          val matchingDomains = domains
+            .filter(_.finalName.toLowerCase() == domainPart.toLowerCase())
+          val theDomainAndTable = matchingDomains.iterator
+            .flatMap(d =>
+              d.tables
+                .find(table => table.finalName.toLowerCase() == tablePart.toLowerCase())
+                .map(t => (d, t))
+            )
+            .nextOption()
+          theDomainAndTable
+            .flatMap { case (_, t) => t.metadata }
             .flatMap(_.schedule)
-            .orElse(theDomain.flatMap(_.metadata).flatMap(_.schedule))
+            .orElse(
+              theDomainAndTable
+                .flatMap { case (d, _) => d.metadata }
+                .flatMap(_.schedule)
+            )
+            .orElse(matchingDomains.headOption.flatMap(_.metadata).flatMap(_.schedule))
         case _ =>
           None
       }
@@ -210,13 +219,13 @@ object TaskViewDependency extends LazyLogging {
                 case 2 | 3 =>
                   val domainPart = parts.dropRight(1).last
                   val tablePart = parts.last
-                  val theDomain: Option[DomainInfo] = domains
-                    .find(_.finalName.toLowerCase() == domainPart.toLowerCase())
-                  val parentDomainFound = theDomain.exists(
-                    _.tables.exists(table =>
-                      table.finalName.toLowerCase() == tablePart.toLowerCase()
+                  val parentDomainFound = domains
+                    .filter(_.finalName.toLowerCase() == domainPart.toLowerCase())
+                    .exists(
+                      _.tables.exists(table =>
+                        table.finalName.toLowerCase() == tablePart.toLowerCase()
+                      )
                     )
-                  )
                   if (parentDomainFound)
                     Some((domainPart, tablePart))
                   else
@@ -268,22 +277,30 @@ object TaskViewDependency extends LazyLogging {
         val tableComponents = tableName.split('.')
         val tableNameOnly = tableComponents.last
         val domainNameOnly = tableComponents.dropRight(1).last
-        val domain =
-          schemaHandler.domains().find(_.finalName.toLowerCase() == domainNameOnly.toLowerCase())
+        val matchingDomains =
+          schemaHandler
+            .domains()
+            .filter(_.finalName.toLowerCase() == domainNameOnly.toLowerCase())
+        val domainAndTable = matchingDomains.iterator
+          .flatMap(d =>
+            d.tables
+              .find(_.finalName.toLowerCase() == tableNameOnly.toLowerCase())
+              .map(t => (d, t))
+          )
+          .nextOption()
         val writeStrategy =
           for {
-            d <- domain
-            t <- d.tables.find(_.finalName.toLowerCase() == tableNameOnly.toLowerCase())
-            m <- t.metadata
-            w <- m.writeStrategy
+            (_, t) <- domainAndTable
+            m      <- t.metadata
+            w      <- m.writeStrategy
           } yield w
-        val domainFreshness = domain.flatMap(_.metadata).flatMap(_.freshness.map(_.acceptability()))
-        val tableFreshness = domain
-          .flatMap(
-            _.tables
-              .find(_.finalName.toLowerCase() == tableNameOnly.toLowerCase())
-              .flatMap(_.metadata)
-          )
+        val domainFreshness = domainAndTable
+          .map { case (d, _) => d }
+          .orElse(matchingDomains.headOption)
+          .flatMap(_.metadata)
+          .flatMap(_.freshness.map(_.acceptability()))
+        val tableFreshness = domainAndTable
+          .flatMap { case (_, t) => t.metadata }
           .flatMap(_.freshness.map(_.acceptability()))
         TaskViewDependency(
           tableName,

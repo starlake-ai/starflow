@@ -1,0 +1,61 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://slack.com/api"
+    auth:
+      type: bearer
+      token: "{{SLACK_BOT_TOKEN}}"        # xoxb-... Bot User OAuth Token
+    rateLimit:
+      requestsPerSecond: 4                # Slack Tier 2 = ~20 req/min
+    retry:
+      maxRetries: 5
+      initialBackoffMs: 2000
+    defaults:
+      pagination:
+        type: cursor
+        cursorParam: "cursor"
+        cursorPath: "$.response_metadata.next_cursor"
+        pageSize: 200
+        limitParam: "limit"
+    endpoints:
+      # List all public and private channels
+      - path: "/conversations.list"
+        as: "channel"
+        domain: "slack"
+        responsePath: "$.channels"
+        queryParams:
+          types: "public_channel,private_channel"
+        errorPath: "$.error"              # Slack returns errors inside 200
+
+      # List all users in the workspace
+      - path: "/users.list"
+        as: "user"
+        domain: "slack"
+        responsePath: "$.members"
+        errorPath: "$.error"
+
+      # List messages from each channel (parent-child)
+      - path: "/conversations.list"
+        as: "_channel_for_messages"
+        domain: "slack"
+        responsePath: "$.channels"
+        queryParams:
+          types: "public_channel"
+          limit: "100"
+        excludeFields:
+          - ".*"                          # Don't extract channel data again
+        children:
+          - path: "/conversations.history"
+            as: "message"
+            domain: "slack"
+            responsePath: "$.messages"
+            queryParams:
+              channel: "{parent.id}"
+            pagination:
+              type: cursor
+              cursorParam: "cursor"
+              cursorPath: "$.response_metadata.next_cursor"
+              pageSize: 100
+              limitParam: "limit"
+            incrementalField: "ts"        # Unix timestamp — monotonically increasing
+            errorPath: "$.error"

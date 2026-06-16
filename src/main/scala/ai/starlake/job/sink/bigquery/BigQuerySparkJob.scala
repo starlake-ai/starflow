@@ -81,6 +81,13 @@ class BigQuerySparkJob(
       session.conf.set("temporaryGcsBucket", bucketName)
     }
 
+    // Location — must be set on the session so the Spark BQ connector uses it for all operations
+    // (dataset lookups, query jobs, materialization). The connector reads from multiple config keys.
+    connectionOptions.get("location").foreach { location =>
+      session.conf.set("location", location)
+      session.conf.set("spark.datasource.bigquery.location", location)
+    }
+
     // Authentication
     logger.info(s"Using ${connectionOptions("authType")} Credentials from GCS")
     cliConfig.accessToken match {
@@ -282,15 +289,22 @@ class BigQuerySparkJob(
   def runSparkReader(sql: String): Try[DataFrame] = {
     val hasViewsEnabled =
       settings.sparkConfig.hasPath("datasource.bigquery.viewsEnabled")
-    if (hasViewsEnabled) {
-      prepareConf()
-      Try {
-        session.read.format("bigquery").load(sql)
-      }
-    } else {
+    if (!hasViewsEnabled) {
       throw new Exception(
         "Make sure the key spark.datasource.bigquery.viewsEnabled is set in the application.sl.yml file."
       )
+    }
+    val hasMaterializationDataset =
+      settings.sparkConfig.hasPath("datasource.bigquery.materializationDataset")
+    if (!hasMaterializationDataset) {
+      throw new Exception(
+        "spark.datasource.bigquery.materializationDataset is required for BigQuery SQL queries. " +
+        "Set it in the application.sl.yml spark section or via SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET env var."
+      )
+    }
+    prepareConf()
+    Try {
+      session.read.format("bigquery").options(connectorOptions).load(sql)
     }
   }
 

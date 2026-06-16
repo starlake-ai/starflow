@@ -2,6 +2,7 @@ package ai.starlake.schema.model
 
 import ai.starlake.extract.{FileFormat, OnExtract, SanitizeStrategy}
 import ai.starlake.extract.impl.openapi.OpenAPIExtractSchema
+import ai.starlake.extract.impl.restapi.RestAPIExtractSchema
 import com.fasterxml.jackson.annotation.JsonCreator
 
 case class ExtractDesc(version: Int, extract: ExtractSchemasInfo)
@@ -10,6 +11,7 @@ case class ExtractSchemasInfo(
   sanitizeAttributeName: SanitizeStrategy = OnExtract,
   jdbcSchemas: Option[List[JDBCSchema]] = None,
   openAPI: Option[OpenAPIExtractSchema] = None,
+  restAPI: Option[RestAPIExtractSchema] = None,
   default: Option[JDBCSchema] = None,
   output: Option[FileFormat] = None,
   connectionRef: Option[String] = None,

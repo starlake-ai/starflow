@@ -17,7 +17,7 @@ import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
 import java.nio.charset.Charset
 import java.sql.Timestamp
 import scala.jdk.CollectionConverters.*
-import scala.util.{Failure, Random, Success, Using}
+import scala.util.{Failure, Random, Success, Try, Using}
 
 class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(implicit
   val settings: Settings
@@ -55,12 +55,15 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
   lazy val scheduledDate: Option[String] = ingestionJob.scheduledDate
 
   protected def requireTwoSteps(schema: SchemaInfo): Boolean = {
-    // renamed attribute can be loaded directly so it's not in the condition
+    // renamed attribute can be loaded directly so it's not in the condition.
+    // POSITION always needs two steps: the first step loads each line as a single VARCHAR
+    // column, the second step slices it via SUBSTR into the target columns.
     schema
       .hasTransformOrIgnoreOrScriptColumns() ||
     strategy.isMerge() ||
     schema.filter.nonEmpty ||
     schema.attributes.exists(_.rename.isDefined) ||
+    mergedMetadata.resolveFormat() == Format.POSITION ||
     settings.appConfig.archiveTable || settings.appConfig.audit.detailedLoadAudit && path.size > 1
   }
 
@@ -241,8 +244,20 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
           .mkString("(", " UNION ALL ", ")")
 
     val queryEngine = settings.appConfig.jdbcEngines.get(engineName.toString)
+    // Per-attribute DDL type for the sink engine, used by POSITION to wrap each
+    // SUBSTR projection in SAFE_CAST so malformed lines fail gracefully (NULL) instead
+    // of aborting the whole INSERT.
+    val ddlTypesByAttribute: Map[String, String] = Try(
+      schemaHandler
+        .getAttributesWithDDLType(starlakeSchema, engineName.toString)
+        .toMap
+    ).getOrElse(Map.empty)
     val sqlWithTransformedFields =
-      starlakeSchema.buildSecondStepSqlSelectOnLoad(tempTable, queryEngine)
+      starlakeSchema.buildSecondStepSqlSelectOnLoad(
+        tempTable,
+        queryEngine,
+        ddlTypesByAttribute
+      )
 
     val taskDesc = AutoTaskInfo(
       name = starlakeSchema.finalName,

@@ -1,0 +1,48 @@
+version: 1
+application:
+  loader: "native"
+  connections:
+    # Target warehouse for loading extracted API data
+    duckdb:
+      type: "jdbc"
+      options:
+        url: "jdbc:duckdb:{{SL_ROOT}}/datasets/duckdb.db"
+        driver: "org.duckdb.DuckDBDriver"
+
+    # ── REST API connections ─────────────────────────────────────────────
+    slack:
+      type: "REST"
+      options:
+        baseUrl: "https://slack.com/api"
+
+    jira:
+      type: "REST"
+      options:
+        baseUrl: "https://{{JIRA_DOMAIN}}.atlassian.net/rest/api/3"
+
+    twitter:
+      type: "REST"
+      options:
+        baseUrl: "https://api.x.com/2"
+
+    salesforce:
+      type: "REST"
+      options:
+        baseUrl: "https://{{SF_INSTANCE}}.salesforce.com/services/data/v61.0"
+
+    hubspot:
+      type: "REST"
+      options:
+        baseUrl: "https://api.hubapi.com"
+
+    stripe:
+      type: "REST"
+      options:
+        baseUrl: "https://api.stripe.com/v1"
+
+    github:
+      type: "REST"
+      options:
+        baseUrl: "https://api.github.com"
+
+  connectionRef: "duckdb"

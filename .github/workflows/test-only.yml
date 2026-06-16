@@ -47,6 +47,11 @@ jobs:
           keep: 0
           names: |
             ai.starlake.starlake-core_2.13
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PySpark
+        run: pip install pyspark==3.5.8
       - uses: actions/checkout@v4
       - name: Install graphviz
         run: sudo apt-get install -y graphviz

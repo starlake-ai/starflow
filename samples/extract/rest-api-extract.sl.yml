@@ -1,0 +1,60 @@
+version: 1
+extract:
+  restAPI:
+    baseUrl: "https://api.example.com/v2"
+    auth:
+      type: bearer
+      token: "{{API_TOKEN}}"           # Resolved from environment variable
+    headers:
+      Accept: "application/json"
+    rateLimit:
+      requestsPerSecond: 10
+    defaults:
+      pagination:
+        type: offset
+        limitParam: "limit"
+        offsetParam: "offset"
+        pageSize: 100
+    endpoints:
+      # Simple endpoint with offset pagination
+      - path: "/customers"
+        as: "customer"
+        domain: "crm"
+        responsePath: "$.data"          # JSONPath to data array in response
+        incrementalField: "updated_at"  # For incremental extraction
+
+      # Endpoint with cursor-based pagination
+      - path: "/orders"
+        as: "order"
+        domain: "crm"
+        pagination:
+          type: cursor
+          cursorParam: "after"
+          cursorPath: "$.meta.next_cursor"
+          pageSize: 50
+          limitParam: "per_page"
+        responsePath: "$.results"
+        # Child endpoint — fetches items for each parent order
+        children:
+          - path: "/orders/{parent.id}/items"
+            as: "order_item"
+            domain: "crm"
+            responsePath: "$.items"
+
+      # Endpoint with page number pagination
+      - path: "/products"
+        as: "product"
+        domain: "catalog"
+        pagination:
+          type: page_number
+          pageParam: "page"
+          pageSize: 25
+          limitParam: "per_page"
+
+      # POST endpoint with request body
+      - path: "/search"
+        method: "POST"
+        as: "search_results"
+        domain: "catalog"
+        requestBody: '{"query": "active", "filters": {"status": "published"}}'
+        responsePath: "$.hits"

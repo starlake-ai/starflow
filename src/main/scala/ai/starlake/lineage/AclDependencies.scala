@@ -242,20 +242,24 @@ class AclDependencies(schemaHandler: SchemaHandler) extends LazyLogging {
   private def rlsTables(
     config: AclDependenciesConfig
   ): Map[String, Map[String, List[RowLevelSecurity]]] = {
-    if (config.tables.nonEmpty) {
-      val domains = config.tables.map { t => t.split('.').head }
-      schemaHandler
-        .domains()
-        .filter(d => domains.contains(d.finalName))
-        .map(d => d.finalName -> d.rlsTables(config))
-        .toMap
-    } else {
-      schemaHandler
-        .domains()
-        .map(d => d.finalName -> d.rlsTables(config))
-        .filter { case (domainName, rls) => rls.nonEmpty }
-        .toMap
-    }
+    val perDomain =
+      if (config.tables.nonEmpty) {
+        val domains = config.tables.map { t => t.split('.').head }
+        schemaHandler
+          .domains()
+          .filter(d => domains.contains(d.finalName))
+          .map(d => d.finalName -> d.rlsTables(config))
+      } else {
+        schemaHandler
+          .domains()
+          .map(d => d.finalName -> d.rlsTables(config))
+          .filter { case (_, rls) => rls.nonEmpty }
+      }
+    perDomain
+      .groupBy { case (finalName, _) => finalName }
+      .map { case (finalName, entries) =>
+        finalName -> entries.map { case (_, rls) => rls }.reduce(_ ++ _)
+      }
   }
 
   private def jobsAsItems(config: AclDependenciesConfig): List[Item] = {
@@ -365,28 +369,37 @@ class AclDependencies(schemaHandler: SchemaHandler) extends LazyLogging {
     val aclTableNames: Map[String, Set[String]] = schemaHandler
       .domains()
       .map(d => d.finalName -> d.aclTables(config).toSet[SchemaInfo].map(_.finalName))
-      .toMap
+      .groupBy { case (finalName, _) => finalName }
+      .map { case (finalName, entries) =>
+        finalName -> entries.iterator.flatMap { case (_, tables) => tables }.toSet
+      }
     //      .filter { case (domainName, rls) => rls.nonEmpty }
 
-    val tablesWithACLOrRLS: Map[String, Set[String]] = rlsTableNames ++ aclTableNames
+    val tablesWithACLOrRLS: Map[String, Set[String]] =
+      (rlsTableNames.toList ++ aclTableNames.toList)
+        .groupBy { case (finalName, _) => finalName }
+        .map { case (finalName, entries) =>
+          finalName -> entries.iterator.flatMap { case (_, tables) => tables }.toSet
+        }
 
     tablesWithACLOrRLS.toList
       .flatMap { case (domain, tables) =>
         tables.map { table =>
           val tableLabel = s"$domain.$table"
           val columns = schemaHandler
-            .getDomain(domain)
-            .flatMap { d =>
-              d.tables.find(_.finalName == table).map { t =>
-                t.attributes.map { c =>
-                  Column(
-                    id = s"$domain.$table.${c.name}",
-                    name = c.name,
-                    columnType = c.`type`,
-                    comment = c.comment,
-                    primaryKey = t.primaryKey.contains(c.name)
-                  )
-                }
+            .domains()
+            .filter(_.finalName == domain)
+            .flatMap(d => d.tables.find(_.finalName == table))
+            .headOption
+            .map { t =>
+              t.attributes.map { c =>
+                Column(
+                  id = s"$domain.$table.${c.name}",
+                  name = c.name,
+                  columnType = c.`type`,
+                  comment = c.comment,
+                  primaryKey = t.primaryKey.contains(c.name)
+                )
               }
             }
             .getOrElse(Nil)

@@ -116,14 +116,14 @@ object StarlakeConnectionPool extends LazyLogging {
       connectionOptions.contains("driver"),
       s"driver class not found in JDBC connection options $connectionOptions"
     )
-    val isDucklake =
+    val isAttachBacked =
       connectionOptions
         .get("preActions")
-        .exists(preActions => preActions.contains("ducklake:"))
+        .exists(pa => pa.contains("ducklake:") || pa.contains("quack:"))
 
     val driver = connectionOptions("driver")
     val url =
-      if (isDucklake)
+      if (isAttachBacked)
         "jdbc:duckdb:"
       else
         connectionOptions("url")
@@ -137,13 +137,13 @@ object StarlakeConnectionPool extends LazyLogging {
         }
 
       val dbKey =
-        if (connectionOptions.get("preActions").exists(_.contains("ducklake:"))) {
-          val ducklakeAttachment =
+        if (isAttachBacked) {
+          val attachLine =
             connectionOptions("preActions")
               .split(";")
-              .find(_.contains("ducklake:"))
+              .find(line => line.contains("ducklake:") || line.contains("quack:"))
               .getOrElse("Should never happen")
-          ducklakeAttachment.replaceAll("\\s+", " ")
+          attachLine.replaceAll("\\s+", " ")
         } else {
           // No connection pool for duckdb. This is a single user database on write.
           // We need to release the connection asap

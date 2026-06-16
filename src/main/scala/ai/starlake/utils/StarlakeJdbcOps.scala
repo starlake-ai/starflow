@@ -89,10 +89,10 @@ object StarlakeJdbcOps extends StrictLogging {
       case Some(_) =>
         val engine = url.split(':')(1).toLowerCase()
         engine match {
-          case "snowflake" =>
+          case "snowflake" | "bigquery" =>
             val finalDriver = "ai.starlake.jdbc.StarlakeDriver"
             val finalUrl = "jdbc:starlake:" + url.substring("jdbc:".length)
-            logger.info(s"Using StarlakeDriver for Snowflake: $finalUrl")
+            logger.info(s"Using StarlakeDriver for $engine: $finalUrl")
             (finalDriver, finalUrl)
           case _ => (driver, url)
         }

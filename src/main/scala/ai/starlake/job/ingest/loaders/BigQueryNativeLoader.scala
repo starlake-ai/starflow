@@ -4,6 +4,7 @@ import ai.starlake.config.{CometColumns, Settings}
 import ai.starlake.extract.ParUtils
 import ai.starlake.job.ingest.{BqLoadInfo, IngestionJob}
 import ai.starlake.job.sink.bigquery.{
+  BigQueryBranchHandler,
   BigQueryJobBase,
   BigQueryJobResult,
   BigQueryLoadConfig,
@@ -26,13 +27,46 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
 ) extends NativeLoader(ingestionJob, accessToken)
     with LazyLogging {
 
-  lazy val targetTableId: TableId =
-    BigQueryJobBase.extractProjectDatasetAndTable(
+  lazy val targetTableId: TableId = {
+    val originalTableId = BigQueryJobBase.extractProjectDatasetAndTable(
       schemaHandler.getDatabase(domain),
       domain.finalName,
       effectiveSchema.finalName,
       sinkConnection.options.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
     )
+    schemaHandler.dataBranch(sinkConnection.options) match {
+      case Some(branchName) =>
+        logger.info(
+          s"Branch '$branchName' active: redirecting load target from ${domain.finalName}.${effectiveSchema.finalName} to $branchName.${effectiveSchema.finalName}"
+        )
+        val projectId = Option(originalTableId.getProject).getOrElse(
+          BigQueryJobBase.projectId(
+            sinkConnection.options.get("projectId"),
+            settings.appConfig.getDefaultDatabase()
+          )
+        )
+        val bqService = BigQueryJobBase.bigquery(
+          connectionRef = Some(mergedMetadata.getSinkConnectionRef()),
+          accessToken = accessToken,
+          outputDatabase = schemaHandler.getDatabase(domain)
+        )
+        val location = sinkConnection.options.getOrElse(
+          "location",
+          throw new Exception("location is required for BigQuery branching")
+        )
+        BigQueryBranchHandler
+          .prepareBranch(
+            branchName,
+            bqService,
+            originalTableId,
+            "", // No source SQL for loads
+            location,
+            sinkConnection.options
+          )
+          .branchTargetTableId
+      case None => originalTableId
+    }
+  }
 
   def run(): Try[List[IngestionCounters]] = {
     Try {
@@ -85,9 +119,23 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                     )
 
                 val firstStepBigqueryJob = new BigQueryNativeJob(firstStepConfig, "")
+                // For POSITION format the first step loads each line as a single VARCHAR
+                // column named `value`; the second step slices it via SUBSTR.
+                val isPosition = mergedMetadata.resolveFormat() == Format.POSITION
+                val toBQSchema: SchemaInfo => bigquery.Schema =
+                  if (isPosition)
+                    _ =>
+                      bigquery.Schema.of(
+                        Field
+                          .newBuilder("value", StandardSQLTypeName.STRING)
+                          .setMode(Field.Mode.NULLABLE)
+                          .build()
+                      )
+                  else
+                    _.bigquerySchemaWithIgnoreAndScript(schemaHandler, withFinalName = false)
                 val firstStepTableInfo = firstStepBigqueryJob.getTableInfo(
                   firstStepTempTable,
-                  _.bigquerySchemaWithIgnoreAndScript(schemaHandler, withFinalName = false)
+                  toBQSchema
                 )
 
                 val enrichedTableInfo = firstStepTableInfo.copy(

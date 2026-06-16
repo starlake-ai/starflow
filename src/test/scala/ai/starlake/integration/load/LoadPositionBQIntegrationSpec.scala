@@ -10,7 +10,7 @@ class LoadPositionBQIntegrationSpec extends BigQueryIntegrationSpecBase {
     "Import / Load / Transform BQ Position" should "succeed" in {
       withEnvs(
         "SL_ROOT" -> theSampleFolder.pathAsString,
-        "SL_ENV"  -> "BQ"
+        "SL_ENV"  -> "BQ-NATIVE"
       ) {
         cleanup()
         copyFilesToIncomingDir(sampleDataDir)

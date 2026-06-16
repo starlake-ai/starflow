@@ -99,13 +99,15 @@ class ExtractBigQuerySchema(config: TablesExtractConfig)(implicit settings: Sett
           allDatawareTables
             .filter(t => tables.exists(_.equalsIgnoreCase(t.getTableId.getTable())))
       }
-    val tables =
-      schemaHandler.domains().find(_.finalName.equalsIgnoreCase(datasetName)) match {
-        case Some(domain) =>
-          val tablesToExclude = domain.tables.map(_.finalName.toLowerCase())
-          allTables.filterNot(t => tablesToExclude.contains(t.getTableId.getTable().toLowerCase()))
-        case None => allTables
-      }
+    val tables = {
+      val tablesToExclude = schemaHandler
+        .domains()
+        .filter(_.finalName.equalsIgnoreCase(datasetName))
+        .flatMap(_.tables.map(_.finalName.toLowerCase()))
+        .toSet
+      if (tablesToExclude.isEmpty) allTables
+      else allTables.filterNot(t => tablesToExclude.contains(t.getTableId.getTable().toLowerCase()))
+    }
     val schemas = tables.flatMap { bqTable =>
       logger.info(s"Extracting table $datasetName.${bqTable.getTableId.getTable()}")
       // We get the Table again below because Tables are returned with a null definition by listTables above.

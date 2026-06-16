@@ -487,11 +487,15 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     )
   }
 
-  def dataBranch(): Option[String] =
-    this.activeEnvVars().get("sl_data_branch") match {
-      case Some(branch) if branch.nonEmpty && branch != "None" => Some(branch)
-      case _                                                   => None
-    }
+  def dataBranch(connectionOptions: Map[String, String] = Map.empty): Option[String] = {
+    val envVars = this.activeEnvVars()
+    envVars
+      .get("sl_data_branch")
+      .orElse(envVars.get("SL_DATA_BRANCH"))
+      .orElse(connectionOptions.get("sl_data_branch"))
+      .orElse(connectionOptions.get("SL_DATA_BRANCH"))
+      .filter(v => v.nonEmpty && v != "None")
+  }
 
   /*
   area {
@@ -790,9 +794,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       domainName match {
         case Some(domainName) => {
           domains()
-            .find(_.finalName.toLowerCase() == domainName.toLowerCase())
-            .map { d => d.tables.map(d.finalName + "." + _.finalName) }
-            .getOrElse(Nil)
+            .filter(_.finalName.toLowerCase() == domainName.toLowerCase())
+            .flatMap { d => d.tables.map(d.finalName + "." + _.finalName) }
         }
         case None =>
           domains().flatMap(d => d.tables.map(d.finalName + "." + _.finalName))

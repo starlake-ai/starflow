@@ -8,5 +8,6 @@ case class PreLoadConfig(
   strategy: Option[PreLoadStrategy] = None,
   globalAckFilePath: Option[String] = None,
   options: Map[String, String] = Map.empty,
-  reportFormat: Option[String] = None
+  reportFormat: Option[String] = None,
+  notReadySentinel: Option[String] = None
 ) extends ReportFormatConfig

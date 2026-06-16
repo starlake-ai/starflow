@@ -2,7 +2,7 @@ package ai.starlake.lineage
 
 import ai.starlake.config.Settings
 import ai.starlake.job.transform.AutoTask
-import ai.starlake.lineage.AutoTaskDependencies.Diagram
+import ai.starlake.lineage.AutoTaskDependencies.{Column, Diagram, Item}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.utils.{JsonSerializer, Utils}
 import com.typesafe.scalalogging.LazyLogging
@@ -181,11 +181,12 @@ class AutoTaskDependencies(
     }
 
     val entitiesAsItems = dedupDependencies.entities.map(dep => dep.entityAsItem()).distinct
+    val enrichedItems = entitiesAsItems.map(enrichItemWithColumns)
     val relationsAsRelations = dedupDependencies.relations
       .flatMap(dep => dep.relationAsRelation())
       .distinct
 
-    val diagram = Diagram(entitiesAsItems, relationsAsRelations, "task")
+    val diagram = Diagram(enrichedItems, relationsAsRelations, "task")
     if (config.outputFile.isDefined) {
       val data =
         JsonSerializer.mapper.writerWithDefaultPrettyPrinter().writeValueAsString(diagram)
@@ -193,6 +194,50 @@ class AutoTaskDependencies(
         Utils.save(config.outputFile, data)
     }
     diagram
+  }
+
+  private def enrichItemWithColumns(item: Item): Item = {
+    if (item.columns.nonEmpty) return item
+    val parts = item.id.split("\\.", 2)
+    if (parts.length < 2) return item
+    val (domainName, tableName) = (parts(0), parts(1))
+    // Try load tables first, then transform tasks
+    val columns = schemaHandler
+      .domains()
+      .filter(_.finalName.equalsIgnoreCase(domainName))
+      .flatMap(_.tables.find(_.finalName.equalsIgnoreCase(tableName)))
+      .headOption
+      .map { schema =>
+        schema.attributes.map { attr =>
+          Column(
+            s"${item.id}.${attr.getFinalName()}",
+            attr.getFinalName(),
+            attr.`type`,
+            attr.comment,
+            schema.isPrimaryKey(attr.getFinalName()),
+            attr.deepForeignKey().isDefined
+          )
+        }
+      }
+      .orElse {
+        schemaHandler
+          .tasks()
+          .find(t => t.domain.equalsIgnoreCase(domainName) && t.table.equalsIgnoreCase(tableName))
+          .map { task =>
+            task.attributes.map { attr =>
+              Column(
+                s"${item.id}.${attr.name}",
+                attr.name,
+                attr.`type`,
+                attr.comment,
+                primaryKey = false,
+                foreignKey = false
+              )
+            }
+          }
+      }
+      .getOrElse(Nil)
+    item.copy(columns = columns)
   }
 
   /** @param allDependencies
