@@ -35,7 +35,8 @@ object Versions {
   val gcsConnector = "4.0.4" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
-  val sparkBigquery = "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
+  val sparkBigquery =
+    "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.3.232" // Test only
   val poi = "4.1.2"
@@ -44,7 +45,7 @@ object Versions {
   val testContainers = "0.44.0"
   val gcpCloudLogging = "3.36.0"
   val gcpDataCatalog = "1.101.0"
-  val jinja = "2.7.4" // forces dependency override on guava
+  val jinja = "2.7.6" // forces dependency override on guava
   val snowflakeJDBC = "4.3.3" // spark-snowflake 3.2.x requires >= 4.0.2
   val snowflakeSpark: String = "3.2.1-spark_4.1"
   val duckdb = "1.5.5.1"
@@ -62,6 +63,8 @@ object Versions {
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
-  val starlakeStreaming = "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
-  val sparkRedshift = "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
+  val starlakeStreaming =
+    "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
+  val sparkRedshift =
+    "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }
