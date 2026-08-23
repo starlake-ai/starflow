@@ -1,7 +1,7 @@
 object Versions {
   val spark4 = "4.1.3"
   val deltaSpark = "4.3.1" // artifact id is delta-spark_4.1
-  val scalatest = "3.2.19"
+  val scalatest = "3.2.20"
   val scalacheckForScalatest = "3.2.19.0"
   // sparkXML / sparkXML2d0 DELETED: Spark 4 has a built-in xml data source
   val springBoot = "2.0.6.RELEASE"
@@ -35,7 +35,8 @@ object Versions {
   val gcsConnector = "4.0.4" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
-  val sparkBigquery = "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
+  val sparkBigquery =
+    "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.3.232" // Test only
   val poi = "4.1.2"
@@ -62,6 +63,8 @@ object Versions {
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
-  val starlakeStreaming = "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
-  val sparkRedshift = "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
+  val starlakeStreaming =
+    "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
+  val sparkRedshift =
+    "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }
