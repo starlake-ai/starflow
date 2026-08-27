@@ -22,6 +22,26 @@ function get_installation_directory {
 function get_version_to_install {
     param([string]$RequestedVersion = "")
 
+    # A forced --version=X.Y.Z is accepted directly - any released version, not
+    # just the ones the interactive menu shows - matching setup.sh's behavior.
+    # It short-circuits before the releases API call (no rate-limit exposure),
+    # and only its release tag is verified (via the very setup.jar the pinned
+    # install will fetch) so a typo fails fast here instead of halfway through
+    # the install. Non release-shaped values (e.g. SNAPSHOTs) are passed
+    # through untouched: they install from master's setup.jar, as on Linux.
+    if ($RequestedVersion -ne "") {
+        if ($RequestedVersion -match '^\d+\.\d+\.\d+$') {
+            $tagUrl = "https://raw.githubusercontent.com/starlake-ai/starlake/v$RequestedVersion/distrib/setup.jar"
+            try {
+                Invoke-WebRequest -Method Head -Uri $tagUrl -UseBasicParsing | Out-Null
+            } catch {
+                Write-Host "Error: version $RequestedVersion not found (no tag v$RequestedVersion at https://github.com/starlake-ai/starlake/releases)"
+                exit 1
+            }
+        }
+        return $RequestedVersion
+    }
+
     $RELEASE_VERSIONS = @()
     try {
         $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/starlake-ai/starlake/releases?per_page=15" -UseBasicParsing
