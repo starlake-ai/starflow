@@ -158,6 +158,9 @@ then
   esac
 fi
 
+# Same default as starlake.cmd; versions.sh normally provides it, but the
+# spark-core jar globs below must also work before a first versions.sh exists.
+SCALA_VERSION="${SCALA_VERSION:-2.13}"
 SL_ARTIFACT_NAME=starlake-core_$SCALA_VERSION
 SPARK_DIR_NAME=spark-$SPARK_VERSION-bin-hadoop$HADOOP_VERSION
 SPARK_TARGET_FOLDER=$SCRIPT_DIR/bin/spark
@@ -425,12 +428,42 @@ verify_sha256() {
     fi
 }
 
+sync_spark_runtime() {
+  # $1: git ref (release tag or "master") whose Setup.java pins the wanted
+  # Spark version. Setup.java at that ref is the single source of truth for the
+  # release's Spark/Hadoop/connector version pins - it is also what generates
+  # versions.sh on a fresh install. Fetch just enough of it (its SPARK_VERSION
+  # default) to decide whether the Spark runtime needs to be re-provisioned,
+  # without duplicating those pins here. Setup.java itself only downloads Spark
+  # when bin/spark is ABSENT, so wiping a mismatched runtime here is exactly
+  # what makes the subsequent launch_setup re-provision it.
+  # get_binary_from_url exits the whole script on a download failure (same
+  # fail-fast behavior as every other download in this script), so no explicit
+  # error handling is needed here.
+  local target_ref="$1"
+  local target_setup_java="$SCRIPT_DIR/.target-setup-java.tmp"
+  get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/$target_ref/src/main/java/Setup.java" "$target_setup_java"
+  TARGET_SPARK_VERSION=$(grep -o 'getEnv("SPARK_VERSION")\.orElse("[^"]*")' "$target_setup_java" | head -n1 | sed -E 's/.*orElse\("([^"]*)"\).*/\1/')
+  rm -f "$target_setup_java"
+
+  if [ -z "$TARGET_SPARK_VERSION" ]; then
+      echo "Warning: could not determine the target Spark version for $target_ref; re-provisioning bin/spark unconditionally to be safe." >&2
+      rm -rf "$SCRIPT_DIR/bin/spark"
+  elif ! compgen -G "$SCRIPT_DIR/bin/spark/jars/spark-core_${SCALA_VERSION}-${TARGET_SPARK_VERSION}.jar" > /dev/null 2>&1; then
+      echo "Spark runtime is changing (${SPARK_VERSION:-none} -> $TARGET_SPARK_VERSION): re-provisioning bin/spark."
+      rm -rf "$SCRIPT_DIR/bin/spark"
+  else
+      echo "Spark runtime already at $TARGET_SPARK_VERSION, keeping bin/spark as-is."
+  fi
+}
+
 launch_setup() {
   # $1: optional git ref (tag, e.g. "v1.8.0") to fetch setup.jar from; defaults
-  # to "master" (the existing install/reinstall behavior, unchanged). Upgrades
-  # pass the target release tag so Setup.java's compiled-in version defaults -
-  # its own generateVersions() is what writes versions.sh - match that exact
-  # release rather than whatever master happens to be at upgrade time.
+  # to "master". Install, reinstall and upgrade all pass the target release tag
+  # so Setup.java's compiled-in version defaults - its own generateVersions() is
+  # what writes versions.sh - match that exact release rather than whatever
+  # master happens to be at the time. Only versions with no release tag to fetch
+  # from (SNAPSHOTs, local builds) fall back to master.
   local ref="${1:-master}"
   local setup_url="https://raw.githubusercontent.com/starlake-ai/starlake/$ref/distrib/setup.jar"
   get_binary_from_url "$setup_url" "$SCRIPT_DIR/setup.jar"
@@ -569,15 +602,39 @@ case "$1" in
 	  echo Redshift Spark connector ${SPARK_REDSHIFT_VERSION}
     ;;
   install|reinstall)
-    # reinstall preserved+exported SL_VERSION above (if any was pinned); fetch
-    # that exact release's setup.jar so its version defaults match, instead of
-    # master's (which may have moved on since this box was installed). A first
-    # `install` has no prior SL_VERSION, so it falls back to master as before.
-    if [ "$1" = "reinstall" ] && [ -n "$SL_VERSION" ]; then
-      launch_setup "v$SL_VERSION"
+    # Pin setup.jar to the release being installed whenever SL_VERSION names
+    # one. Setup.java's compiled-in defaults (Spark, Hadoop and every connector
+    # pin) are what get written to versions.sh and provisioned into bin/, so
+    # they have to come from the SAME release as the core jar. Taking them from
+    # master instead can pair a core jar with a Spark it was never built against
+    # - installing 1.7.x (built for Spark 3.5) while master pins Spark 4.
+    # SL_VERSION here is either exported by the caller (setup.sh exports the
+    # selected version before calling `install`) or read from versions.sh at the
+    # top of this script (install/reinstall over an already-provisioned tree).
+    # Non-release values - SNAPSHOTs, locally built versions - have no release
+    # tag to fetch a setup.jar from, so they keep falling back to master.
+    if [[ "$SL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      TARGET_REF="v$SL_VERSION"
     else
-      launch_setup
+      TARGET_REF="master"
     fi
+    # A version-changing `install` over an existing tree must wipe a Spark
+    # runtime that no longer matches the target release's pin (Setup.java only
+    # downloads Spark when bin/spark is absent - see sync_spark_runtime).
+    # reinstall already wiped bin/spark unconditionally at the top of this
+    # script, and a fresh tree has no runtime to check, so both skip the probe.
+    if [ "$1" = "install" ] && [ -d "$SCRIPT_DIR/bin/spark" ]; then
+      sync_spark_runtime "$TARGET_REF"
+    fi
+    # Export so the java Setup subprocess installs THIS version. Without it, an
+    # SL_VERSION read from versions.sh stays shell-local, Setup's getenv misses
+    # it and falls back to "latest github release" - pairing a latest core jar
+    # with the pinned release's setup.jar. reinstall exports at the top of this
+    # script for the same reason.
+    if [ -n "$SL_VERSION" ]; then
+      export SL_VERSION
+    fi
+    launch_setup "$TARGET_REF"
     echo
     echo "Installation done. You're ready to enjoy Starlake!"
     echo If any errors happen during installation. Please try to install again or open an issue.
@@ -611,28 +668,9 @@ case "$1" in
 
         TARGET_REF="v$NEW_SL_VERSION"
 
-        # Setup.java at the target release tag is the single source of truth for
-        # that release's Spark/Hadoop/connector version pins - it is also what
-        # generates versions.sh on a fresh install. Fetch just enough of it (its
-        # SPARK_VERSION default) to decide whether the Spark runtime itself needs
-        # to be re-provisioned, without duplicating those pins here.
-        # get_binary_from_url exits the whole script on a download failure (same
-        # fail-fast behavior as every other download in this script), so no
-        # explicit error handling is needed here.
-        TARGET_SETUP_JAVA="$SCRIPT_DIR/.target-setup-java.tmp"
-        get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/$TARGET_REF/src/main/java/Setup.java" "$TARGET_SETUP_JAVA"
-        TARGET_SPARK_VERSION=$(grep -o 'getEnv("SPARK_VERSION")\.orElse("[^"]*")' "$TARGET_SETUP_JAVA" | head -n1 | sed -E 's/.*orElse\("([^"]*)"\).*/\1/')
-        rm -f "$TARGET_SETUP_JAVA"
-
-        if [ -z "$TARGET_SPARK_VERSION" ]; then
-            echo "Warning: could not determine the target Spark version for $NEW_SL_VERSION; re-provisioning bin/spark unconditionally to be safe." >&2
-            rm -rf "$SCRIPT_DIR/bin/spark"
-        elif ! compgen -G "$SCRIPT_DIR/bin/spark/jars/spark-core_${SCALA_VERSION}-${TARGET_SPARK_VERSION}.jar" > /dev/null 2>&1; then
-            echo "Spark runtime is changing (${SPARK_VERSION:-none} -> $TARGET_SPARK_VERSION): re-provisioning bin/spark."
-            rm -rf "$SCRIPT_DIR/bin/spark"
-        else
-            echo "Spark runtime already at $TARGET_SPARK_VERSION, keeping bin/spark as-is."
-        fi
+        # Wipe bin/spark if the target release pins a different Spark (see
+        # sync_spark_runtime - shared with the `install` path).
+        sync_spark_runtime "$TARGET_REF"
 
         # bin/deps is always refreshed by launch_setup below: Setup.java deletes
         # each dependency category by artefact-name match and re-downloads it at

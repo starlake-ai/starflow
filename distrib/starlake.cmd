@@ -301,11 +301,52 @@ goto :handle_command
     del "%vs_file%.sha256" 2>nul
     goto :eof
 
+:sync_spark_runtime
+    rem %1: git ref (release tag or "master") whose Setup.java pins the wanted
+    rem Spark version. Setup.java at that ref is the single source of truth
+    rem for the release's Spark/Hadoop/connector version pins - it is also
+    rem what generates versions.cmd on a fresh install. Fetch just its
+    rem SPARK_VERSION default to decide whether bin\spark needs replacing,
+    rem without duplicating those pins here. Setup.java itself only downloads
+    rem Spark when bin\spark is ABSENT, so wiping a mismatched runtime here is
+    rem exactly what makes the subsequent :launch_setup re-provision it.
+    set "TARGET_SETUP_JAVA=%SCRIPT_DIR%.target-setup-java.tmp"
+    call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/%~1/src/main/java/Setup.java" "%TARGET_SETUP_JAVA%"
+    if errorlevel 1 exit /b 1
+    rem The regex pattern is passed base64-encoded (UTF8) rather than typed
+    rem literally: it contains parens and embedded double-quote
+    rem characters that are not protected by PowerShell's single-quote
+    rem string (cmd.exe does not recognize single quotes as quoting at
+    rem all), which would otherwise unbalance cmd own double-quote
+    rem parity for this line or be misread as block syntax. The whole
+    rem -Command argument stays a single physical line with exactly one
+    rem opening and one closing double-quote, matching the already-working
+    rem verify_sha256 -Command usage above.
+    rem decoded pattern is: getEnv followed by open-paren quote SPARK_VERSION
+    rem quote close-paren dot orElse open-paren quote capture-group quote close-paren
+    set "TARGET_SPARK_VERSION="
+    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "$m = Select-String -Path '!TARGET_SETUP_JAVA!' -Pattern ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('Z2V0RW52XCgiU1BBUktfVkVSU0lPTiJcKVwub3JFbHNlXCgiKFteIl0qKSJcKQ=='))) | Select-Object -First 1; if ($m) { $m.Matches[0].Groups[1].Value }"`) do set "TARGET_SPARK_VERSION=%%v"
+    del "%TARGET_SETUP_JAVA%" 2>nul
+
+    if not defined TARGET_SPARK_VERSION (
+        echo Warning: could not determine the target Spark version for %~1; re-provisioning bin\spark unconditionally to be safe.
+        if exist "%SCRIPT_DIR%bin\spark" rmdir /s /q "%SCRIPT_DIR%bin\spark"
+    ) else (
+        if exist "%SCRIPT_DIR%bin\spark\jars\spark-core_%SCALA_VERSION%-!TARGET_SPARK_VERSION!.jar" (
+            echo Spark runtime already at !TARGET_SPARK_VERSION!, keeping bin\spark as-is.
+        ) else (
+            echo Spark runtime is changing ^(%SPARK_VERSION% -^> !TARGET_SPARK_VERSION!^): re-provisioning bin\spark.
+            if exist "%SCRIPT_DIR%bin\spark" rmdir /s /q "%SCRIPT_DIR%bin\spark"
+        )
+    )
+    exit /b 0
+
 :launch_setup
     rem %1: optional git ref (tag, e.g. "v1.8.0") to fetch setup.jar from;
-    rem defaults to "master" (the existing install/reinstall behavior,
-    rem unchanged). Upgrades pass the target release tag so Setup.java's
-    rem compiled-in version defaults match that exact release.
+    rem defaults to "master". Install, reinstall and upgrade all pass the
+    rem target release tag so Setup.java's compiled-in version defaults match
+    rem that exact release. Only versions with no release tag to fetch from
+    rem (SNAPSHOTs, local builds) fall back to master.
     set "_ls_ref=%~1"
     if "%_ls_ref%" == "" set "_ls_ref=master"
     set "setup_url=https://raw.githubusercontent.com/starlake-ai/starlake/%_ls_ref%/distrib/setup.jar"
@@ -512,40 +553,10 @@ goto :eof
         echo Upgrading Starlake to %NEW_SL_VERSION%...
         set "TARGET_REF=v%NEW_SL_VERSION%"
 
-        rem Setup.java at the target release tag is the single source of truth
-        rem for that release's Spark/Hadoop/connector version pins - it is also
-        rem what generates versions.cmd on a fresh install. Fetch just its
-        rem SPARK_VERSION default to decide whether bin\spark needs replacing,
-        rem without duplicating those pins here.
-        set "TARGET_SETUP_JAVA=%SCRIPT_DIR%.target-setup-java.tmp"
-        call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/!TARGET_REF!/src/main/java/Setup.java" "!TARGET_SETUP_JAVA!"
+        rem Wipe bin\spark if the target release pins a different Spark (see
+        rem :sync_spark_runtime - shared with the install path).
+        call :sync_spark_runtime "!TARGET_REF!"
         if errorlevel 1 exit /b 1
-        rem The regex pattern is passed base64-encoded (UTF8) rather than typed
-        rem literally: it contains parens and embedded double-quote
-        rem characters that are not protected by PowerShell's single-quote
-        rem string (cmd.exe does not recognize single quotes as quoting at
-        rem all), which would otherwise unbalance cmd own double-quote
-        rem parity for this line or be misread as block syntax. The whole
-        rem -Command argument stays a single physical line with exactly one
-        rem opening and one closing double-quote, matching the already-working
-        rem verify_sha256 -Command usage above.
-        rem decoded pattern is: getEnv followed by open-paren quote SPARK_VERSION
-        rem quote close-paren dot orElse open-paren quote capture-group quote close-paren
-        set "TARGET_SPARK_VERSION="
-        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "$m = Select-String -Path '!TARGET_SETUP_JAVA!' -Pattern ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('Z2V0RW52XCgiU1BBUktfVkVSU0lPTiJcKVwub3JFbHNlXCgiKFteIl0qKSJcKQ=='))) | Select-Object -First 1; if ($m) { $m.Matches[0].Groups[1].Value }"`) do set "TARGET_SPARK_VERSION=%%v"
-        del "!TARGET_SETUP_JAVA!" 2>nul
-
-        if not defined TARGET_SPARK_VERSION (
-            echo Warning: could not determine the target Spark version for %NEW_SL_VERSION%; re-provisioning bin\spark unconditionally to be safe.
-            if exist "%SCRIPT_DIR%bin\spark" rmdir /s /q "%SCRIPT_DIR%bin\spark"
-        ) else (
-            if exist "%SCRIPT_DIR%bin\spark\jars\spark-core_%SCALA_VERSION%-!TARGET_SPARK_VERSION!.jar" (
-                echo Spark runtime already at !TARGET_SPARK_VERSION!, keeping bin\spark as-is.
-            ) else (
-                echo Spark runtime is changing ^(%SPARK_VERSION% -^> !TARGET_SPARK_VERSION!^): re-provisioning bin\spark.
-                if exist "%SCRIPT_DIR%bin\spark" rmdir /s /q "%SCRIPT_DIR%bin\spark"
-            )
-        )
 
         rem bin\deps is always refreshed by launch_setup below: Setup.java
         rem deletes each dependency category by artefact-name match and
@@ -578,17 +589,34 @@ goto :eof
     goto :eof
 
 :install_command
-    rem reinstall preserved SL_VERSION above (if any was pinned); fetch that
-    rem exact release's setup.jar so its version defaults match, instead of
-    rem master's (which may have moved on since this box was installed). A
-    rem first `install` has no prior SL_VERSION, so it falls back to master.
+    rem Pin setup.jar to the release being installed whenever SL_VERSION names
+    rem one. Setup.java's compiled-in defaults (Spark, Hadoop and every
+    rem connector pin) are what get written to versions.cmd and provisioned
+    rem into bin\, so they have to come from the SAME release as the core jar.
+    rem Taking them from master instead can pair a core jar with a Spark it was
+    rem never built against - installing 1.7.x (built for Spark 3.5) while
+    rem master pins Spark 4. SL_VERSION here is either set by the caller
+    rem (setup.ps1 sets it before calling `install`) or read from versions.cmd
+    rem at the top of this script. Non-release values - SNAPSHOTs, locally
+    rem built versions - have no release tag to fetch a setup.jar from, so they
+    rem keep falling back to master. NOTE: no space before the pipe below, it
+    rem would become part of the string findstr matches against.
     set "_is_ref="
-    if /i "%1" == "reinstall" if defined SL_VERSION set "_is_ref=v%SL_VERSION%"
-    if defined _is_ref (
-        call :launch_setup "%_is_ref%"
-    ) else (
-        call :launch_setup
-    )
+    if not defined SL_VERSION goto :install_launch
+    echo %SL_VERSION%|findstr /r /c:"^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+    if not errorlevel 1 set "_is_ref=v%SL_VERSION%"
+    :install_launch
+    set "_install_ref=%_is_ref%"
+    if not defined _install_ref set "_install_ref=master"
+    rem A version-changing `install` over an existing tree must wipe a Spark
+    rem runtime that no longer matches the target release's pin (Setup.java
+    rem only downloads Spark when bin\spark is absent - see
+    rem :sync_spark_runtime). reinstall already wiped bin\spark at the top of
+    rem this script, and a fresh tree has no runtime to check, so both skip
+    rem the probe. The || form rather than a trailing errorlevel check: when
+    rem the probe is skipped, findstr above may have left errorlevel 1 behind.
+    if /i "%1" == "install" if exist "%SCRIPT_DIR%bin\spark" call :sync_spark_runtime "%_install_ref%" || exit /b 1
+    call :launch_setup "%_install_ref%"
     echo.
     echo Installation done. You're ready to enjoy Starlake!
     echo If any errors happen during installation. Please try to install again or open an issue.
