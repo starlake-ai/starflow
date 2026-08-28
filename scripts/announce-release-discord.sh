@@ -44,7 +44,7 @@ section="$(awk -v v="$version" '
 grep -q '[^[:space:]]' <<<"$section" \
   || echo "WARNING: no '# $version' section in CHANGELOG.md; announcing links only." >&2
 
-header="**Starflow v released**
+header="**Starflow v${version} released**
 https://github.com/starlake-ai/starflow
 Release notes: https://github.com/starlake-ai/starflow/releases/tag/v${version}"
 
