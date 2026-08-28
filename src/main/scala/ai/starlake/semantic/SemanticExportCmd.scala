@@ -44,7 +44,7 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
           |format. Supported formats: ossie (Apache Ossie, incubating), lookml (a Looker
           |project: one view file per table plus a model file with explores) and tmdl
           |(a Power BI TMDL folder: database.tmdl, model.tmdl, relationships.tmdl and
-          |one tables/<table>.tmdl per table).
+          |one `tables/<table>.tmdl` per table).
           |
           |For ossie, Starflow-specific attributes with no Ossie counterpart are
           |preserved in custom_extensions blocks under the STARLAKE vendor name.
