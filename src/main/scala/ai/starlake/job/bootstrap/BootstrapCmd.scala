@@ -28,7 +28,7 @@ object BootstrapCmd extends Cmd[BootstrapConfig] {
       builder.head(shell, command, "[options]"),
       builder.note(
         """
-          |Create a new Starflow project from a template. Generates the required directory structure and sample configuration files to get started quickly. See [Project Setup Guide](/guides/project-setup/starlake-project-setup).
+          |Create a new Starflow project from a template. Generates the required directory structure and sample configuration files to get started quickly. See [Project Setup Guide](/starflow/guides/project-setup/starlake-project-setup).
           |
           |Create a new project optionally based on a specific template eq. quickstart / userguide
           |""".stripMargin

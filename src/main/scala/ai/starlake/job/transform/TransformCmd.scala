@@ -27,7 +27,7 @@ trait TransformCmd extends Cmd[TransformConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Execute a SQL or Python transformation task. Starflow resolves dependencies, compiles queries with variable substitutions, and writes results to the target table. Use `--recursive` for upstream dependencies. See [Transform Guide](/guides/transform/tutorial)."""
+        """Execute a SQL or Python transformation task. Starflow resolves dependencies, compiles queries with variable substitutions, and writes results to the target table. Use `--recursive` for upstream dependencies. See [Transform Guide](/starflow/guides/transform/tutorial)."""
       ),
       builder
         .opt[String]("action")

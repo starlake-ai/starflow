@@ -27,7 +27,7 @@ trait StarlakeTestCmd extends Cmd[StarlakeTestConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Run unit tests for load and transform tasks using sample data and expected results. See [Unit Tests Guide](/guides/unit-tests/concepts)."""
+        """Run unit tests for load and transform tasks using sample data and expected results. See [Unit Tests Guide](/starflow/guides/unit-tests/concepts)."""
       ),
       builder
         .opt[Unit]("load")

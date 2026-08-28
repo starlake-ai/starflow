@@ -26,7 +26,7 @@ object DagDeployCmd extends Cmd[DagDeployConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Deploy generated DAG files and their library dependencies to the orchestrator's DAG directory. Run this after `dag-generate` to publish workflow definitions to Airflow or another scheduler. See [Orchestration Guide](/guides/orchestrate/tutorial)."""
+        """Deploy generated DAG files and their library dependencies to the orchestrator's DAG directory. Run this after `dag-generate` to publish workflow definitions to Airflow or another scheduler. See [Orchestration Guide](/starflow/guides/orchestrate/tutorial)."""
       ),
       builder
         .opt[String]("inputDir")

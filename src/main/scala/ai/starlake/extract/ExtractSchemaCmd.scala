@@ -27,7 +27,7 @@ object ExtractSchemaCmd extends Cmd[ExtractSchemaConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Extract table schemas from a JDBC database and generate Starflow YAML configuration files. Use this to reverse-engineer existing database tables into domain definitions with optional snake_case naming. See [Extract Tutorial](/guides/extract/tutorial)."""
+        """Extract table schemas from a JDBC database and generate Starflow YAML configuration files. Use this to reverse-engineer existing database tables into domain definitions with optional snake_case naming. See [Extract Tutorial](/starflow/guides/extract/tutorial)."""
       ),
       builder
         .opt[String]("config")

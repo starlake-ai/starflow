@@ -27,7 +27,7 @@ trait LoadCmd extends Cmd[LoadConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Load data files from the pending directory into the data warehouse using schema definitions. See [Load Tutorial](/guides/load/tutorial)."""
+        """Load data files from the pending directory into the data warehouse using schema definitions. See [Load Tutorial](/starflow/guides/load/tutorial)."""
       ),
       builder
         .opt[Seq[String]]("domains")
