@@ -1,15 +1,15 @@
 # Convert this script so it can run on Windows
 function print_starlake_ascii_art {
-    Write-Host "   _____ _______       _____  _               _  ________"
-    Write-Host "  / ____|__   __|/\   |  __ \| |        /\   | |/ /  ____|"
-    Write-Host " | (___    | |  /  \  | |__) | |       /  \  | ' /| |__"
-    Write-Host "  \___ \   | | / /\ \ |  _  /| |      / /\ \ |  < |  __|"
-    Write-Host "  ____) |  | |/ ____ \| | \ \| |____ / ____ \| . \| |____"
-    Write-Host " |_____/   |_/_/    \_\_|  \_\______/_/    \_\_|\_\______|"
+    Write-Host "   _____  _______            _____   ______  _        ____  __          __"
+    Write-Host "  / ____||__   __|    /\    |  __ \ |  ____|| |      / __ \ \ \        / /"
+    Write-Host " | (___     | |      /  \   | |__) || |__   | |     | |  | | \ \  /\  / /"
+    Write-Host "  \___ \    | |     / /\ \  |  _  / |  __|  | |     | |  | |  \ \/  \/ /"
+    Write-Host "  ____) |   | |    / ____ \ | | \ \ | |     | |____ | |__| |   \  /\  /"
+    Write-Host " |_____/    |_|   /_/    \_\|_|  \_\|_|     |______| \____/     \/  \/"
 }
 
 function get_installation_directory {
-    $INSTALL_DIR = Read-Host "Where do you want to install Starlake? [$HOME\starlake]"
+    $INSTALL_DIR = Read-Host "Where do you want to install Starflow? [$HOME\starlake]"
     if ($INSTALL_DIR -eq "") {
         $INSTALL_DIR = "$HOME\starlake"
     }
@@ -131,7 +131,7 @@ function run_installation_command {
 
 
 function print_success_message {
-    Write-Host "Starlake has been successfully installed!"
+    Write-Host "Starflow has been successfully installed!"
 }
 
 function get_java_major_version {
@@ -176,7 +176,7 @@ function resolve_java {
 }
 
 function get_required_java_version {
-    # The java floor depends on the Starlake version being installed:
+    # The java floor depends on the Starflow version being installed:
     #   up to 1.4.x (and every 0.x) -> java 11, from 1.5.0 on -> java 17.
     # Unparseable versions get the current floor (17).
     param([string]$SlVersion)
@@ -190,7 +190,7 @@ function get_required_java_version {
 
 function ensure_java {
     # Check the installed Java (JAVA_HOME first) against the floor required by
-    # the Starlake version being installed. If none is found, or its version is
+    # the Starflow version being installed. If none is found, or its version is
     # below that floor, install an EMBEDDED portable Temurin 17 JDK inside the
     # starlake install directory (<install-dir>\jdk) and update the SESSION
     # environment (JAVA_HOME + PATH). The embedded JDK is ALWAYS 17: it
@@ -204,13 +204,13 @@ function ensure_java {
 
     $java = resolve_java
     if ($java.Major -ge $MinVersion) {
-        Write-Host "Using Java $($java.Major) from $($java.Source) (Starlake $SlVersion requires $MinVersion or above)"
+        Write-Host "Using Java $($java.Major) from $($java.Source) (Starflow $SlVersion requires $MinVersion or above)"
         return
     }
     if ($java.Major -gt 0) {
-        Write-Host "Java $($java.Major) found via $($java.Source) but Starlake $SlVersion requires Java $MinVersion or above."
+        Write-Host "Java $($java.Major) found via $($java.Source) but Starflow $SlVersion requires Java $MinVersion or above."
     } else {
-        Write-Host "No Java found (checked JAVA_HOME and PATH). Starlake $SlVersion requires Java $MinVersion or above."
+        Write-Host "No Java found (checked JAVA_HOME and PATH). Starflow $SlVersion requires Java $MinVersion or above."
     }
 
     $jdkDir = Join-Path $InstallDir "jdk"
@@ -265,7 +265,7 @@ function main {
     print_starlake_ascii_art
     $INSTALL_DIR = get_installation_directory
     $VERSION = get_version_to_install -RequestedVersion $RequestedVersion
-    # after version resolution: the java floor depends on the Starlake version
+    # after version resolution: the java floor depends on the Starflow version
     # (<= 1.4 -> java 11, >= 1.5 -> java 17), and an embedded JDK would land
     # in <install-dir>\jdk
     ensure_java -InstallDir $INSTALL_DIR -SlVersion $VERSION

@@ -8,12 +8,12 @@ fi
 
 print_starlake_ascii_art() {
     cat <<EOF
-   _____ _______       _____  _               _  ________
-  / ____|__   __|/\   |  __ \| |        /\   | |/ /  ____|
- | (___    | |  /  \  | |__) | |       /  \  | ' /| |__
-  \___ \   | | / /\ \ |  _  /| |      / /\ \ |  < |  __|
-  ____) |  | |/ ____ \| | \ \| |____ / ____ \| . \| |____
- |_____/   |_/_/    \_\_|  \_\______/_/    \_\_|\_\______|
+   _____  _______            _____   ______  _        ____  __          __
+  / ____||__   __|    /\    |  __ \ |  ____|| |      / __ \ \ \        / /
+ | (___     | |      /  \   | |__) || |__   | |     | |  | | \ \  /\  / /
+  \___ \    | |     / /\ \  |  _  / |  __|  | |     | |  | |  \ \/  \/ /
+  ____) |   | |    / ____ \ | | \ \ | |     | |____ | |__| |   \  /\  /
+ |_____/    |_|   /_/    \_\|_|  \_\|_|     |______| \____/     \/  \/
 
 
 EOF
@@ -28,7 +28,7 @@ get_installation_directory() {
     done
     if [[ -z "$INSTALL_DIR" ]]
     then
-      read -p "Where do you want to install Starlake? [$HOME/starlake]: " INSTALL_DIR
+      read -p "Where do you want to install Starflow? [$HOME/starlake]: " INSTALL_DIR
       INSTALL_DIR=${INSTALL_DIR:-$HOME/starlake}
     fi
     INSTALL_DIR=$(eval "echo $INSTALL_DIR")
@@ -173,7 +173,7 @@ add_starlake_to_path() {
             fi
             source ~/.bashrc
         fi
-        echo "Starlake has been added to your PATH."
+        echo "Starflow has been added to your PATH."
     else
         echo "Could not detect what shell you're using. Please add the following line to your shell configuration file manually:"
         echo "export PATH=$INSTALL_DIR:\$PATH"
@@ -186,7 +186,7 @@ run_installation_command() {
 }
 
 print_success_message() {
-    echo "Starlake has been successfully installed!"
+    echo "Starflow has been successfully installed!"
 }
 
 get_binary_from_url() {
@@ -242,7 +242,7 @@ resolve_java() {
 }
 
 get_required_java_version() {
-    # The java floor depends on the Starlake version being installed:
+    # The java floor depends on the Starflow version being installed:
     #   up to 1.4.x (and every 0.x) -> java 11, from 1.5.0 on -> java 17.
     # Unparseable versions get the current floor (17).
     local sl_version=$1
@@ -260,7 +260,7 @@ get_required_java_version() {
 
 ensure_java() {
     # Check the installed Java (JAVA_HOME first) against the floor required by
-    # the Starlake version being installed. If none is found, or its version is
+    # the Starflow version being installed. If none is found, or its version is
     # below that floor, install an EMBEDDED portable Temurin 17 JDK inside the
     # starlake install directory ($INSTALL_DIR/jdk) and update the SESSION
     # environment (JAVA_HOME + PATH). The embedded JDK is ALWAYS 17: it
@@ -272,13 +272,13 @@ ensure_java() {
 
     resolve_java
     if [ "$RESOLVED_JAVA_MAJOR" -ge "$min_version" ]; then
-        echo "Using Java $RESOLVED_JAVA_MAJOR from $RESOLVED_JAVA_SOURCE (Starlake $VERSION requires $min_version or above)"
+        echo "Using Java $RESOLVED_JAVA_MAJOR from $RESOLVED_JAVA_SOURCE (Starflow $VERSION requires $min_version or above)"
         return
     fi
     if [ "$RESOLVED_JAVA_MAJOR" -gt 0 ]; then
-        echo "Java $RESOLVED_JAVA_MAJOR found via $RESOLVED_JAVA_SOURCE but Starlake $VERSION requires Java $min_version or above."
+        echo "Java $RESOLVED_JAVA_MAJOR found via $RESOLVED_JAVA_SOURCE but Starflow $VERSION requires Java $min_version or above."
     else
-        echo "No Java found (checked JAVA_HOME and PATH). Starlake $VERSION requires Java $min_version or above."
+        echo "No Java found (checked JAVA_HOME and PATH). Starflow $VERSION requires Java $min_version or above."
     fi
 
     local os arch
@@ -336,7 +336,7 @@ main() {
     print_starlake_ascii_art
     get_installation_directory "$@"
     get_version_to_install "$@"
-    # after version resolution: the java floor depends on the Starlake version
+    # after version resolution: the java floor depends on the Starflow version
     # (<= 1.4 -> java 11, >= 1.5 -> java 17), and an embedded JDK would land
     # in $INSTALL_DIR/jdk
     ensure_java

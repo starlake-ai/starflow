@@ -2,7 +2,7 @@
  * Setup.java
  *
  * This class provides a comprehensive setup utility for downloading, configuring, and managing
- * dependencies required for the Starlake project and its supported platforms (e.g., Spark, BigQuery,
+ * dependencies required for the Starflow project and its supported platforms (e.g., Spark, BigQuery,
  * Azure, Snowflake, Redshift, PostgreSQL, DuckDB, Kafka, etc.). It supports both Unix and Windows
  * environments and can interactively prompt the user to select which dependencies to enable.
  *
@@ -477,7 +477,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    // Starlake distribution artifacts are hosted on GitHub Releases
+    // Starflow distribution artifacts are hosted on GitHub Releases
     private static final String SL_RELEASE_BASE_URL = "https://github.com/starlake-ai/starlake/releases/download";
     private static final ResourceDependency SL_API_RELEASE_ZIP = new ResourceDependency("starlake-api", SL_RELEASE_BASE_URL + "/v" + SL_API_VERSION + "/starlake-api_" + SCALA_VERSION + "-" + SL_API_VERSION + ".zip");
 

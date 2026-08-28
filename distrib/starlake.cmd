@@ -82,7 +82,7 @@ if not defined SL_SKIP_CONSISTENCY_CHECK if exist "%SCRIPT_DIR%versions.cmd" if 
         if not exist "%SCRIPT_DIR%bin\spark\jars" set "_sl_guard_bad=1"
         if not exist "%SCRIPT_DIR%bin\spark\jars\spark-core_*-%SPARK_VERSION%.jar" set "_sl_guard_bad=1"
         if defined _sl_guard_bad (
-            echo ERROR: Starlake installation is inconsistent.
+            echo ERROR: Starflow installation is inconsistent.
             echo versions.cmd declares Spark %SPARK_VERSION% but %SCRIPT_DIR%bin\spark\jars has no matching spark-core jar ^(or is missing entirely - a re-provision may have been interrupted^).
             echo This usually happens after upgrading with an older starlake.cmd that did not refresh the Spark runtime, or an upgrade/reinstall that did not finish.
             echo Run "%SCRIPT_DIR%starlake.cmd" reinstall to fix it ^(wipes and re-downloads bin\spark, bin\deps and bin\sl for the currently pinned SL_VERSION^).
@@ -401,7 +401,7 @@ goto :eof
 
 :launch_starlake
     if not exist "%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%" (
-        echo Starlake jar %SL_JAR_NAME% does not exist. Please install it.
+        echo Starflow jar %SL_JAR_NAME% does not exist. Please install it.
         exit /b 1
     )
 
@@ -473,7 +473,7 @@ goto :eof
     goto :default_command
 
 :version_command
-    echo Starlake %SL_VERSION%
+    echo Starflow %SL_VERSION%
     echo Duckdb JDBC driver %DUCKDB_VERSION%
     echo BigQuery Spark connector %SPARK_BQ_VERSION%
     echo Hadoop for Azure %HADOOP_AZURE_VERSION%
@@ -577,7 +577,7 @@ goto :eof
 
     call :select_starlake_version "%FORCED_SL_VERSION%"
     if defined NEW_SL_VERSION (
-        echo Upgrading Starlake to %NEW_SL_VERSION%...
+        echo Upgrading Starflow to %NEW_SL_VERSION%...
         set "TARGET_REF=v%NEW_SL_VERSION%"
 
         rem Wipe bin\spark if the target release pins a different Spark (see
@@ -647,7 +647,7 @@ goto :eof
     call :launch_setup "%_install_ref%"
     if errorlevel 1 exit /b 1
     echo.
-    echo Installation done. You're ready to enjoy Starlake!
+    echo Installation done. You're ready to enjoy Starflow!
     echo If any errors happen during installation. Please try to install again or open an issue.
     goto :eof
 

@@ -147,7 +147,7 @@ then
     *)
       if [ ! -d "$SCRIPT_DIR/bin/spark/jars" ] || ! compgen -G "$SCRIPT_DIR/bin/spark/jars/spark-core_*-${SPARK_VERSION}.jar" > /dev/null 2>&1
       then
-        echo "ERROR: Starlake installation is inconsistent." >&2
+        echo "ERROR: Starflow installation is inconsistent." >&2
         echo "versions.sh declares Spark $SPARK_VERSION but $SCRIPT_DIR/bin/spark/jars has no matching spark-core jar (or is missing entirely - a re-provision may have been interrupted)." >&2
         echo "This usually happens after upgrading with an older starlake.sh that did not refresh the Spark runtime, or an upgrade/reinstall that did not finish." >&2
         echo "Run '$SCRIPT_DIR/starlake.sh reinstall' to fix it (wipes and re-downloads bin/spark, bin/deps and bin/sl for the currently pinned SL_VERSION)." >&2
@@ -581,7 +581,7 @@ launch_starlake() {
       fi
     fi
   else
-    echo "Starlake jar $SL_JAR_NAME does not exists. Please install it."
+    echo "Starflow jar $SL_JAR_NAME does not exists. Please install it."
     exit 1
   fi
 }
@@ -589,7 +589,7 @@ launch_starlake() {
 
 case "$1" in
   --version|version)
-	  echo Starlake $SL_VERSION
+	  echo Starflow $SL_VERSION
 	  echo Duckdb JDBC driver ${DUCKDB_VERSION}
 	  echo BigQuery Spark connector ${SPARK_BQ_VERSION}
 	  echo Hadoop for Azure ${HADOOP_AZURE_VERSION}
@@ -639,7 +639,7 @@ case "$1" in
     fi
     launch_setup "$TARGET_REF"
     echo
-    echo "Installation done. You're ready to enjoy Starlake!"
+    echo "Installation done. You're ready to enjoy Starflow!"
     echo If any errors happen during installation. Please try to install again or open an issue.
     ;;
   upgrade)
@@ -667,7 +667,7 @@ case "$1" in
     done
     select_starlake_version "$FORCED_SL_VERSION"
     if [ -n "$NEW_SL_VERSION" ]; then
-        echo "Upgrading Starlake to $NEW_SL_VERSION..."
+        echo "Upgrading Starflow to $NEW_SL_VERSION..."
 
         TARGET_REF="v$NEW_SL_VERSION"
 
