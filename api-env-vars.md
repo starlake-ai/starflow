@@ -18,7 +18,7 @@ This document describes all environment variables that can be used to configure 
 | `SL_API_APP_TYPE` | Application type: `web`, `snowflake_native_app`, `bigquery_native_app`, `redshift_native_app` | `web` |
 | `SL_API_MAX_AGE_MINUTES` | Session maximum age in minutes | `120` |
 | `SL_API_MODE` | API mode: `LOCAL` (on-premise auth), `CLOUD` (cloud auth), `ALL` (both), `SAAS` (multitenant) | `LOCAL` |
-| `SL_API_UI_FOLDER` | Path where static UI files are located | `/Users/hayssams/git/starlake-api/ui` |
+| `SL_API_UI_FOLDER` | Path where static UI files are located | `/path/to/starlake-api/ui` |
 | `SL_API_DAG_FOLDER` | Relative path to project-root where DAGs are generated | `dags` |
 | `SL_API_DOCS_USER` | Username for accessing the docs (alias: `SL_API_DOCS_USERS`) | `starlake` |
 | `SL_API_DOCS_PASSWORD` | Password for accessing the docs | `s3cret.Paw` |

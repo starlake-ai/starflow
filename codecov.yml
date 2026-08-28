@@ -1,5 +1,4 @@
 ignore:
   - "src/main/scala/ai/starlake/job/Main"
   - "src/main/scala/ai/starlake/repl/Main.scala"
-  - "src/main/scala/com/ebiznext/comet/job/Main.scala"
   - "src/main/scala/ai/starlake/serve/SingleUserMainServer.scala"

@@ -10,7 +10,7 @@ assignees: ''
 ## Description
 Add here a clear and concise  description of the suggested feature. 
 Is your feature request related to a problem? Please describe.
-Is this feature related to any client using Comet? How?
+Is this feature related to any client using Starflow? How?
 
 ## Solution proposition
 A clear and concise description of what you want to happen.
