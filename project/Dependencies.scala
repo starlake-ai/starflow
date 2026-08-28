@@ -205,7 +205,7 @@ object Dependencies {
   )
 
   val jna_apple_arm_testcontainers = Seq(
-    "net.java.dev.jna" % "jna" % "5.12.1"
+    "net.java.dev.jna" % "jna" % "5.19.1"
   )
 
   val pgGcp = Seq(
