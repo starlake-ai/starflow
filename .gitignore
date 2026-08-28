@@ -185,6 +185,6 @@ samples/starbake/datasets
 .vscode/
 
 # Untracked local secrets (e.g. SL_DISCORD_WEBHOOK_URL for
-# scripts/announce-release-discord.sh). .env.example is the tracked template.
+# scripts/announce-release-discord.sh).
 .env
 .env.local

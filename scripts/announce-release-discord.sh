@@ -11,9 +11,9 @@
 # Modeled on quack-on-demand's scripts/announce-release-discord.sh.
 #
 # Webhook: SL_DISCORD_WEBHOOK_URL env var, falling back to a
-# SL_DISCORD_WEBHOOK_URL=... line in the untracked .env at the repo root (see
-# .env.example). The URL is a credential (anyone holding it can post to the
-# channel) - never commit it.
+# SL_DISCORD_WEBHOOK_URL=... line in the untracked .env at the repo root.
+# The URL is a credential (anyone holding it can post to the channel) -
+# never commit it.
 
 set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
