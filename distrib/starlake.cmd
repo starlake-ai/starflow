@@ -23,6 +23,20 @@ if not defined HADOOP_HOME (
 )
 set "PATH=%HADOOP_HOME%\bin;%PATH%"
 
+rem Record which version-pin variables were already set by the USER's
+rem environment, BEFORE versions.cmd is loaded below. Setup.java treats any of
+rem these env vars as an override of its compiled-in pins, and unlike Unix
+rem (sourced versions.sh variables stay shell-local), EVERY cmd variable
+rem reaches child processes. :launch_setup therefore scrubs the pins that came
+rem only from versions.cmd, so a pinned setup.jar applies its OWN release's
+rem defaults - otherwise upgrading 1.8.x -> 1.7.x kept SPARK_VERSION=4.1.3 in
+rem the child env and 1.7.1's Setup 404ed downloading a Spark 4 dist that does
+rem not exist under its Spark 3 URL scheme. SL_VERSION and the ENABLE_* flags
+rem are deliberately NOT on this list: both are managed intentionally by this
+rem script (reinstall/upgrade pinning and infer_enable_flags_from_deps).
+set "SL_PIN_VARS=SCALA_VERSION SPARK_VERSION HADOOP_VERSION DUCKDB_VERSION SPARK_BQ_VERSION HADOOP_AZURE_VERSION AZURE_STORAGE_VERSION JETTY_VERSION SPARK_SNOWFLAKE_VERSION SNOWFLAKE_JDBC_VERSION POSTGRESQL_VERSION TRINODB_VERSION AWS_JAVA_SDK_VERSION AWS_JAVA_SDK_V2_VERSION HADOOP_AWS_VERSION REDSHIFT_JDBC_VERSION SPARK_REDSHIFT_VERSION CONFLUENT_VERSION FLIGHT_SQL_JDBC_VERSION"
+for %%V in (%SL_PIN_VARS%) do if defined %%V set "SL_USERENV_%%V=1"
+
 if /i "%1" == "reinstall" (
     rem Read the currently-pinned SL_VERSION (if any) before wiping versions.cmd,
     rem so install_command below can reinstall AT that version instead of
@@ -364,7 +378,18 @@ goto :handle_command
             exit /b 1
         )
     )
+    rem Scrub versions.cmd-loaded pins from the child environment (see the
+    rem SL_PIN_VARS comment at the top of this script): the setup.jar fetched
+    rem above must apply its OWN compiled-in defaults for Spark/Hadoop and
+    rem every connector. Pins genuinely set in the user's environment before
+    rem this script ran (captured in SL_USERENV_*) are kept as overrides.
+    for %%V in (%SL_PIN_VARS%) do if not defined SL_USERENV_%%V set "%%V="
+
     "%RUNNER%" -cp "%SCRIPT_DIR%setup.jar" Setup "%SCRIPT_DIR:~0,-1%" "windows"
+    if errorlevel 1 (
+        echo Error: setup failed - the installation is incomplete.
+        exit /b 1
+    )
 
     if exist "%API_BIN_DIR%" (
         for %%f in ("%API_BIN_DIR%\local-*") do (
@@ -469,7 +494,9 @@ goto :eof
     rem so scripted/CI upgrades don't have to drive the interactive prompt.
     if not "%~1" == "" (
         set "NEW_SL_VERSION=%~1"
-        echo Selected version: %NEW_SL_VERSION% ^(forced^)
+        rem %~1, not %NEW_SL_VERSION%: inside this parenthesized block, percent
+        rem expansion happened at parse time, before the set above ran.
+        echo Selected version: %~1 ^(forced^)
         goto :eof
     )
 
@@ -583,6 +610,7 @@ goto :eof
         rem bin\deps\python-libs, only skips bin\spark when already present
         rem (handled above), and writes a brand new versions.cmd from scratch.
         call :launch_setup "!TARGET_REF!"
+        if errorlevel 1 exit /b 1
 
         echo Upgrade complete.
     )
@@ -617,6 +645,7 @@ goto :eof
     rem the probe is skipped, findstr above may have left errorlevel 1 behind.
     if /i "%1" == "install" if exist "%SCRIPT_DIR%bin\spark" call :sync_spark_runtime "%_install_ref%" || exit /b 1
     call :launch_setup "%_install_ref%"
+    if errorlevel 1 exit /b 1
     echo.
     echo Installation done. You're ready to enjoy Starlake!
     echo If any errors happen during installation. Please try to install again or open an issue.

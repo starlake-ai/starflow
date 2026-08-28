@@ -478,7 +478,10 @@ launch_setup() {
       exit 1
     fi
   fi
-  $RUNNER -cp "$SCRIPT_DIR/setup.jar" Setup "$SCRIPT_DIR" unix
+  if ! $RUNNER -cp "$SCRIPT_DIR/setup.jar" Setup "$SCRIPT_DIR" unix; then
+    echo "Error: setup failed - the installation is incomplete." >&2
+    exit 1
+  fi
 
   # if API_BIN_DIR exists set all files starting with local- as executable
   if [ -d "$API_BIN_DIR" ]; then
