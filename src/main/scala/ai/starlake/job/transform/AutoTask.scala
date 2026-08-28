@@ -444,17 +444,29 @@ abstract class AutoTask(
           jdbcRunEngine,
           sinkConfig
         )
-        val updatedTaskDesc = taskDesc
-
-        /*
+        // When syncSqlWithYaml is enabled (SL_SYNC_SQL_WITH_YAML=true), align the task's YAML
+        // attributes with the SQL before running, so that a column added to the SELECT flows into
+        // the schema-sync ALTERs below without a manual `transform --sync-apply`. Only for
+        // user-invoked transforms (syncSchema), never for audit tables (recursion). A sync failure
+        // must not kill an otherwise runnable transform: fall back to the task as declared.
+        val updatedTaskDesc =
           if (
             this.syncSchema && settings.appConfig.syncSqlWithYaml && taskDesc._auditTableName.isEmpty
           ) {
-            val list = schemaHandler.syncPreviewSqlWithDb(taskDesc.fullName(), None, None)
-            schemaHandler.syncApplySqlWithYaml(taskDesc, list, None)
+            Try {
+              val list = schemaHandler.syncPreviewSqlWithDb(taskDesc.fullName(), None, accessToken)
+              schemaHandler.syncApplySqlWithYaml(taskDesc, list, None)
+            } match {
+              case Success(synced) => synced
+              case Failure(e) =>
+                logger.warn(
+                  s"syncSqlWithYaml: could not sync YAML attributes from SQL for task ${taskDesc
+                      .fullName()}, running with the declared attributes. Cause: ${e.getMessage}"
+                )
+                taskDesc
+            }
           } else
             taskDesc
-         */
 
         // synched if ready for sync and syncYamlWithDb is true (SL_SYNC_YAML_WITH_DB=true) and not an audit table (to avoid recursion)
         if (
