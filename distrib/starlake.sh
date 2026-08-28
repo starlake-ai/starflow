@@ -147,7 +147,7 @@ then
     *)
       if [ ! -d "$SCRIPT_DIR/bin/spark/jars" ] || ! compgen -G "$SCRIPT_DIR/bin/spark/jars/spark-core_*-${SPARK_VERSION}.jar" > /dev/null 2>&1
       then
-        echo "ERROR: Starlake installation is inconsistent." >&2
+        echo "ERROR: Starflow installation is inconsistent." >&2
         echo "versions.sh declares Spark $SPARK_VERSION but $SCRIPT_DIR/bin/spark/jars has no matching spark-core jar (or is missing entirely - a re-provision may have been interrupted)." >&2
         echo "This usually happens after upgrading with an older starlake.sh that did not refresh the Spark runtime, or an upgrade/reinstall that did not finish." >&2
         echo "Run '$SCRIPT_DIR/starlake.sh reinstall' to fix it (wipes and re-downloads bin/spark, bin/deps and bin/sl for the currently pinned SL_VERSION)." >&2
@@ -392,7 +392,7 @@ select_starlake_version() {
         return
     fi
 
-    RELEASES_JSON=$(get_content_from_url "https://api.github.com/repos/starlake-ai/starlake/releases?per_page=15")
+    RELEASES_JSON=$(get_content_from_url "https://api.github.com/repos/starlake-ai/starflow/releases?per_page=15")
     ALL_RELEASE_VERSIONS=$(echo "$RELEASES_JSON" \
       | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9][^"]*"' \
       | sed -E 's/.*"v([^"]+)".*/\1/' \
@@ -400,7 +400,7 @@ select_starlake_version() {
       | sort -rV)
 
     if [ -z "$ALL_RELEASE_VERSIONS" ]; then
-        echo "Error: no releases found at https://github.com/starlake-ai/starlake/releases" >&2
+        echo "Error: no releases found at https://github.com/starlake-ai/starflow/releases" >&2
         exit 1
     fi
 
@@ -442,7 +442,7 @@ sync_spark_runtime() {
   # error handling is needed here.
   local target_ref="$1"
   local target_setup_java="$SCRIPT_DIR/.target-setup-java.tmp"
-  get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/$target_ref/src/main/java/Setup.java" "$target_setup_java"
+  get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starflow/$target_ref/src/main/java/Setup.java" "$target_setup_java"
   TARGET_SPARK_VERSION=$(grep -o 'getEnv("SPARK_VERSION")\.orElse("[^"]*")' "$target_setup_java" | head -n1 | sed -E 's/.*orElse\("([^"]*)"\).*/\1/')
   rm -f "$target_setup_java"
 
@@ -465,7 +465,7 @@ launch_setup() {
   # master happens to be at the time. Only versions with no release tag to fetch
   # from (SNAPSHOTs, local builds) fall back to master.
   local ref="${1:-master}"
-  local setup_url="https://raw.githubusercontent.com/starlake-ai/starlake/$ref/distrib/setup.jar"
+  local setup_url="https://raw.githubusercontent.com/starlake-ai/starflow/$ref/distrib/setup.jar"
   get_binary_from_url "$setup_url" "$SCRIPT_DIR/setup.jar"
 
   if [ -n "${JAVA_HOME}" ]; then
@@ -581,7 +581,7 @@ launch_starlake() {
       fi
     fi
   else
-    echo "Starlake jar $SL_JAR_NAME does not exists. Please install it."
+    echo "Starflow jar $SL_JAR_NAME does not exists. Please install it."
     exit 1
   fi
 }
@@ -589,7 +589,7 @@ launch_starlake() {
 
 case "$1" in
   --version|version)
-	  echo Starlake $SL_VERSION
+	  echo Starflow $SL_VERSION
 	  echo Duckdb JDBC driver ${DUCKDB_VERSION}
 	  echo BigQuery Spark connector ${SPARK_BQ_VERSION}
 	  echo Hadoop for Azure ${HADOOP_AZURE_VERSION}
@@ -639,14 +639,14 @@ case "$1" in
     fi
     launch_setup "$TARGET_REF"
     echo
-    echo "Installation done. You're ready to enjoy Starlake!"
+    echo "Installation done. You're ready to enjoy Starflow!"
     echo If any errors happen during installation. Please try to install again or open an issue.
     ;;
   upgrade)
     # Self-update: download latest starlake.sh and re-launch, forwarding any
     # extra args (e.g. --version X.Y.Z) through to _do_upgrade.
     echo "Updating starlake script..."
-    get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/starlake.sh" "$SCRIPT_DIR/starlake.sh.tmp"
+    get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/starlake.sh" "$SCRIPT_DIR/starlake.sh.tmp"
     chmod +x "$SCRIPT_DIR/starlake.sh.tmp"
     mv "$SCRIPT_DIR/starlake.sh.tmp" "$SCRIPT_DIR/starlake.sh"
     shift
@@ -667,7 +667,7 @@ case "$1" in
     done
     select_starlake_version "$FORCED_SL_VERSION"
     if [ -n "$NEW_SL_VERSION" ]; then
-        echo "Upgrading Starlake to $NEW_SL_VERSION..."
+        echo "Upgrading Starflow to $NEW_SL_VERSION..."
 
         TARGET_REF="v$NEW_SL_VERSION"
 

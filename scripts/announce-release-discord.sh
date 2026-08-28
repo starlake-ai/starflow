@@ -44,9 +44,9 @@ section="$(awk -v v="$version" '
 grep -q '[^[:space:]]' <<<"$section" \
   || echo "WARNING: no '# $version' section in CHANGELOG.md; announcing links only." >&2
 
-header="**Starlake v${version} released**
-https://github.com/starlake-ai/starlake
-Release notes: https://github.com/starlake-ai/starlake/releases/tag/v${version}"
+header="**Starflow v${version} released**
+https://github.com/starlake-ai/starflow
+Release notes: https://github.com/starlake-ai/starflow/releases/tag/v${version}"
 
 post() {
   python3 -c 'import json,sys; print(json.dumps({"content": sys.stdin.read().rstrip()}))' \

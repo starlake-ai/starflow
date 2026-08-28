@@ -82,7 +82,7 @@ if not defined SL_SKIP_CONSISTENCY_CHECK if exist "%SCRIPT_DIR%versions.cmd" if 
         if not exist "%SCRIPT_DIR%bin\spark\jars" set "_sl_guard_bad=1"
         if not exist "%SCRIPT_DIR%bin\spark\jars\spark-core_*-%SPARK_VERSION%.jar" set "_sl_guard_bad=1"
         if defined _sl_guard_bad (
-            echo ERROR: Starlake installation is inconsistent.
+            echo ERROR: Starflow installation is inconsistent.
             echo versions.cmd declares Spark %SPARK_VERSION% but %SCRIPT_DIR%bin\spark\jars has no matching spark-core jar ^(or is missing entirely - a re-provision may have been interrupted^).
             echo This usually happens after upgrading with an older starlake.cmd that did not refresh the Spark runtime, or an upgrade/reinstall that did not finish.
             echo Run "%SCRIPT_DIR%starlake.cmd" reinstall to fix it ^(wipes and re-downloads bin\spark, bin\deps and bin\sl for the currently pinned SL_VERSION^).
@@ -325,7 +325,7 @@ goto :handle_command
     rem Spark when bin\spark is ABSENT, so wiping a mismatched runtime here is
     rem exactly what makes the subsequent :launch_setup re-provision it.
     set "TARGET_SETUP_JAVA=%SCRIPT_DIR%.target-setup-java.tmp"
-    call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/%~1/src/main/java/Setup.java" "%TARGET_SETUP_JAVA%"
+    call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starflow/%~1/src/main/java/Setup.java" "%TARGET_SETUP_JAVA%"
     if errorlevel 1 exit /b 1
     rem The regex pattern is passed base64-encoded (UTF8) rather than typed
     rem literally: it contains parens and embedded double-quote
@@ -363,7 +363,7 @@ goto :handle_command
     rem (SNAPSHOTs, local builds) fall back to master.
     set "_ls_ref=%~1"
     if "%_ls_ref%" == "" set "_ls_ref=master"
-    set "setup_url=https://raw.githubusercontent.com/starlake-ai/starlake/%_ls_ref%/distrib/setup.jar"
+    set "setup_url=https://raw.githubusercontent.com/starlake-ai/starflow/%_ls_ref%/distrib/setup.jar"
     echo Downloading %setup_url% to %SCRIPT_DIR%setup.jar
     call :get_binary_from_url "%setup_url%" "%SCRIPT_DIR%setup.jar"
     if errorlevel 1 exit /b 1
@@ -401,7 +401,7 @@ goto :eof
 
 :launch_starlake
     if not exist "%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%" (
-        echo Starlake jar %SL_JAR_NAME% does not exist. Please install it.
+        echo Starflow jar %SL_JAR_NAME% does not exist. Please install it.
         exit /b 1
     )
 
@@ -473,7 +473,7 @@ goto :eof
     goto :default_command
 
 :version_command
-    echo Starlake %SL_VERSION%
+    echo Starflow %SL_VERSION%
     echo Duckdb JDBC driver %DUCKDB_VERSION%
     echo BigQuery Spark connector %SPARK_BQ_VERSION%
     echo Hadoop for Azure %HADOOP_AZURE_VERSION%
@@ -503,7 +503,7 @@ goto :eof
     echo Fetching available versions...
 
     set "temp_meta=%TEMP%\sl_releases_%RANDOM%.json"
-    call :get_binary_from_url "https://api.github.com/repos/starlake-ai/starlake/releases?per_page=15" "%temp_meta%"
+    call :get_binary_from_url "https://api.github.com/repos/starlake-ai/starflow/releases?per_page=15" "%temp_meta%"
     if exist "%temp_meta%" (
          for /f "usebackq tokens=*" %%v in (`powershell -Command "$releases = Get-Content '%temp_meta%' -Raw | ConvertFrom-Json; $releases | ForEach-Object { $_.tag_name } | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | ForEach-Object { $_.TrimStart('v') } | Sort-Object { [version]$_ } -Descending | Select-Object -First 5"`) do (
              set "LATEST_RELEASE_VERSIONS=!LATEST_RELEASE_VERSIONS! %%v"
@@ -513,7 +513,7 @@ goto :eof
     )
 
     if not defined DEFAULT_VERSION (
-        echo Error: no releases found at https://github.com/starlake-ai/starlake/releases
+        echo Error: no releases found at https://github.com/starlake-ai/starflow/releases
         exit /b 1
     )
 
@@ -533,7 +533,7 @@ goto :eof
     REM Self-update: download latest starlake.cmd and re-launch, forwarding any
     REM extra args (e.g. --version X.Y.Z) through to _do_upgrade.
     echo Updating starlake script...
-    call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/starlake.cmd" "%SCRIPT_DIR%starlake.cmd.tmp"
+    call :get_binary_from_url "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/starlake.cmd" "%SCRIPT_DIR%starlake.cmd.tmp"
     REM Ensure CRLF line endings
     powershell -Command "$c = [IO.File]::ReadAllText('%SCRIPT_DIR%starlake.cmd.tmp'); $c = $c -replace \"`r`n\",\"`n\" -replace \"`n\",\"`r`n\"; [IO.File]::WriteAllText('%SCRIPT_DIR%starlake.cmd.tmp', $c)"
     copy /y "%SCRIPT_DIR%starlake.cmd.tmp" "%SCRIPT_DIR%starlake.cmd" >nul
@@ -577,7 +577,7 @@ goto :eof
 
     call :select_starlake_version "%FORCED_SL_VERSION%"
     if defined NEW_SL_VERSION (
-        echo Upgrading Starlake to %NEW_SL_VERSION%...
+        echo Upgrading Starflow to %NEW_SL_VERSION%...
         set "TARGET_REF=v%NEW_SL_VERSION%"
 
         rem Wipe bin\spark if the target release pins a different Spark (see
@@ -647,7 +647,7 @@ goto :eof
     call :launch_setup "%_install_ref%"
     if errorlevel 1 exit /b 1
     echo.
-    echo Installation done. You're ready to enjoy Starlake!
+    echo Installation done. You're ready to enjoy Starflow!
     echo If any errors happen during installation. Please try to install again or open an issue.
     goto :eof
 
