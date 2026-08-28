@@ -131,6 +131,11 @@ class DuckDbOverwriteSchemaSpec extends TestHelper {
       )
 
       result.isFailure shouldBe true
+      // the error must name the offending column and tell the user exactly
+      // how to evolve the table schema
+      val message = result.failed.get.getMessage
+      message should include("email")
+      message should include("starlake transform --name mydb.mytable --sync-apply")
       // the pre-existing rows must survive the failed run: TRUNCATE and the
       // failed INSERT share a transaction and roll back together
       val results = readTable()
