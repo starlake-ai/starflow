@@ -156,6 +156,19 @@ class BigQueryAutoTask(
       )
     }
 
+  /** The target table's actual column names, or Nil when the table cannot be described. Used only
+    * to enrich error messages; never throws.
+    */
+  private def bqTargetColumns(): List[String] =
+    Try {
+      bqNativeJob(bigQuerySinkConfig, "ignore sql", Some(settings.appConfig.shortJobTimeoutMs))
+        .getBQSchema(targetTableId)
+        .getFields
+        .asScala
+        .map(_.getName)
+        .toList
+    }.getOrElse(Nil)
+
   override def tableExists: Boolean = {
     val tableExists =
       bqNativeJob(bigQuerySinkConfig, "ignore sql", Some(settings.appConfig.shortJobTimeoutMs))
@@ -549,8 +562,9 @@ class BigQueryAutoTask(
               jobResult
             case Failure(err) =>
               val end = Timestamp.from(Instant.now())
-              logAuditFailure(start, end, err, test)
-              Failure(err)
+              val enriched = enrichWithSchemaSyncHint(bqTargetColumns(), err)
+              logAuditFailure(start, end, enriched, test)
+              Failure(enriched)
           }
 
         case Some(_) =>

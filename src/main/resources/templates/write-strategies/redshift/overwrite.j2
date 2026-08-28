@@ -6,7 +6,7 @@ DROP MATERIALIZED VIEW IF EXISTS {{ tableFullName }};
 CREATE MATERIALIZED VIEW {{ tableFullName }} AS SELECT {{ tableColumnsCsv }} FROM #SL_INCOMING;
 {% else %}
 TRUNCATE TABLE {{ tableFullName }};
-INSERT INTO {{ tableFullName }} SELECT {{ tableColumnsCsv }} FROM #SL_INCOMING;
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM #SL_INCOMING;
 {% endif %}
 
 DROP VIEW IF EXISTS #SL_INCOMING;
