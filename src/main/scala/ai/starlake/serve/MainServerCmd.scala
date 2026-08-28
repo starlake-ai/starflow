@@ -8,7 +8,7 @@ import scopt.OParser
 
 import scala.util.Try
 
-/** Command to run the Starlake server.
+/** Command to run the Starflow server.
   *
   * Usage: starlake serve [options]
   */
@@ -16,7 +16,7 @@ object MainServerCmd extends Cmd[MainServerConfig] {
   override def command: String = "serve"
 
   override def pageDescription: String =
-    "Start a local Starlake HTTP server on a configurable host and port to serve API requests for your data project."
+    "Start a local Starflow HTTP server on a configurable host and port to serve API requests for your data project."
   override def pageKeywords: Seq[String] =
     Seq("starlake serve", "local server", "HTTP API", "development server")
 
@@ -26,7 +26,7 @@ object MainServerCmd extends Cmd[MainServerConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Start the Starlake HTTP server for running commands via REST API."""
+        """Start the Starflow HTTP server for running commands via REST API."""
       ),
       builder
         .opt[String]("host")

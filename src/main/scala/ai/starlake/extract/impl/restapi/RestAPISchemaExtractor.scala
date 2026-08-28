@@ -10,7 +10,7 @@ import com.typesafe.scalalogging.LazyLogging
 import java.util.regex.Pattern
 import scala.jdk.CollectionConverters._
 
-/** Extracts Starlake schemas from REST API endpoints by fetching a sample page and inferring the
+/** Extracts Starflow schemas from REST API endpoints by fetching a sample page and inferring the
   * schema from the JSON response structure.
   */
 class RestAPISchemaExtractor(
@@ -169,7 +169,7 @@ class RestAPISchemaExtractor(
     else None
   }
 
-  /** Infer Starlake TableAttributes from a JSON record */
+  /** Infer Starflow TableAttributes from a JSON record */
   private def inferAttributes(
     record: JsonNode,
     excludeFields: List[Pattern]

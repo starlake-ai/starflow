@@ -17,7 +17,7 @@ object BootstrapCmd extends Cmd[BootstrapConfig] {
   override def command: String = "bootstrap"
 
   override def pageDescription: String =
-    "Create a new Starlake project from scratch or from a template such as quickstart or userguide with a single command."
+    "Create a new Starflow project from scratch or from a template such as quickstart or userguide with a single command."
   override def pageKeywords: Seq[String] =
     Seq("starlake bootstrap", "project setup", "quickstart", "project template")
 
@@ -28,7 +28,7 @@ object BootstrapCmd extends Cmd[BootstrapConfig] {
       builder.head(shell, command, "[options]"),
       builder.note(
         """
-          |Create a new Starlake project from a template. Generates the required directory structure and sample configuration files to get started quickly. See [Project Setup Guide](/guides/project-setup/starlake-project-setup).
+          |Create a new Starflow project from a template. Generates the required directory structure and sample configuration files to get started quickly. See [Project Setup Guide](/guides/project-setup/starlake-project-setup).
           |
           |Create a new project optionally based on a specific template eq. quickstart / userguide
           |""".stripMargin

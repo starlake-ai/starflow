@@ -46,12 +46,12 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
           |(a Power BI TMDL folder: database.tmdl, model.tmdl, relationships.tmdl and
           |one tables/<table>.tmdl per table).
           |
-          |For ossie, Starlake-specific attributes with no Ossie counterpart are
+          |For ossie, Starflow-specific attributes with no Ossie counterpart are
           |preserved in custom_extensions blocks under the STARLAKE vendor name.
           |
           |For lookml, --connection sets the Looker connection name in the model file.
           |
-          |For tmdl, --connection names the Starlake connection used to derive each
+          |For tmdl, --connection names the Starflow connection used to derive each
           |table's Power Query source; simple aggregate metrics are translated to DAX
           |and anything else becomes a BLANK() measure carrying the original SQL in a
           |TODO comment.
@@ -90,7 +90,7 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
         .opt[String]("connection")
         .action((x, c) => c.copy(connection = Some(x)))
         .text(
-          "lookml: Looker connection name written to the model file; tmdl: Starlake connection used to derive the Power Query source. Defaults to the project's connectionRef"
+          "lookml: Looker connection name written to the model file; tmdl: Starflow connection used to derive the Power Query source. Defaults to the project's connectionRef"
         )
         .optional(),
       reportFormatOption(builder)((c, x) => c.copy(reportFormat = x))

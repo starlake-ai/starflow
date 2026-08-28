@@ -17,7 +17,7 @@ trait SettingsCmd extends Cmd[SettingsConfig] {
   def command = "settings"
 
   override def pageDescription: String =
-    "Display and validate Starlake project settings, including testing database and warehouse connection configurations."
+    "Display and validate Starflow project settings, including testing database and warehouse connection configurations."
   override def pageKeywords: Seq[String] =
     Seq("starlake settings", "project configuration", "connection test", "data warehouse setup")
 
@@ -27,7 +27,7 @@ trait SettingsCmd extends Cmd[SettingsConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Print the resolved Starlake settings or test a database connection."""
+        """Print the resolved Starflow settings or test a database connection."""
       ),
       builder
         .opt[String]("test-connection")

@@ -52,7 +52,7 @@ import scala.util.{Failure, Success, Try, Using}
   *   - `sinkToJDBC()` - Delegates to JdbcAutoTask for native JDBC operations
   *
   * @param schema
-  *   Optional Starlake schema for the target table (used for type mapping)
+  *   Optional Starflow schema for the target table (used for type mapping)
   */
 class SparkAutoTask(
   appId: Option[String],
@@ -678,7 +678,7 @@ class SparkAutoTask(
     * @param loadedDF
     *   The DataFrame to sink to BigQuery
     * @param slSchema
-    *   Optional Starlake schema for type mapping (especially variants)
+    *   Optional Starflow schema for type mapping (especially variants)
     */
   private def sinkToBQ(loadedDF: DataFrame, slSchema: Option[SchemaInfo] = None): Try[JobResult] = {
     val twoSteps = writeStrategy.isMerge()

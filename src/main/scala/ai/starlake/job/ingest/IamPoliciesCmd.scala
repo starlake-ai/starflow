@@ -20,7 +20,7 @@ object IamPoliciesCmd extends Cmd[IamPoliciesConfig] {
   val command = "iam-policies"
 
   override def pageDescription: String =
-    "Generate and apply IAM policies for your Starlake project resources, managing access control with authentication tokens."
+    "Generate and apply IAM policies for your Starflow project resources, managing access control with authentication tokens."
   override def pageKeywords: Seq[String] =
     Seq("starlake iam-policies", "IAM policies", "access control", "security")
 
@@ -30,7 +30,7 @@ object IamPoliciesCmd extends Cmd[IamPoliciesConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Apply IAM (Identity and Access Management) policies defined in Starlake YAML configuration to the target warehouse."""
+        """Apply IAM (Identity and Access Management) policies defined in Starflow YAML configuration to the target warehouse."""
       ),
       builder
         .opt[String]("accessToken")

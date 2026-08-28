@@ -21,7 +21,7 @@ trait Xls2YmlCmd extends Cmd[Xls2YmlConfig] with LazyLogging {
   def command = "xls2yml"
 
   override def pageDescription: String =
-    "Convert Excel files describing domains, schemas and attributes into Starlake YAML configuration files."
+    "Convert Excel files describing domains, schemas and attributes into Starflow YAML configuration files."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake xls2yml",
@@ -37,7 +37,7 @@ trait Xls2YmlCmd extends Cmd[Xls2YmlConfig] with LazyLogging {
       builder.programName(s"starlake $command"),
       builder.head("starlake", command, "[options]"),
       builder.note(
-        """Generate Starlake YAML configuration files from Excel spreadsheets."""
+        """Generate Starflow YAML configuration files from Excel spreadsheets."""
       ),
       builder
         .opt[Seq[String]]("files")
@@ -66,7 +66,7 @@ trait Xls2YmlCmd extends Cmd[Xls2YmlConfig] with LazyLogging {
         .action((x, c) => c.copy(outputPath = Some(x)))
         .optional()
         .text(
-          """Path for saving the resulting YAML file(s). Starlake domains path is used by default.""".stripMargin
+          """Path for saving the resulting YAML file(s). Starflow domains path is used by default.""".stripMargin
         ),
       builder
         .opt[String]("policyFile")

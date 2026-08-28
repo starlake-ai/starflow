@@ -440,7 +440,7 @@ class RestAPIClient(
 
   /** Resolve environment variable references like {{VAR_NAME}}.
     *
-    * Note: When configs are loaded from YAML via CLI commands, Starlake's Formatter.richFormat
+    * Note: When configs are loaded from YAML via CLI commands, Starflow's Formatter.richFormat
     * already resolves {{VAR}} patterns before deserialization, so values typically arrive
     * pre-resolved. This method serves as a fallback for programmatic usage.
     */

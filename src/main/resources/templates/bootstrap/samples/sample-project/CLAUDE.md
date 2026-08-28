@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Starlake** data pipeline project ("StarBake") — a sample bakery analytics system demonstrating data ingestion, transformation, and KPI computation. The default engine is **DuckDB** (configurable via environment files).
+This is a **Starlake Starflow** data pipeline project ("StarBake") — a sample bakery analytics system demonstrating data ingestion, transformation, and KPI computation. The default engine is **DuckDB** (configurable via environment files).
 
-## Starlake CLI
+## Starflow CLI
 
 Before running any `starlake` command, verify the CLI is available in the PATH by running `starlake --version`. If not found, ask the user for the path to the starlake executable. On Windows, the command is `starlake.cmd` instead of `starlake`.
 

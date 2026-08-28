@@ -36,12 +36,12 @@ import java.util.regex.Pattern
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
-/** `OpenAPISchemaExtractor` is responsible for extracting OpenAPI schemas into Starlake-compatible
+/** `OpenAPISchemaExtractor` is responsible for extracting OpenAPI schemas into Starflow-compatible
   * domain and schema structures. This class facilitates the transformation and organization of
-  * OpenAPI specifications for downstream processing and integration within the Starlake pipeline.
+  * OpenAPI specifications for downstream processing and integration within the Starflow pipeline.
   *
   * The class utilizes several helper methods to handle specific tasks such as extracting API
-  * information, grouping schemas by table, processing routes, mapping OpenAPI schemas to Starlake
+  * information, grouping schemas by table, processing routes, mapping OpenAPI schemas to Starflow
   * formats, and resolving schema collisions.
   *
   * Fields:
@@ -267,8 +267,8 @@ class OpenAPISchemaExtractor(
     }
   }
 
-  /** Generates Starlake schemas based on the provided OpenAPI schema, associated connection
-    * information, and format type mappings. For each OpenAPI schema, this method creates Starlake
+  /** Generates Starflow schemas based on the provided OpenAPI schema, associated connection
+    * information, and format type mappings. For each OpenAPI schema, this method creates Starflow
     * tables grouped by API routes while considering schema structures and metadata.
     *
     * @param schema
@@ -277,7 +277,7 @@ class OpenAPISchemaExtractor(
     *   A collection of schema descriptions and corresponding API essential information, linking the
     *   schema to API routes and providing metadata like paths and descriptions.
     * @param formatTypeMapping
-    *   A mapping between OpenAPI format types and corresponding Starlake data types, used to
+    *   A mapping between OpenAPI format types and corresponding Starflow data types, used to
     *   convert schema fields appropriately.
     */
   private def generateStarlakeSchemas(
@@ -722,16 +722,16 @@ class OpenAPISchemaExtractor(
     }).flatten
   }
 
-  /** Converts an OpenAPI schema definition into a Starlake schema representation.
+  /** Converts an OpenAPI schema definition into a Starflow schema representation.
     *
     * @param openAPIschema
     *   The OpenAPI schema to be converted. It is expected to adhere to the OpenAPI specification
     *   and include the relevant properties, definitions, and formats to describe the structure.
     * @param formatTypeMapping
-    *   A mapping between OpenAPI formats (e.g., date-time, binary) and their corresponding Starlake
+    *   A mapping between OpenAPI formats (e.g., date-time, binary) and their corresponding Starflow
     *   type equivalents (e.g., timestamp, string).
     * @return
-    *   A function that accepts a schema name (as a string) and generates a corresponding Starlake
+    *   A function that accepts a schema name (as a string) and generates a corresponding Starflow
     *   `Schema` instance. This `Schema` contains the converted attributes and metadata from the
     *   OpenAPI schema.
     */
@@ -908,7 +908,7 @@ class OpenAPISchemaExtractor(
           handleObjectSchema
         case _ =>
           throw new RuntimeException(
-            s"OpenAPI type ${schemaWithAttributes.getClass.getSimpleName} is not expected to have properties. If it's the root object, Starlake doesn't support it yet."
+            s"OpenAPI type ${schemaWithAttributes.getClass.getSimpleName} is not expected to have properties. If it's the root object, Starflow doesn't support it yet."
           )
       }
     }

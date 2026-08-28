@@ -146,7 +146,7 @@ object LookMLConverter extends LazyLogging {
           lines += s"    sql: $sql ;;"
         }
       case None =>
-        lines += "  # starlake: verify this measure, expression could not be mapped to a native LookML type"
+        lines += "  # starflow: verify this measure, expression could not be mapped to a native LookML type"
         lines += s"  measure: $name {"
         lines += "    type: number"
         lines += s"    sql: $expr ;;"

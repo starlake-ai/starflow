@@ -41,7 +41,7 @@ case class RestAPIDataExtractConfig(
 
 /** Extracts data from REST API endpoints and writes to CSV files. Data is written to
   * {outputDir}/{domain}/{tableName}-{timestamp}.csv and can then be picked up by the standard
-  * Starlake ingestion pipeline.
+  * Starflow ingestion pipeline.
   */
 class RestAPIDataExtractor(implicit settings: Settings) extends LazyLogging {
 

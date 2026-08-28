@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://json.schemastore.org/starlake.json",
-  "title": "Starlake Data Pipeline",
-  "description": "JSON Schema for Starlake Data Pipeline",
+  "title": "Starflow Data Pipeline",
+  "description": "JSON Schema for Starflow Data Pipeline",
   "type": "object",
   "properties": {
     "version": {
@@ -156,7 +156,7 @@
         },
         "selectSql": {
           "$ref": "#/definitions/ConvertibleToString",
-          "description": "Override the default select defined by Starlake"
+          "description": "Override the default select defined by Starflow"
         }
       },
       "required": ["createSql"]
@@ -1490,7 +1490,7 @@
         },
         "filter": {
           "$ref": "#/definitions/ConvertibleToString",
-          "description": "Optional SQL WHERE clause to filter data. This is used to exclude part of the data. This is not related to incremental extraction which is handled automatically by Starlake. Scope: Data extraction."
+          "description": "Optional SQL WHERE clause to filter data. This is used to exclude part of the data. This is not related to incremental extraction which is handled automatically by Starflow. Scope: Data extraction."
         },
         "stringPartitionFunc": {
           "$ref": "#/definitions/ConvertibleToString",
@@ -2659,7 +2659,7 @@
         },
         "http": {
           "$ref": "#/definitions/HttpV1",
-          "description": "HTTP server configuration for the Starlake REST API"
+          "description": "HTTP server configuration for the Starflow REST API"
         },
         "timezone": {
           "$ref": "#/definitions/ConvertibleToString",

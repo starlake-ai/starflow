@@ -615,7 +615,7 @@
         },
         "selectSql": {
           "$ref": "#/definitions/ConvertibleToString",
-          "description": "Override the default select defined by Starlake"
+          "description": "Override the default select defined by Starflow"
         }
       },
       "required": [
@@ -932,7 +932,7 @@
     },
     "http": {
       "$ref": "#/definitions/HttpV1",
-      "description": "HTTP server configuration for the Starlake REST API"
+      "description": "HTTP server configuration for the Starflow REST API"
     },
     "timezone": {
       "$ref": "#/definitions/ConvertibleToString",

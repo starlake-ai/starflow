@@ -18,7 +18,7 @@ object AutoTaskDependenciesCmd extends Cmd[AutoTaskDependenciesConfig] {
   val command = "lineage"
 
   override def pageDescription: String =
-    "Generate task dependency graphs as DOT, SVG, PNG or JSON to visualize data lineage across your Starlake project."
+    "Generate task dependency graphs as DOT, SVG, PNG or JSON to visualize data lineage across your Starflow project."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake lineage",

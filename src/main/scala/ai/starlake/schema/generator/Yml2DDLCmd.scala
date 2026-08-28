@@ -17,7 +17,7 @@ object Yml2DDLCmd extends Cmd[Yml2DDLConfig] {
   val command = "yml2ddl"
 
   override def pageDescription: String =
-    "Generate DDL statements from Starlake YAML schemas for your target data warehouse, with optional JDBC apply support."
+    "Generate DDL statements from Starflow YAML schemas for your target data warehouse, with optional JDBC apply support."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake yml2ddl",
@@ -33,7 +33,7 @@ object Yml2DDLCmd extends Cmd[Yml2DDLConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Generate SQL DDL statements (CREATE TABLE, etc.) from Starlake YAML table definitions."""
+        """Generate SQL DDL statements (CREATE TABLE, etc.) from Starflow YAML table definitions."""
       ),
       builder
         .opt[String]("datawarehouse")

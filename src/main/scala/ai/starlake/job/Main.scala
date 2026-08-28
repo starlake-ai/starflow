@@ -143,7 +143,7 @@ class Main extends LazyLogging {
     // Format the output (optional)
     val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
-    println(s"Starlake Version ${BuildInfo.version} built on ${BuildInfo.buildTime}")
+    println(s"Starflow Version ${BuildInfo.version} built on ${BuildInfo.buildTime}")
     println("Usage:")
     println(s"\t${Main.shell} [command]")
     println("Available commands =>")
@@ -198,7 +198,7 @@ class Main extends LazyLogging {
     implicit val settings: Settings =
       Settings(Settings.referenceConfig, currentEnv, None, None, None)
     logger.debug(settings.toString)
-    logger.info(s"Starlake Version ${BuildInfo.version}")
+    logger.info(s"Starflow Version ${BuildInfo.version}")
     val argList = args.toList
     checkPrerequisites(argList)
 
@@ -215,7 +215,7 @@ class Main extends LazyLogging {
 
     val schemaHandler = settings.schemaHandler(cliEnv)
     val executedCommand = argList.mkString(" ")
-    logger.info(s"Running Starlake $executedCommand")
+    logger.info(s"Running Starflow $executedCommand")
     val errCapture = new ByteArrayOutputStream()
     Console.withErr(errCapture) {
       val result =
@@ -241,7 +241,7 @@ class Main extends LazyLogging {
           }
 
         case Failure(exception) =>
-          val message = s"""Starlake failed to execute command with args $executedCommand"""
+          val message = s"""Starflow failed to execute command with args $executedCommand"""
           System.err.print(message)
           Utils.logException(logger, exception)
           if (settings.appConfig.forceHalt) {
@@ -250,7 +250,7 @@ class Main extends LazyLogging {
             throw exception
           }
         case Success(FailedJobResult) =>
-          val message = s"""Starlake failed to execute command with args $executedCommand"""
+          val message = s"""Starflow failed to execute command with args $executedCommand"""
           System.err.print(message)
           if (settings.appConfig.forceHalt) {
             Runtime.getRuntime.halt(1)

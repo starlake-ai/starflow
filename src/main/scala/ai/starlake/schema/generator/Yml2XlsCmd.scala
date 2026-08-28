@@ -17,7 +17,7 @@ trait Yml2XlsCmd extends Cmd[Yml2XlsConfig] {
   override def command: String = "yml2xls"
 
   override def pageDescription: String =
-    "Export Starlake YAML domain definitions and IAM policy tags to Excel spreadsheets for review and collaboration."
+    "Export Starflow YAML domain definitions and IAM policy tags to Excel spreadsheets for review and collaboration."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake yml2xls",
@@ -33,7 +33,7 @@ trait Yml2XlsCmd extends Cmd[Yml2XlsConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, "$command", "[options]"),
       builder.note(
-        """Export Starlake YAML domain and table definitions to an Excel spreadsheet."""
+        """Export Starflow YAML domain and table definitions to an Excel spreadsheet."""
       ),
       builder
         .opt[Seq[String]]("domain")

@@ -18,7 +18,7 @@ object MigrateConfig extends CliConfig[MigrateConfig] {
       programName(s"starlake $command"),
       head("starlake", command, "[options]"),
       note(
-        """Migrate the Starlake project configuration files to the latest version format."""
+        """Migrate the Starflow project configuration files to the latest version format."""
       ),
       opt[String]("reportFormat")
         .action((x, c) => c.copy(reportFormat = Some(x)))
