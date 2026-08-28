@@ -125,14 +125,14 @@ get_version_to_install() {
         return
     fi
 
-    ALL_RELEASE_VERSIONS=$(get_from_url "https://api.github.com/repos/starlake-ai/starlake/releases?per_page=15" \
+    ALL_RELEASE_VERSIONS=$(get_from_url "https://api.github.com/repos/starlake-ai/starflow/releases?per_page=15" \
       | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9][^"]*"' \
       | sed -E 's/.*"v([^"]+)".*/\1/' \
       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
       | sort -rV)
 
     if [[ -z "$ALL_RELEASE_VERSIONS" ]]; then
-        echo "Error: no releases found at https://github.com/starlake-ai/starlake/releases" >&2
+        echo "Error: no releases found at https://github.com/starlake-ai/starflow/releases" >&2
         exit 1
     fi
 
@@ -147,7 +147,7 @@ get_version_to_install() {
 
 install_starlake() {
     echo "installing $VERSION"
-    local url=https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/starlake.sh
+    local url=https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/starlake.sh
     get_from_url $url > "$INSTALL_DIR/starlake"
     chmod +x "$INSTALL_DIR/starlake"
 }

@@ -309,7 +309,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
      */
     private static String getLatestGithubRelease() {
         try {
-            String releaseUrl = "https://api.github.com/repos/starlake-ai/starlake/releases/latest";
+            String releaseUrl = "https://api.github.com/repos/starlake-ai/starflow/releases/latest";
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
                     new java.net.URL(releaseUrl).openConnection();
             conn.setConnectTimeout(5000);
@@ -358,7 +358,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
         }
         String majorMinor = baseMatcher.group(1) + "." + baseMatcher.group(2);
         try {
-            String releasesUrl = "https://api.github.com/repos/starlake-ai/starlake/releases?per_page=100";
+            String releasesUrl = "https://api.github.com/repos/starlake-ai/starflow/releases?per_page=100";
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
                     new java.net.URL(releasesUrl).openConnection();
             conn.setConnectTimeout(5000);
@@ -473,12 +473,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
     // KAFKA CONFLUENT
     private static final String CONFLUENT_VERSION = getEnv("CONFLUENT_VERSION").orElse("7.7.2");
     
-    private static final String PYTHON_LIBS_URL = "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/python-libs/";
+    private static final String PYTHON_LIBS_URL = "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/python-libs/";
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // Starflow distribution artifacts are hosted on GitHub Releases
-    private static final String SL_RELEASE_BASE_URL = "https://github.com/starlake-ai/starlake/releases/download";
+    private static final String SL_RELEASE_BASE_URL = "https://github.com/starlake-ai/starflow/releases/download";
     private static final ResourceDependency SL_API_RELEASE_ZIP = new ResourceDependency("starlake-api", SL_RELEASE_BASE_URL + "/v" + SL_API_VERSION + "/starlake-api_" + SCALA_VERSION + "-" + SL_API_VERSION + ".zip");
 
     // SPARK

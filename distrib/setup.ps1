@@ -31,11 +31,11 @@ function get_version_to_install {
     # through untouched: they install from master's setup.jar, as on Linux.
     if ($RequestedVersion -ne "") {
         if ($RequestedVersion -match '^\d+\.\d+\.\d+$') {
-            $tagUrl = "https://raw.githubusercontent.com/starlake-ai/starlake/v$RequestedVersion/distrib/setup.jar"
+            $tagUrl = "https://raw.githubusercontent.com/starlake-ai/starflow/v$RequestedVersion/distrib/setup.jar"
             try {
                 Invoke-WebRequest -Method Head -Uri $tagUrl -UseBasicParsing | Out-Null
             } catch {
-                Write-Host "Error: version $RequestedVersion not found (no tag v$RequestedVersion at https://github.com/starlake-ai/starlake/releases)"
+                Write-Host "Error: version $RequestedVersion not found (no tag v$RequestedVersion at https://github.com/starlake-ai/starflow/releases)"
                 exit 1
             }
         }
@@ -44,7 +44,7 @@ function get_version_to_install {
 
     $RELEASE_VERSIONS = @()
     try {
-        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/starlake-ai/starlake/releases?per_page=15" -UseBasicParsing
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/starlake-ai/starflow/releases?per_page=15" -UseBasicParsing
         $RELEASE_VERSIONS = @($releases |
             ForEach-Object { $_.tag_name } |
             Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
@@ -54,7 +54,7 @@ function get_version_to_install {
     } catch {}
 
     if ($RELEASE_VERSIONS.Count -eq 0) {
-        Write-Host "Error: no releases found at https://github.com/starlake-ai/starlake/releases"
+        Write-Host "Error: no releases found at https://github.com/starlake-ai/starflow/releases"
         exit 1
     }
 
@@ -84,7 +84,7 @@ function install_starlake {
         [string]$VERSION
     )
     Write-Host "installing $VERSION"
-    $url = "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/starlake.cmd"
+    $url = "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/starlake.cmd"
 
     Write-Host "Downloading $url to $INSTALL_DIR"
     try {
