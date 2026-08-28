@@ -230,9 +230,9 @@ The client never opens a Parquet file and never sees a storage credential.
 
 ---
 
-## Using `starlake quack` from Starlake
+## Using `starlake quack` from Starlake Starflow
 
-Starlake ships a CLI that hosts a Quack server in the JVM (no Docker, no external orchestrator) and recognizes Quack client connections on the read side.
+Starflow ships a CLI that hosts a Quack server in the JVM (no Docker, no external orchestrator) and recognizes Quack client connections on the read side.
 
 ### Client connection (consumer)
 

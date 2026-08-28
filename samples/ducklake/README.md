@@ -1,14 +1,14 @@
 
-# DuckLake - Starlake TPC-H Data Pipeline Example
+# DuckLake - Starlake Starflow TPC-H Data Pipeline Example
 
 This project demonstrates an end-to-end data pipeline for the [TPC-H](https://www.tpc.org/tpch/) benchmark using [Starlake](https://github.com/starlake-ai/starlake). It showcases data ingestion, transformation, and analytics on industry-standard datasets, with a focus on reproducibility and modularity.
 
 ## Project Overview
 
-DuckLake ingests and processes TPC-H benchmark data, a standard for decision support and analytics. The project is organized to follow best practices for data engineering with Starlake:
+DuckLake ingests and processes TPC-H benchmark data, a standard for decision support and analytics. The project is organized to follow best practices for data engineering with Starflow:
 
 - **Data Ingestion**: Raw TPC-H data (CSV) is loaded from the `datasets/` directory.
-- **Data Processing**: Starlake YAML metadata in `metadata/` defines schemas, types, and data quality rules.
+- **Data Processing**: Starflow YAML metadata in `metadata/` defines schemas, types, and data quality rules.
 - **Data Analytics**: SQL transformations in `metadata/transform/` generate business insights and KPIs.
 
 ## Project Structure
@@ -21,8 +21,8 @@ DuckLake ingests and processes TPC-H benchmark data, a standard for decision sup
 │   ├── stage/             # Intermediate processing
 │   └── unresolved/        # Files with issues
 │
-├── metadata/              # Starlake configuration and pipeline logic
-│   ├── application.sl.yml # Main Starlake application config
+├── metadata/              # Starflow configuration and pipeline logic
+│   ├── application.sl.yml # Main Starflow application config
 │   ├── dags/              # Orchestration workflows (Airflow, Dagster, Snowflake)
 │   ├── expectations/      # Data quality templates
 │   ├── load/tpch/         # Table schemas for TPC-H (YAML)
@@ -67,7 +67,7 @@ Workflows for Airflow, Dagster, and Snowflake are provided in `metadata/dags/` f
 
 1. Place TPC-H CSV data files in `datasets/archive/tpch/` (see [TPC-H data generator](https://www.tpc.org/tpch/)).
 2. Configure your environment in `metadata/application.sl.yml` and `metadata/types/` as needed.
-3. Use Starlake CLI or your orchestrator to launch the pipeline (see workflow YAMLs in `metadata/dags/`).
+3. Use Starflow CLI or your orchestrator to launch the pipeline (see workflow YAMLs in `metadata/dags/`).
 4. Processed data will appear in `datasets/data_files/tpch/`.
 
 ## Development Guide

@@ -157,7 +157,7 @@ starlake load
 
 ## Cloud Storage Output
 
-The `--outputDir` flag accepts any Hadoop-compatible path. Extracted data files and incremental state are written through Starlake's `StorageHandler`, so cloud filesystems work out of the box.
+The `--outputDir` flag accepts any Hadoop-compatible path. Extracted data files and incremental state are written through Starflow's `StorageHandler`, so cloud filesystems work out of the box.
 
 ### Google Cloud Storage
 

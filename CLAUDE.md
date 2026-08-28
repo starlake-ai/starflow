@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What is Starlake
+## What is Starflow
 
-Starlake is a declarative data pipeline tool (Extract, Load, Transform, Orchestrate) written in Scala. It replaces custom ETL scripts with YAML configurations, supporting BigQuery, Snowflake, Redshift, DuckDB, PostgreSQL, Delta Lake, and Iceberg.
+Starlake Starflow is a declarative data pipeline tool (Extract, Load, Transform, Orchestrate) written in Scala. It replaces custom ETL scripts with YAML configurations, supporting BigQuery, Snowflake, Redshift, DuckDB, PostgreSQL, Delta Lake, and Iceberg.
 
 ## Build Commands
 

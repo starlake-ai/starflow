@@ -1,7 +1,0 @@
-CREATE TABLE {{ domainName }}.{{ tableName }} (
-{% for attribute in attributes %}
-    {{ attribute.ddl }} options(description="{{ attribute.comment }}"){% if not loop.last %},{% endif %}
-
-{% endfor %}
-)
-options(description="{{ domainComment }}");

@@ -1,6 +1,6 @@
-# Starlake vs. dbt, Fivetran/Airbyte, Matillion/Talend/Informatica
+# Starlake Starflow vs. dbt, Fivetran/Airbyte, Matillion/Talend/Informatica
 
-A side-by-side look at where Starlake fits in the modern data stack.
+A side-by-side look at where Starflow fits in the modern data stack.
 This page is maintained by hand and reviewed quarterly. If a cell is
 wrong, open a PR — every claim is meant to be defensible.
 
@@ -16,7 +16,7 @@ Numbered superscripts (¹, ², …) refer to footnotes at the bottom of the page
 
 ## 1. ELT lifecycle coverage
 
-| Capability | Starlake | dbt | Fivetran/Airbyte | Matillion/Talend/Informatica |
+| Capability | Starflow | dbt | Fivetran/Airbyte | Matillion/Talend/Informatica |
 |---|---|---|---|---|
 | Extract from operational DBs (JDBC) | ✅ | ❌ | ✅ | ✅ |
 | Load raw files (CSV/JSON/XML/Parquet) | ✅ | ❌ | ⚠️¹ | ✅ |
@@ -28,7 +28,7 @@ Numbered superscripts (¹, ², …) refer to footnotes at the bottom of the page
 
 ## 2. Engines & warehouses
 
-| Engine | Starlake | dbt | Fivetran/Airbyte | Matillion/Talend |
+| Engine | Starflow | dbt | Fivetran/Airbyte | Matillion/Talend |
 |---|---|---|---|---|
 | BigQuery / Snowflake / Redshift / Databricks / Postgres | ✅ | ✅ | ✅ | ✅ |
 | DuckDB (local dev) | ✅ | ✅ | ❌ | ❌ |
@@ -37,7 +37,7 @@ Numbered superscripts (¹, ², …) refer to footnotes at the bottom of the page
 
 ## 3. Quality & governance
 
-| Capability | Starlake | dbt | Fivetran/Airbyte | Matillion |
+| Capability | Starflow | dbt | Fivetran/Airbyte | Matillion |
 |---|---|---|---|---|
 | Declarative expectations / tests | ✅ | ✅ | ❌ | ⚠️ |
 | Table-level lineage | ✅ | ✅ | ⚠️ | ⚠️ |
@@ -48,7 +48,7 @@ Numbered superscripts (¹, ², …) refer to footnotes at the bottom of the page
 
 ## 4. Developer experience
 
-| Trait | Starlake | dbt | Fivetran/Airbyte | Matillion |
+| Trait | Starflow | dbt | Fivetran/Airbyte | Matillion |
 |---|---|---|---|---|
 | Open source | ✅ | ✅¹² | ✅¹³ | ❌ |
 | Self-hosted option | ✅ | ✅ | ⚠️ | ⚠️ |
@@ -74,4 +74,4 @@ Numbered superscripts (¹, ², …) refer to footnotes at the bottom of the page
 13. Airbyte OSS is open source; Fivetran is proprietary.
 14. dbt uses YAML for config and Jinja-templated SQL for models.
 15. Via the dbt-duckdb adapter.
-16. Starlake provides an Excel-driven config workflow and a VSCode plugin, but no full visual drag-and-drop editor.
+16. Starflow provides an Excel-driven config workflow and a VSCode plugin, but no full visual drag-and-drop editor.
