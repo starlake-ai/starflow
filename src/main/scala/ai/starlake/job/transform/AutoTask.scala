@@ -210,6 +210,53 @@ abstract class AutoTask(
 
   def tableExists: Boolean
 
+  /** Column names the task's SELECT resolves to, captured by buildAllSQLQueries. Used to diagnose
+    * failed runs caused by the SELECT returning columns the target table does not have.
+    */
+  protected var resolvedSelectColumns: List[String] = Nil
+
+  /** When a run failed because the SELECT returns columns the target table does not have, wrap the
+    * raw engine error with the exact commands that fix it. Returns the original error untouched in
+    * every other case; never throws.
+    *
+    * @param targetColumns
+    *   the target table's actual column names, fetched lazily and engine-specifically by the caller
+    */
+  protected def enrichWithSchemaSyncHint(
+    targetColumns: => List[String],
+    cause: Throwable
+  ): Throwable = {
+    val hinted = Try {
+      if (resolvedSelectColumns.isEmpty || resolvedSelectColumns == List("*")) None
+      else {
+        val target = targetColumns.map(_.toLowerCase)
+        val missing =
+          if (target.isEmpty) Nil
+          else resolvedSelectColumns.filterNot(c => target.contains(c.toLowerCase))
+        if (missing.isEmpty) None
+        else {
+          val taskName = taskDesc.fullName()
+          Some(
+            new StarlakeException(
+              s"""Transform '$taskName' failed: the SELECT returns column(s) ${missing
+                  .mkString("'", "', '", "'")} that table $fullTableName does not have.
+                 |To add the missing column(s) to the table, sync the task attributes from your SQL, then re-run the transform:
+                 |  starlake transform --name $taskName --sync-apply
+                 |  starlake transform --name $taskName
+                 |Alternatively, declare the new column(s) in the attributes section of the task's .sl.yml,
+                 |or set SL_SYNC_SQL_WITH_YAML=true to keep the YAML in sync with the SQL automatically.
+                 |Underlying error: ${Option(cause.getMessage).getOrElse(
+                  cause.toString
+                )}""".stripMargin,
+              cause
+            )
+          )
+        }
+      }
+    }.toOption.flatten
+    hinted.getOrElse(cause)
+  }
+
   protected lazy val allVars =
     schemaHandler.activeEnvVars() ++ commandParameters // ++ Map("merge" -> tableExists)
 
@@ -301,7 +348,8 @@ abstract class AutoTask(
     *
     * ==Write Strategies==
     *   - APPEND: INSERT INTO ... SELECT ...
-    *   - OVERWRITE: CREATE OR REPLACE TABLE ... AS SELECT ...
+    *   - OVERWRITE: TRUNCATE TABLE ...; INSERT INTO ... (columns) SELECT ... (CREATE TABLE ... AS
+    *     SELECT on the first run, when the target table does not exist yet)
     *   - MERGE: MERGE INTO ... USING ... ON ... WHEN MATCHED/NOT MATCHED
     *   - SCD2: Slowly Changing Dimension Type 2 with start/end timestamps
     *
@@ -367,6 +415,7 @@ abstract class AutoTask(
           } else {
             extractedColumnNames
           }
+        this.resolvedSelectColumns = resolvedColumnNames
         val tableComponents = TransformStrategiesBuilder.TableComponents(
           taskDesc.database.getOrElse(""), // Convert it to "" for jinjava to work
           taskDesc.domain,
@@ -396,17 +445,29 @@ abstract class AutoTask(
           jdbcRunEngine,
           sinkConfig
         )
-        val updatedTaskDesc = taskDesc
-
-        /*
+        // When syncSqlWithYaml is enabled (SL_SYNC_SQL_WITH_YAML=true), align the task's YAML
+        // attributes with the SQL before running, so that a column added to the SELECT flows into
+        // the schema-sync ALTERs below without a manual `transform --sync-apply`. Only for
+        // user-invoked transforms (syncSchema), never for audit tables (recursion). A sync failure
+        // must not kill an otherwise runnable transform: fall back to the task as declared.
+        val updatedTaskDesc =
           if (
             this.syncSchema && settings.appConfig.syncSqlWithYaml && taskDesc._auditTableName.isEmpty
           ) {
-            val list = schemaHandler.syncPreviewSqlWithDb(taskDesc.fullName(), None, None)
-            schemaHandler.syncApplySqlWithYaml(taskDesc, list, None)
+            Try {
+              val list = schemaHandler.syncPreviewSqlWithDb(taskDesc.fullName(), None, accessToken)
+              schemaHandler.syncApplySqlWithYaml(taskDesc, list, None)
+            } match {
+              case Success(synced) => synced
+              case Failure(e) =>
+                logger.warn(
+                  s"syncSqlWithYaml: could not sync YAML attributes from SQL for task ${taskDesc
+                      .fullName()}, running with the declared attributes. Cause: ${e.getMessage}"
+                )
+                taskDesc
+            }
           } else
             taskDesc
-         */
 
         // synched if ready for sync and syncYamlWithDb is true (SL_SYNC_YAML_WITH_DB=true) and not an audit table (to avoid recursion)
         if (

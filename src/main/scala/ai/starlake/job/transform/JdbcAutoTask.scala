@@ -189,6 +189,18 @@ class JdbcAutoTask(
     * @param sqlConnection
     *   Optional existing connection to reuse
     */
+  /** The target table's actual column names, or Nil when the table cannot be described (absent
+    * table, closed connection, ...). Used only to enrich error messages; never throws.
+    */
+  private def jdbcTargetColumns(conn: java.sql.Connection): List[String] =
+    Try {
+      val stmt = conn.prepareStatement(s"SELECT * FROM $fullTableName WHERE 1=0")
+      try {
+        val metaData = stmt.executeQuery().getMetaData
+        (1 to metaData.getColumnCount).map(metaData.getColumnName).toList
+      } finally stmt.close()
+    }.getOrElse(Nil)
+
   def runJDBC(
     df: Option[DataFrame],
     sqlConnection: Option[java.sql.Connection] = None
@@ -330,7 +342,7 @@ class JdbcAutoTask(
                     conn.commit()
                   case Failure(e) =>
                     conn.rollback()
-                    throw e
+                    throw enrichWithSchemaSyncHint(jdbcTargetColumns(conn), e)
                 }
               }
           }
