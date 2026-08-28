@@ -5,7 +5,7 @@ object Versions {
   val scalacheckForScalatest = "3.2.19.0"
   // sparkXML / sparkXML2d0 DELETED: Spark 4 has a built-in xml data source
   val springBoot = "2.0.6.RELEASE"
-  val typesafeConfig = "1.4.6"
+  val typesafeConfig = "1.4.9"
   val scalaLogging = "3.9.6"
   val hive = "3.1.0"
   val log4s = "1.3.3"
