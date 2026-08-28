@@ -27,7 +27,7 @@ object MetricsCmd extends Cmd[MetricsConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Compute data quality metrics (continuous, discrete, and frequency metrics) on loaded tables. See [Metrics Guide](/guides/load/metrics)."""
+        """Compute data quality metrics (continuous, discrete, and frequency metrics) on loaded tables. See [Metrics Guide](/starflow/guides/load/metrics)."""
       ),
       builder
         .opt[String]("domain")

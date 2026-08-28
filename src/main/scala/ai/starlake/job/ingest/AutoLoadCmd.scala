@@ -29,7 +29,7 @@ trait AutoLoadCmd extends Cmd[AutoLoadConfig] with LazyLogging {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Automatically infer schemas from files in the incoming directory and load them into the data warehouse in a single step. This combines the `infer-schema` and `load` commands, making it ideal for quick ingestion of new data sources. See [Autoload Guide](/guides/load/autoload)."""
+        """Automatically infer schemas from files in the incoming directory and load them into the data warehouse in a single step. This combines the `infer-schema` and `load` commands, making it ideal for quick ingestion of new data sources. See [Autoload Guide](/starflow/guides/load/autoload)."""
       ),
       builder
         .opt[Seq[String]]("domains")

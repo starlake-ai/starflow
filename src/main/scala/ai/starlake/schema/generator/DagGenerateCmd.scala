@@ -26,7 +26,7 @@ object DagGenerateCmd extends Cmd[DagGenerateConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Generate Airflow or Dagster DAG files from Starflow task and domain definitions. The command analyzes SQL dependencies to produce correctly ordered workflow graphs, with optional tag filtering. See [Orchestration Guide](/guides/orchestrate/tutorial)."""
+        """Generate Airflow or Dagster DAG files from Starflow task and domain definitions. The command analyzes SQL dependencies to produce correctly ordered workflow graphs, with optional tag filtering. See [Orchestration Guide](/starflow/guides/orchestrate/tutorial)."""
       ),
       builder
         .opt[String]("outputDir")

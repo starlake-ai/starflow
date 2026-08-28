@@ -29,7 +29,7 @@ object SiteCmd extends Cmd[SiteConfig] {
       builder.head(shell, command, "[options]"),
       builder.note(
         """
-          |Generate a documentation portal from your Starflow project metadata (schemas, tasks, lineage). See [Site Builder Guide](/guides/documentation/starlake-site-builder).
+          |Generate a documentation portal from your Starflow project metadata (schemas, tasks, lineage). See [Site Builder Guide](/starflow/guides/documentation/starlake-site-builder).
           |
           |Generate site
           |""".stripMargin
