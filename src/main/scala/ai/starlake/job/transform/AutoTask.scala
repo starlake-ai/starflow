@@ -210,6 +210,52 @@ abstract class AutoTask(
 
   def tableExists: Boolean
 
+  /** Column names the task's SELECT resolves to, captured by buildAllSQLQueries. Used to diagnose
+    * failed runs caused by the SELECT returning columns the target table does not have.
+    */
+  protected var resolvedSelectColumns: List[String] = Nil
+
+  /** When a run failed because the SELECT returns columns the target table does not have, wrap the
+    * raw engine error with the exact commands that fix it. Returns the original error untouched in
+    * every other case; never throws.
+    *
+    * @param targetColumns
+    *   the target table's actual column names, fetched lazily and engine-specifically by the caller
+    */
+  protected def enrichWithSchemaSyncHint(
+    targetColumns: => List[String],
+    cause: Throwable
+  ): Throwable = {
+    val hinted = Try {
+      if (resolvedSelectColumns.isEmpty || resolvedSelectColumns == List("*")) None
+      else {
+        val target = targetColumns.map(_.toLowerCase)
+        val missing =
+          if (target.isEmpty) Nil
+          else resolvedSelectColumns.filterNot(c => target.contains(c.toLowerCase))
+        if (missing.isEmpty) None
+        else {
+          val taskName = taskDesc.fullName()
+          Some(
+            new StarlakeException(
+              s"""Transform '$taskName' failed: the SELECT returns column(s) ${missing
+                  .mkString("'", "', '", "'")} that table $fullTableName does not have.
+                 |To add the missing column(s) to the table, sync the task attributes from your SQL, then re-run the transform:
+                 |  starlake transform --name $taskName --sync-apply
+                 |  starlake transform --name $taskName
+                 |Alternatively, declare the new column(s) in the attributes section of the task's .sl.yml.
+                 |Underlying error: ${Option(cause.getMessage).getOrElse(
+                  cause.toString
+                )}""".stripMargin,
+              cause
+            )
+          )
+        }
+      }
+    }.toOption.flatten
+    hinted.getOrElse(cause)
+  }
+
   protected lazy val allVars =
     schemaHandler.activeEnvVars() ++ commandParameters // ++ Map("merge" -> tableExists)
 
@@ -368,6 +414,7 @@ abstract class AutoTask(
           } else {
             extractedColumnNames
           }
+        this.resolvedSelectColumns = resolvedColumnNames
         val tableComponents = TransformStrategiesBuilder.TableComponents(
           taskDesc.database.getOrElse(""), // Convert it to "" for jinjava to work
           taskDesc.domain,
