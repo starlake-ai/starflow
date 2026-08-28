@@ -46,10 +46,10 @@ jobs:
           test -f "$JAR"
           ( cd target/scala-2.13 && shasum -a 256 "starlake-core_2.13-${V}-assembly.jar" > "starlake-core_2.13-${V}-assembly.jar.sha256" )
           TAG="v${V}"
-          gh release view "$TAG" --repo starlake-ai/starlake >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo starlake-ai/starlake --prerelease \
+          gh release view "$TAG" --repo starlake-ai/starflow >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo starlake-ai/starflow --prerelease \
                  --title "$TAG" --notes "Rolling snapshot build. Assets are overwritten on every snapshot publish."
-          gh release upload "$TAG" "$JAR" "${JAR}.sha256" --repo starlake-ai/starlake --clobber
+          gh release upload "$TAG" "$JAR" "${JAR}.sha256" --repo starlake-ai/starflow --clobber
       - name: trigger-starlake-api
         if: ${{ success() }}
         uses: actions/github-script@v6
