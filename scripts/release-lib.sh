@@ -9,7 +9,7 @@
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SCALA_VERSION="${SCALA_VERSION:-2.13}"
-GH_REPO="starlake-ai/starlake"
+GH_REPO="starlake-ai/starflow"
 
 # ---- preflight helpers ----------------------------------------------------
 die() { echo "ERROR: $*" >&2; exit 1; }

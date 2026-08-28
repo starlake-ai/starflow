@@ -8,7 +8,7 @@ set -euo pipefail
 # (distribution moved off Maven Central), then bumps all version references
 # to the next SNAPSHOT.
 #
-# Each release is a tag v{X.Y.Z} on starlake-ai/starlake carrying 4 assets:
+# Each release is a tag v{X.Y.Z} on starlake-ai/starflow carrying 4 assets:
 #   starlake-core_{scala}-{v}-assembly.jar (+ .sha256)
 #   starlake-api_{scala}-{v}.zip           (+ .sha256)
 #
