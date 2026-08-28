@@ -94,7 +94,7 @@ sealed trait JdbcColumnMetadata extends LazyLogging {
 
   private val reverseSqlTypes = sqlTypes map (_.swap)
 
-  /** Map jdbc type to spark type (aka Starlake primitive type)
+  /** Map jdbc type to spark type (aka Starflow primitive type)
     */
   protected def sparkType(
     jdbcType: Int,

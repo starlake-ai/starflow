@@ -17,7 +17,7 @@ object ValidateCmd extends Cmd[ValidateConfig] {
   val command = "validate"
 
   override def pageDescription: String =
-    "Validate your Starlake project configuration by reloading all YAML files from disk and checking for errors or warnings."
+    "Validate your Starflow project configuration by reloading all YAML files from disk and checking for errors or warnings."
   override def pageKeywords: Seq[String] =
     Seq("starlake validate", "project validation", "YAML validation", "configuration check")
 
@@ -27,7 +27,7 @@ object ValidateCmd extends Cmd[ValidateConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Validate the Starlake project configuration files and optionally test database connections."""
+        """Validate the Starflow project configuration files and optionally test database connections."""
       ),
       builder
         .opt[Unit]("reload")

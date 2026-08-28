@@ -10,7 +10,7 @@ import scopt.OParser
 import scala.sys.process.Process
 import scala.util.{Success, Try}
 
-/** Command to compare two Starlake project versions.
+/** Command to compare two Starflow project versions.
   *
   * Usage: starlake compare [options]
   */
@@ -18,7 +18,7 @@ object ProjectCompareCmd extends Cmd[ProjectCompareConfig] {
   val command = "compare"
 
   override def pageDescription: String =
-    "Compare two versions of a Starlake project using file paths, git commits, or tags and generate a diff report with templates."
+    "Compare two versions of a Starflow project using file paths, git commits, or tags and generate a diff report with templates."
   override def pageKeywords: Seq[String] =
     Seq("starlake compare", "project comparison", "diff report", "version comparison")
 
@@ -28,7 +28,7 @@ object ProjectCompareCmd extends Cmd[ProjectCompareConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Compare two versions of a Starlake project to identify configuration differences. You can compare by file path, git commit, or git tag, and render the diff report using a custom template."""
+        """Compare two versions of a Starflow project to identify configuration differences. You can compare by file path, git commit, or git tag, and render the diff report using a custom template."""
       ),
       builder
         .opt[String]("path1")

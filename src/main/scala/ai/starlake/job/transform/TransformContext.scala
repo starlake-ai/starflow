@@ -310,7 +310,7 @@ object TransformContext {
     * @param context
     *   The TransformContext containing all task parameters
     * @param schema
-    *   Optional Starlake schema definition for the target table
+    *   Optional Starflow schema definition for the target table
     * @return
     *   A new SparkAutoTask instance configured with the context's parameters
     */

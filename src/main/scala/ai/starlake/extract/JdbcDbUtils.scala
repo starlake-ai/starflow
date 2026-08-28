@@ -918,7 +918,7 @@ object JdbcDbUtils extends LazyLogging {
       if (includeColumns) {
         val res =
           schemaAndTableNames.flatMap { case (schemaName, selectedTableNames) =>
-            // Extract the Starlake Schema
+            // Extract the Starflow Schema
             Using
               .Manager { use =>
                 ParUtils
@@ -1064,7 +1064,7 @@ object JdbcDbUtils extends LazyLogging {
     sql
   }
 
-  /** Create Starlake Domain for JDBC Schema
+  /** Create Starflow Domain for JDBC Schema
     *
     * @param jdbcSchema
     * @param domainTemplate

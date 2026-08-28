@@ -21,7 +21,7 @@ trait CheckValidityCmd extends Cmd[CheckValidityCommand] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Validate the Starlake project configuration files."""
+        """Validate the Starflow project configuration files."""
       ),
       builder
         .opt[Boolean]("tables")

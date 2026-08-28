@@ -8,7 +8,7 @@ import scopt.OParser
 
 import scala.util.Try
 
-/** Command to start the Starlake console.
+/** Command to start the Starflow console.
   *
   * Usage: starlake console [options]
   */
@@ -16,7 +16,7 @@ object ConsoleCmd extends Cmd[ConsoleConfig] {
   override def command: String = "console"
 
   override def pageDescription: String =
-    "Launch the Starlake interactive console for exploring and managing your data project from a local web-based interface."
+    "Launch the Starflow interactive console for exploring and managing your data project from a local web-based interface."
   override def pageKeywords: Seq[String] =
     Seq("starlake console", "interactive console", "web interface", "data exploration")
 
@@ -26,7 +26,7 @@ object ConsoleCmd extends Cmd[ConsoleConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Start an interactive Starlake console for exploring metadata and running commands from a local web-based interface. Use this to browse domains, tables, and task definitions in your project."""
+        """Start an interactive Starflow console for exploring metadata and running commands from a local web-based interface. Use this to browse domains, tables, and task definitions in your project."""
       ),
       builder
         .opt[Map[String, String]]("options")

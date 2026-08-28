@@ -229,7 +229,7 @@ object TMDLConverter extends LazyLogging {
       case Some(d) =>
         lines += s"\tmeasure ${quoteName(name)} = $d"
       case None =>
-        lines += s"\t/// TODO Starlake: translate original SQL to DAX: ${singleLine(expr)}"
+        lines += s"\t/// TODO Starflow: translate original SQL to DAX: ${singleLine(expr)}"
         lines += s"\tmeasure ${quoteName(name)} = BLANK()"
     }
     lines.toSeq
@@ -290,7 +290,7 @@ object TMDLConverter extends LazyLogging {
 
   private[semantic] case class MSource(lines: Seq[String], queryTarget: String)
 
-  /** Maps a Starlake connection to Power Query (M) source lines. Engine detection replicates
+  /** Maps a Starflow connection to Power Query (M) source lines. Engine detection replicates
     * ConnectionInfo.getJdbcEngineName's URL-scheme logic without constructing an Engine, so
     * unmapped names degrade to the generic fallback instead of failing.
     */
@@ -407,7 +407,7 @@ object TMDLConverter extends LazyLogging {
     private val fallback: MSource =
       MSource(
         Seq(
-          "// TODO Starlake: set the connector for your warehouse",
+          "// TODO Starflow: set the connector for your warehouse",
           "Source = Sql.Database(\"SERVER_TODO\", \"DATABASE_TODO\"),"
         ),
         "Source"

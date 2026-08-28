@@ -291,7 +291,7 @@ object InferSchemaHandler extends LazyLogging {
           dt.elementType match {
             case _: ArrayType =>
               throw new RuntimeException(
-                s"Starlake doesn't support array of array. Rejecting field path $currentPath"
+                s"Starflow doesn't support array of array. Rejecting field path $currentPath"
               )
             case _ =>
               adjustAttributes(dt.elementType, currentPath + "[]").map {
@@ -501,7 +501,7 @@ object InferSchemaHandler extends LazyLogging {
             dt.elementType match {
               case _: ArrayType =>
                 throw new RuntimeException(
-                  s"Starlake doesn't support array of array. Rejecting field path $fieldPath"
+                  s"Starflow doesn't support array of array. Rejecting field path $fieldPath"
                 )
               case _ =>
                 val stAttributes = createAttribute(

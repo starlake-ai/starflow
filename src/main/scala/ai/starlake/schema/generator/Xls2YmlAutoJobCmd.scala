@@ -15,7 +15,7 @@ object Xls2YmlAutoJobCmd extends Xls2YmlCmd {
   override def command: String = "xls2ymljob"
 
   override def pageDescription: String =
-    "Convert Excel files describing transform job definitions into Starlake YAML task configuration files."
+    "Convert Excel files describing transform job definitions into Starflow YAML task configuration files."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake xls2ymljob",

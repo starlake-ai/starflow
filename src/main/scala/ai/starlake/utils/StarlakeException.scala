@@ -1,6 +1,6 @@
 package ai.starlake.utils
 
-/** Base exception for Starlake-specific errors. */
+/** Base exception for Starflow-specific errors. */
 class StarlakeException(message: String, cause: Throwable = null)
     extends RuntimeException(message, cause)
 
