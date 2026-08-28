@@ -301,7 +301,8 @@ abstract class AutoTask(
     *
     * ==Write Strategies==
     *   - APPEND: INSERT INTO ... SELECT ...
-    *   - OVERWRITE: CREATE OR REPLACE TABLE ... AS SELECT ...
+    *   - OVERWRITE: TRUNCATE TABLE ...; INSERT INTO ... (columns) SELECT ... (CREATE TABLE ... AS
+    *     SELECT on the first run, when the target table does not exist yet)
     *   - MERGE: MERGE INTO ... USING ... ON ... WHEN MATCHED/NOT MATCHED
     *   - SCD2: Slowly Changing Dimension Type 2 with start/end timestamps
     *

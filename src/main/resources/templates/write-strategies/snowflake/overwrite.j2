@@ -5,5 +5,5 @@ DROP MATERIALIZED VIEW IF EXISTS {{ tableFullName }};
 CREATE MATERIALIZED VIEW {{ tableFullName }} AS {{ selectStatement }}
 {% else %}
 TRUNCATE TABLE {{ tableFullName }};
-INSERT INTO {{ tableFullName }} {{ selectStatement }}
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }}
 {% endif %}
