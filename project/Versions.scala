@@ -37,7 +37,7 @@ object Versions {
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
   val sparkBigquery = "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
-  val h2 = "2.3.232" // Test only
+  val h2 = "2.4.240" // Test only
   val poi = "4.1.2"
   val confluentVersion = "7.7.5"
   val kafkaClients = "7.7.5-ce"
