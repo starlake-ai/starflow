@@ -321,7 +321,6 @@ packageSetup := {
     manifest.getMainAttributes().putValue("Manifest-Version", "1.0")
     manifest.getMainAttributes().putValue("Implementation-Version", version.value)
     manifest.getMainAttributes().putValue("Implementation-Vendor", "starlake")
-    manifest.getMainAttributes().putValue("Implementation-Vendor", "starlake")
     manifest.getMainAttributes().putValue("Compiler-Version", javacCompilerVersion)
 
     IO.jar(from.map(f => f.toFile -> f.toFile.getName()), to.toFile, manifest)

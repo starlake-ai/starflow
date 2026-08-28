@@ -250,7 +250,7 @@ REST API server mode (`starlake serve`) for integration with UIs and external sy
 
 ### 4.4 Library
 
-Published to Maven Central as `ai.starlake:starlake-core_2.13`. Embeddable in Spark applications.
+Published to GitHub Releases as `ai.starlake:starlake-core_2.13`. Embeddable in Spark applications.
 
 ---
 
