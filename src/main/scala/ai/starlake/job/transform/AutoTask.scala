@@ -243,7 +243,8 @@ abstract class AutoTask(
                  |To add the missing column(s) to the table, sync the task attributes from your SQL, then re-run the transform:
                  |  starlake transform --name $taskName --sync-apply
                  |  starlake transform --name $taskName
-                 |Alternatively, declare the new column(s) in the attributes section of the task's .sl.yml.
+                 |Alternatively, declare the new column(s) in the attributes section of the task's .sl.yml,
+                 |or set SL_SYNC_SQL_WITH_YAML=true to keep the YAML in sync with the SQL automatically.
                  |Underlying error: ${Option(cause.getMessage).getOrElse(
                   cause.toString
                 )}""".stripMargin,
