@@ -1,5 +1,0 @@
-export POSTGRES_DATABASE=starlake
-export DATABASE_USER=postgres
-export DATABASE_PASSWORD=azizam
-export POSTGRES_HOST=127.0.0.1
-export POSTGRES_PORT=5432

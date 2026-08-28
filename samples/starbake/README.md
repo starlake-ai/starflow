@@ -1,12 +1,12 @@
 ## StarBake
 
-**StarBake** is a fictional & demonstrative project designed to showcase the usage of Starlake for data transformation and analytics in an e-commerce bakery business setting. The project begins by collecting raw operational data from various domains, including digital transactions, customer interactions, inventory management, and supplier relationships.
+**StarBake** is a fictional & demonstrative project designed to showcase the usage of Starlake Starflow for data transformation and analytics in an e-commerce bakery business setting. The project begins by collecting raw operational data from various domains, including digital transactions, customer interactions, inventory management, and supplier relationships.
 
 This data is organized into six primary tables: Customers, Orders, Products, Suppliers, Ingredients, and ProductIngredients. Each table contains relevant data fields that are updated daily, with data arriving in JSON, JsonND, or CSV format.
 
 The core of the StarBake project lies in its transformation of the ingested raw data. The data is converted into meaningful business insights by creating a series of analytical-ready tables: CustomerLifetimeValue, ProductPerformance, ProductProfitability, HighValueCustomers, TopSellingProducts, and MostProfitableProducts. Further tables (TopSellingProfitableProducts and HighValueCustomerPreferences) are created by joining multiple transformed tables to deliver more nuanced business insights.
 
-The final goal of StarBake is to provide users a practical understanding of how Starlake can be harnessed for data ingestion, transformation, and analytics. The project focuses on Google BigQuery as the data warehousing solution. Through this project, users will get hands-on experience in gleaning a wide range of business insights, including customer lifetime value, product performance, product profitability, and customer preferences.
+The final goal of StarBake is to provide users a practical understanding of how Starflow can be harnessed for data ingestion, transformation, and analytics. The project focuses on Google BigQuery as the data warehousing solution. Through this project, users will get hands-on experience in gleaning a wide range of business insights, including customer lifetime value, product performance, product profitability, and customer preferences.
 
 
 ### Tables to Ingest:
@@ -173,7 +173,7 @@ classDiagram
 
 
 ```
-The project aims to give users a practical understanding of Starlake's functionalities, allowing them to leverage these features for their data transformation and analytics requirements.
+The project aims to give users a practical understanding of Starflow's functionalities, allowing them to leverage these features for their data transformation and analytics requirements.
 
 ## How to run
 Please check [HOW_TO_RUN.md](HOW_TO_RUN.md)

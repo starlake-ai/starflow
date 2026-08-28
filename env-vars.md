@@ -1,12 +1,12 @@
-# Starlake Environment Variables
+# Starlake Starflow Environment Variables
 
-This document lists all environment variables that can be used to configure Starlake.
+This document lists all environment variables that can be used to configure Starflow.
 
 ## General Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SL_ROOT` | Root path for all starlake relative paths | `/tmp` |
+| `SL_ROOT` | Root path for all Starflow relative paths | `/tmp` |
 | `SL_APPLICATION_VERSION` | Version of the application | `0.0.1` |
 | `SL_DATABASE` | Database name | `` |
 | `SL_CONNECTION_REF` | Default connection name | `` |

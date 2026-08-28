@@ -1,4 +1,4 @@
-Up# Starlake - Architecture Document
+# Starlake Starflow - Architecture Document
 
 **Version:** 1.5.x
 **Last Updated:** 2026-03-25
@@ -7,7 +7,7 @@ Up# Starlake - Architecture Document
 
 ## 1. System Overview
 
-Starlake is a Scala-based declarative data pipeline platform. Users define Extract, Load, Transform, and Orchestration pipelines as YAML configuration files. Starlake compiles these declarations into executable jobs that run against any supported warehouse.
+Starflow is a Scala-based declarative data pipeline platform. Users define Extract, Load, Transform, and Orchestration pipelines as YAML configuration files. Starflow compiles these declarations into executable jobs that run against any supported warehouse.
 
 ```
                           ┌──────────────────────────────────────────────┐
@@ -16,7 +16,7 @@ Starlake is a Scala-based declarative data pipeline platform. Users define Extra
                           └──────────────┬───────────────────────────────┘
                                          │
                           ┌──────────────▼───────────────────────────────┐
-                          │            Starlake Engine                   │
+                          │            Starflow Engine                   │
                           │  ┌─────────┐ ┌──────┐ ┌─────────┐ ┌──────┐   │
                           │  │ Extract │ │ Load │ │Transform│ │  DAG │   │
                           │  └────┬────┘ └──┬───┘ └────┬────┘ └──┬───┘   │
@@ -309,7 +309,7 @@ ExtractSchemaCmd / ExtractDataCmd
       ├─▶ JDBC Extraction:
       │    1. Connect via JDBC
       │    2. Read table metadata (columns, types, keys)
-      │    3. Generate Starlake YAML schema
+      │    3. Generate Starflow YAML schema
       │    4. Optionally pull data with:
       │       - Partition-based parallelism
       │       - Incremental via timestamp column
@@ -321,7 +321,7 @@ ExtractSchemaCmd / ExtractDataCmd
       │
       └─▶ OpenAPI Extraction:
            1. Parse OpenAPI/JSON Schema definition
-           2. Map to Starlake attribute types
+           2. Map to Starflow attribute types
            3. Generate table YAML
 ```
 
@@ -406,7 +406,7 @@ Automatic computation of per-column statistics:
 
 ## 7. Lineage System
 
-Starlake provides multi-level lineage tracking:
+Starflow provides multi-level lineage tracking:
 
 | Level | Source | Output |
 |---|---|---|
@@ -426,7 +426,7 @@ Lineage is extracted automatically from SQL transforms — no manual annotation 
 
 ## 8. Migration System
 
-Starlake supports automatic migration of YAML configuration between schema versions.
+Starflow supports automatic migration of YAML configuration between schema versions.
 
 ```
 ProjectMigrator

@@ -1,4 +1,4 @@
-# Starlake - Product Requirements Document
+# Starlake Starflow - Product Requirements Document
 
 **Version:** 1.5.x
 **Last Updated:** 2026-03-18
@@ -7,7 +7,7 @@
 
 ## 1. Product Overview
 
-Starlake is a declarative data pipeline platform that enables data teams to extract, load, transform, and orchestrate their data pipelines using YAML configuration instead of code. It replaces hundreds of lines of warehouse-specific boilerplate (BigQuery, Snowflake, Redshift, Spark, DuckDB) with self-describing configuration files that are version-controlled, reviewed, and deployed like infrastructure-as-code.
+Starflow is a declarative data pipeline platform that enables data teams to extract, load, transform, and orchestrate their data pipelines using YAML configuration instead of code. It replaces hundreds of lines of warehouse-specific boilerplate (BigQuery, Snowflake, Redshift, Spark, DuckDB) with self-describing configuration files that are version-controlled, reviewed, and deployed like infrastructure-as-code.
 
 ### 1.1 Problem Statement
 
@@ -20,10 +20,10 @@ Data engineering teams face recurring challenges:
 
 ### 1.2 Solution
 
-Starlake provides a single YAML-based DSL that:
+Starflow provides a single YAML-based DSL that:
 
 1. **Abstracts warehouse differences** - One configuration, multiple target warehouses
-2. **Automates write strategies** - Declare APPEND, OVERWRITE, UPSERT, SCD2, or DELETE_THEN_INSERT; Starlake generates the correct SQL
+2. **Automates write strategies** - Declare APPEND, OVERWRITE, UPSERT, SCD2, or DELETE_THEN_INSERT; Starflow generates the correct SQL
 3. **Infers and enforces schemas** - Auto-detect formats, types, and separators; validate every row at load time
 4. **Generates orchestration DAGs** - Extract SQL dependencies and produce Airflow/Dagster/Snowflake Task DAGs automatically
 5. **Embeds governance** - Data quality expectations, column-level encryption, row-level security, and lineage are first-class configuration
@@ -43,14 +43,14 @@ Starlake provides a single YAML-based DSL that:
 
 ### 2.1 Extract
 
-Pull data from source systems into Starlake-managed landing areas.
+Pull data from source systems into Starflow-managed landing areas.
 
 **Requirements:**
 - Extract from any JDBC source (PostgreSQL, MySQL, SQL Server, Oracle, etc.)
 - Extract from BigQuery (native API)
 - Support incremental extraction via timestamp columns
 - Parallel extraction with configurable partition columns and fetch sizes
-- Auto-infer Starlake schemas from source database metadata
+- Auto-infer Starflow schemas from source database metadata
 - OpenAPI schema extraction for REST API sources
 - Data freshness tracking and alerting
 

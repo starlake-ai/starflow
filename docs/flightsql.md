@@ -1,7 +1,7 @@
-# Connecting Starlake to an Arrow Flight SQL endpoint
+# Connecting Starlake Starflow to an Arrow Flight SQL endpoint
 
 How to use any Arrow Flight SQL server (quack-on-demand gateway, GizmoSQL,
-Dremio, Doris, ...) as a regular Starlake connection: extract, load, transform
+Dremio, Doris, ...) as a regular Starflow connection: extract, load, transform
 and audit all run over the Flight SQL wire. The primary scenario is a DuckDB or
 DuckLake lakehouse exposed through a Flight SQL server, with the same
 file-isolation model as `quack.md`: the server owns the catalog and the
@@ -26,7 +26,7 @@ connections:
       # driver: "..."          # optional, defaults to the Arrow Flight SQL JDBC driver
 ```
 
-Everything after `host:port` is opaque to Starlake: the query string is handed
+Everything after `host:port` is opaque to Starflow: the query string is handed
 to the Arrow driver untouched.
 
 | URL parameter | Consumed by | Meaning |
@@ -42,7 +42,7 @@ distinct connection pools, so they never share sessions.
 ## The `dialect` option
 
 Flight SQL is a transport, not a dialect. The endpoint fronts a real engine,
-and Starlake must generate that engine's SQL. The `dialect` option selects the
+and Starflow must generate that engine's SQL. The `dialect` option selects the
 engine profile (the `jdbcEngines` entry) used for DDL, merge strategies, audit
 tables and identifier quoting:
 
@@ -54,7 +54,7 @@ Notes:
 
 - The default is `duckdb`, which is what quack-on-demand and GizmoSQL front.
 - `dialect: mariadb` normalizes to the `mysql` profile, and `databricks` to
-  `spark`, following Starlake's usual engine aliasing.
+  `spark`, following Starflow's usual engine aliasing.
 - An unknown dialect fails at first use with a key-not-found error naming the
   missing `jdbcEngines` entry.
 
@@ -62,7 +62,7 @@ Notes:
 
 ## Installing the driver
 
-The Arrow Flight SQL JDBC driver is not bundled in the Starlake assembly. The
+The Arrow Flight SQL JDBC driver is not bundled in the Starflow assembly. The
 setup tool downloads it into `bin/deps` when the FlightSQL dependency is
 enabled (it is by default):
 
@@ -80,7 +80,7 @@ only to use a custom build.
 ## The client stays fully remote
 
 In the quack-on-demand / GizmoSQL model the server attaches the DuckLake and
-holds the object-storage secrets. Starlake honors that:
+holds the object-storage secrets. Starflow honors that:
 
 - The client never runs `ATTACH 'ducklake:...'`. Even if a connection's
   `preActions` mention `ducklake:` or `quack:`, a Flight SQL connection is
