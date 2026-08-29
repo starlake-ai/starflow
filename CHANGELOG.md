@@ -1,6 +1,14 @@
 
 # Release notes
 
+# 1.7.2:
+__Bug fix__:
+- **OVERWRITE transforms insert by name, never by position** (#1722): overwriting an existing table used a positional `INSERT` on most engines, so a SELECT whose column order diverged from the table's could silently write every value into the wrong column, or fail with a confusing count/cast error. All engines now pass the explicit column list resolved from the SELECT: values land in the columns of the same name regardless of SELECT order, and a column the table does not have fails loudly with a clear message.
+
+__Improvement__:
+- **Actionable schema-mismatch errors**: when a transform fails because the SELECT returns columns the target table lacks, the error now names the missing columns and prints the exact commands that fix it (`starlake transform --name <task> --sync-apply`, then re-run).
+- **Automatic SQL-to-YAML sync (opt-in)**: with `SL_SYNC_SQL_WITH_YAML=true`, a transform aligns the task's YAML attributes with its SQL before running, so adding a column anywhere in the SELECT evolves the target table with no manual step. Off by default because it rewrites `.sl.yml` files in your project.
+
 # 1.7.1:
 __Improvement__:
 - **All artifacts on GitHub Releases**: SNAPSHOT builds of starlake-core (assembly jar) and starlake-api (zip) are now published to a rolling pre-release tagged `v<version>-SNAPSHOT` on starlake-ai/starlake, with sha256 companions, replacing Sonatype snapshot publishing entirely. Setup and CI download scripts use one URL scheme for snapshots and releases. The release flow deletes the stale snapshot pre-release when the version ships.
