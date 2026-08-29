@@ -182,4 +182,5 @@ samples/any-engine/datasets
 samples/starbake/datasets
 
 .claude/
-.vscode/.env
+.vscode/
+.env
