@@ -1,6 +1,24 @@
 
 # Release notes
 
+# 1.8.2:
+__Rebrand__:
+- **Starlake Starflow**: the product is now named Starflow (Starlake is the umbrella brand). The CLI version banner, help text, installer messages, and documentation say Starflow. **Nothing technical changes**: the binary is still `starlake`, packages and Maven coordinates stay `ai.starlake`, and `SL_*`/`STARLAKE_*` environment variables, config keys, and YAML formats are untouched. The repository moved to `github.com/starlake-ai/starflow`; old URLs redirect, and all download URLs now point at the new location.
+
+__Bug fix__:
+- **OVERWRITE transforms insert by name, never by position** (#1722): overwriting an existing table used a positional `INSERT` on most engines, so a SELECT whose column order diverged from the table's could silently write every value into the wrong column, or fail with a confusing count/cast error. All engines now pass the explicit column list resolved from the SELECT: values land in the columns of the same name regardless of SELECT order, and a column the table does not have fails loudly with a clear message.
+
+__Improvement__:
+- **Actionable schema-mismatch errors**: when a transform fails because the SELECT returns columns the target table lacks, the error now names the missing columns and prints the exact commands that fix it (`starlake transform --name <task> --sync-apply`, then re-run).
+- **Automatic SQL-to-YAML sync (opt-in)**: with `SL_SYNC_SQL_WITH_YAML=true`, a transform aligns the task's YAML attributes with its SQL before running, so adding a column anywhere in the SELECT evolves the target table with no manual step. Off by default because it rewrites `.sl.yml` files in your project.
+
+# 1.7.2 (maintenance):
+__Bug fix__:
+- **OVERWRITE transforms insert by name, never by position** (#1722): same fix as 1.8.2, backported to the 1.7 line.
+
+__Improvement__:
+- **Actionable schema-mismatch errors** and the opt-in `SL_SYNC_SQL_WITH_YAML` sync, backported from 1.8.2.
+
 # 1.8.1:
 __Improvement__:
 - **Smarter upgrades**: `starlake.sh`/`starlake.cmd upgrade` gained a `--version` flag, re-provisions Spark and its connectors whenever the target version changes, and guards against mixing artifacts from different versions in one installation.
