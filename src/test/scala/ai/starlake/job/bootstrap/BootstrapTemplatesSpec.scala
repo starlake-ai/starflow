@@ -73,6 +73,31 @@ class BootstrapTemplatesSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "not link to a document it does not ship" in {
+    // empty-project's README pointed at a HOW_TO_RUN.md that exists in neither
+    // template: a reader follows it, an assistant quotes it, and nothing is there.
+    val link = """\[[^\]]*\]\(([^)]+)\)""".r
+    templatesWithContext.foreach { template =>
+      val shipped = JarUtil
+        .getResourceFiles(s"$templatesDir$template/")
+        .map(_.substring(s"$templatesDir$template/".length))
+        .toSet
+      (contextFiles :+ "README.md").foreach { file =>
+        resource(s"$templatesDir$template/$file").foreach { content =>
+          link
+            .findAllMatchIn(content)
+            .map(_.group(1))
+            .filterNot(t => t.startsWith("http") || t.startsWith("#") || t.startsWith("mailto:"))
+            .foreach { target =>
+              withClue(s"$template/$file links to $target, which the template does not ship: ") {
+                shipped.contains(target.takeWhile(_ != '#')) shouldBe true
+              }
+            }
+        }
+      }
+    }
+  }
+
   it should "not describe the sample project inside the empty one" in {
     // empty-project's CLAUDE.md and README used to be copies of sample-project's,
     // describing a starbake domain and tables that an empty project never has.
