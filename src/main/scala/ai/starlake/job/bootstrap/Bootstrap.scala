@@ -14,6 +14,12 @@ import scala.util.Try
 
 object Bootstrap extends LazyLogging {
   val TEMPLATES_DIR = "templates/bootstrap/samples"
+
+  // GitHub Copilot reads its instructions from .github/, not from the project
+  // root. Resources cannot ship a dot-folder portably, so each template keeps the
+  // file at its own root and bootstrap places it - the same shape as .gitignore.
+  private val COPILOT_INSTRUCTIONS = "copilot-instructions.md"
+
   private def copyToFolder(
     resources: List[String],
     templateFolder: String,
@@ -131,9 +137,19 @@ object Bootstrap extends LazyLogging {
         val rootFolder = metadataFolder.parent
         val templatePath = s"$TEMPLATES_DIR/$template/"
 
-        // copy template files
+        // copy template files, minus the one that belongs in .github/
         val bootstrapFiles = JarUtil.getResourceFiles(templatePath)
-        copyToFolder(bootstrapFiles, templatePath, rootFolder)
+        val (copilotFiles, rootFiles) =
+          bootstrapFiles.partition(_.endsWith(s"/$COPILOT_INSTRUCTIONS"))
+        copyToFolder(rootFiles, templatePath, rootFolder)
+
+        // the assistant context files land at the project root (AGENTS.md,
+        // CLAUDE.md, GEMINI.md) except Copilot's, which is read from .github/
+        if (copilotFiles.nonEmpty) {
+          val githubFolder = rootFolder / ".github"
+          githubFolder.createDirectories()
+          copyToFolder(copilotFiles, templatePath, githubFolder)
+        }
 
         val agentFolder = File(rootFolder, ".claude")
         agentFolder.createDirectories()
