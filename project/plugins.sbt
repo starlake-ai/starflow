@@ -6,7 +6,7 @@ addSbtPlugin("com.typesafe.sbt" % "sbt-native-packager" % "1.3.25")
 
 addSbtPlugin("net.virtual-void" % "sbt-dependency-graph" % "0.10.0-RC1") 
 
-addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "2.3.1")
+addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "2.4.2")
 
 // Had to rollback to sbt-git 2.0.0 because of a regression during release
 addSbtPlugin("com.github.sbt" % "sbt-git" % "2.0.0")
