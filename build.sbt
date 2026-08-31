@@ -87,7 +87,7 @@ dependencyOverrides := Seq(
   "org.scala-lang"                    % "scala-library"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-reflect"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-compiler"            % scalaVersion.value,
-  "com.google.guava"                  %  "guava"                    % "33.4.8-jre", // match Spark 4.1.3; jinjava is fine with it
+  "com.google.guava"                  %  "guava"                    % "33.7.1-jre", // match Spark 4.1.3; jinjava is fine with it
   "com.fasterxml.jackson.dataformat"  % "jackson-dataformat-csv"    % Versions.jacksonForSpark4,
   "com.manticore-projects.jsqlformatter" % "jsqlparser"             % Versions.jSqlParser // avoid MethodTooLargeException during assembly shading
 )
