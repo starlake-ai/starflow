@@ -83,7 +83,7 @@ dependencyOverrides := Seq(
   // not a protobuf conflict through this path). google-cloud-datacatalog 1.101.0's own gencode
   // is stamped 4.33.6, raising the runtime floor accordingly; 4.35.1 is the latest stable 4.x
   // release satisfying that floor (avoid 4.36.0-RC, a pre-release).
-  "com.google.protobuf"                % "protobuf-java"             % "4.35.1",
+  "com.google.protobuf"                % "protobuf-java"             % "4.36.0",
   "org.scala-lang"                    % "scala-library"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-reflect"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-compiler"            % scalaVersion.value,
