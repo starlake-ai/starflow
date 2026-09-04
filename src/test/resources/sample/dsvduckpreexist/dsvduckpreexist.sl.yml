@@ -1,0 +1,12 @@
+---
+version: 1
+load:
+  name: "dsvduckpreexist"
+  metadata:
+    directory: "__SL_TEST_ROOT__/dsvduckpreexist"
+    format: "DSV"
+    separator: ";"
+    withHeader: true
+    loader: "native"
+    writeStrategy:
+      type: "APPEND"

@@ -35,6 +35,32 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
       }
     }
 
+    // The audit sink is configured to a separate, shared connection (see
+    // application-test.conf, audit.sink.connectionRef), not to the domain's own DuckDB file.
+    // That connection is reused, unfiltered, by every test in this suite, so callers must
+    // filter by jobid to see only the rows written by their own load.
+    private def queryAudit[T](sql: String)(f: java.sql.ResultSet => T): T = {
+      val options = settings.appConfig.audit.getConnection().options
+      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
+        val rs = conn.createStatement().executeQuery(sql)
+        f(rs)
+      }
+    }
+
+    // IngestionWorkflow.load aggregates the jobid of every table it loads as a comma-joined
+    // string (starting with an empty accumulator), so a single-table load's own jobid comes
+    // back prefixed with a leading comma. Strip it to get the jobid this load actually wrote
+    // to the audit rejected table. Each error is stored as "<input file>: <message>".
+    private def rejectedErrors(domainName: String, jobid: String): List[String] =
+      queryAudit(
+        s"SELECT error FROM audit.rejected " +
+        s"WHERE domain = '$domainName' AND jobid = '${jobid.stripPrefix(",")}' ORDER BY error"
+      ) { rs =>
+        val buf = scala.collection.mutable.ListBuffer[String]()
+        while (rs.next()) buf += rs.getString("error")
+        buf.toList
+      }
+
     "Native DuckDB load of a POSITION file" should "slice lines with SUBSTR and reject cells that cannot be cast" in {
       new SpecTrait(
         sourceDomainOrJobPathname = "/sample/positionduck/positionduck.sl.yml",
@@ -74,6 +100,12 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
         rows.find(_._1.trim == "John").flatMap(_._2) shouldBe Some(12345L)
         rows.find(_._1.trim == "Jane").flatMap(_._2) shouldBe Some(67890L)
         result.get.counters.get.rejectedCount shouldBe 1
+
+        // the audit row carries the message built by capturePositionRejects, so the clause
+        // that fired and the attribute and DDL type it names are pinned here
+        val errors = rejectedErrors("positionduck", result.get.counters.get.jobid)
+        errors.size shouldBe 1
+        errors.head should endWith("amount: cannot cast to BIGINT")
       }
     }
 
@@ -157,16 +189,34 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
         val result = loadPending
         result.isSuccess shouldBe true
 
-        val names = queryDuckDb(
-          "SELECT name FROM positionduckshort.account ORDER BY name"
+        val rows = queryDuckDb(
+          "SELECT name, amount FROM positionduckshort.account ORDER BY name"
         ) { rs =>
-          val buf = scala.collection.mutable.ListBuffer[String]()
-          while (rs.next()) buf += rs.getString("name")
+          val buf = scala.collection.mutable.ListBuffer[(String, Option[Long])]()
+          while (rs.next()) {
+            val name = rs.getString("name")
+            val amount = rs.getLong("amount")
+            buf += ((name, if (rs.wasNull()) None else Some(amount)))
+          }
           buf.toList
         }
 
-        names shouldBe List("Jane      ", "John      ")
+        rows.map(_._1) shouldBe List("Blank     ", "Jane      ", "John      ")
+        // The Blank line is 15 characters long, so it clears the length clause, and its
+        // amount slice is all spaces. The TRIM guard on the cast clause is what keeps it out
+        // of the rejects: without it, every fixed width line with an empty optional numeric
+        // column would be rejected. It loads with a NULL amount instead.
+        rows.find(_._1.trim == "Blank").map(_._2) shouldBe Some(None)
+        rows.find(_._1.trim == "John").flatMap(_._2) shouldBe Some(12345L)
+        // only the truncated line is rejected
         result.get.counters.get.rejectedCount shouldBe 1
+
+        // the length clause fired, not the cast clause, and it names the length it requires
+        val errors = rejectedErrors("positionduckshort", result.get.counters.get.jobid)
+        errors.size shouldBe 1
+        errors.head should endWith(
+          "line is shorter than the 15 characters required by the declared positions"
+        )
       }
     }
   }

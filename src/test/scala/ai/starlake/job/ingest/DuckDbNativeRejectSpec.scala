@@ -1,12 +1,53 @@
 package ai.starlake.job.ingest
 
 import ai.starlake.TestHelper
-import ai.starlake.config.DatasetArea
+import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.JdbcDbUtils
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.fs.Path
 
+import scala.util.Using
+
 class DuckDbNativeRejectSpec extends TestHelper {
+
+  // Every WithSettings block below points test-duckdb at its own database file, so these
+  // helpers take the block's settings implicitly instead of closing over a single one.
+  private def queryDuckDb[T](sql: String)(f: java.sql.ResultSet => T)(implicit
+    settings: Settings
+  ): T = {
+    val options = settings.appConfig.connections("test-duckdb").options
+    JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
+      Using.resource(conn.createStatement()) { statement =>
+        Using.resource(statement.executeQuery(sql))(f)
+      }
+    }
+  }
+
+  // The audit sink is configured to a separate, shared connection (see
+  // application-test.conf, audit.sink.connectionRef), not to the domain's own DuckDB file.
+  // That connection is reused, unfiltered, by every test in this suite, so callers must
+  // filter by jobid to see only the rows written by their own load.
+  private def queryAudit[T](sql: String)(f: java.sql.ResultSet => T)(implicit
+    settings: Settings
+  ): T = {
+    val options = settings.appConfig.audit.getConnection().options
+    JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
+      Using.resource(conn.createStatement()) { statement =>
+        Using.resource(statement.executeQuery(sql))(f)
+      }
+    }
+  }
+
+  private def tableExists(domainName: String, tableName: String)(implicit
+    settings: Settings
+  ): Boolean =
+    queryDuckDb(
+      s"SELECT count(*) AS cnt FROM duckdb_tables() " +
+      s"WHERE schema_name = '$domainName' AND table_name = '$tableName'"
+    ) { rs =>
+      rs.next()
+      rs.getInt("cnt") > 0
+    }
 
   lazy val duckDbConfiguration: Config = {
     val config = ConfigFactory.parseString(
@@ -25,26 +66,6 @@ class DuckDbNativeRejectSpec extends TestHelper {
   }
 
   new WithSettings(duckDbConfiguration) {
-
-    private def queryDuckDb[T](sql: String)(f: java.sql.ResultSet => T): T = {
-      val options = settings.appConfig.connections("test-duckdb").options
-      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
-        val rs = conn.createStatement().executeQuery(sql)
-        f(rs)
-      }
-    }
-
-    // The audit sink is configured to a separate, shared connection (see
-    // application-test.conf, audit.sink.connectionRef), not to the domain's own DuckDB file.
-    // That connection is reused, unfiltered, by every test in this suite, so callers must
-    // filter by jobid to see only the rows written by their own load.
-    private def queryAudit[T](sql: String)(f: java.sql.ResultSet => T): T = {
-      val options = settings.appConfig.audit.getConnection().options
-      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
-        val rs = conn.createStatement().executeQuery(sql)
-        f(rs)
-      }
-    }
 
     "Native DuckDB load of a DSV file with malformed lines" should
     "load the good lines and count the rejected ones" in {
@@ -221,20 +242,6 @@ class DuckDbNativeRejectSpec extends TestHelper {
 
   new WithSettings(duckDbThresholdConfiguration) {
 
-    private def tableExists(domainName: String, tableName: String): Boolean = {
-      val options = settings.appConfig.connections("test-duckdb").options
-      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
-        val rs = conn
-          .createStatement()
-          .executeQuery(
-            s"SELECT count(*) AS cnt FROM duckdb_tables() " +
-            s"WHERE schema_name = '$domainName' AND table_name = '$tableName'"
-          )
-        rs.next()
-        rs.getInt("cnt") > 0
-      }
-    }
-
     "Native DuckDB load breaching rejectMaxRecords" should
     "fail, leave the target untouched and still write the replay file" in {
       new SpecTrait(
@@ -289,20 +296,6 @@ class DuckDbNativeRejectSpec extends TestHelper {
 
   new WithSettings(duckDbRejectAllConfiguration) {
 
-    private def tableExists(domainName: String, tableName: String): Boolean = {
-      val options = settings.appConfig.connections("test-duckdb").options
-      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
-        val rs = conn
-          .createStatement()
-          .executeQuery(
-            s"SELECT count(*) AS cnt FROM duckdb_tables() " +
-            s"WHERE schema_name = '$domainName' AND table_name = '$tableName'"
-          )
-        rs.next()
-        rs.getInt("cnt") > 0
-      }
-    }
-
     "Native DuckDB load with rejectAllOnError" should "fail on the first rejected line" in {
       new SpecTrait(
         sourceDomainOrJobPathname = "/sample/dsvduckreject/dsvduckreject.sl.yml",
@@ -341,14 +334,6 @@ class DuckDbNativeRejectSpec extends TestHelper {
   }
 
   new WithSettings(duckDbOverwriteConfiguration) {
-
-    private def queryDuckDb[T](sql: String)(f: java.sql.ResultSet => T): T = {
-      val options = settings.appConfig.connections("test-duckdb").options
-      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
-        val rs = conn.createStatement().executeQuery(sql)
-        f(rs)
-      }
-    }
 
     "Native DuckDB load with OVERWRITE strategy" should
     "report the accepted count of the new rows rather than a delta against the replaced table" in {
@@ -458,6 +443,78 @@ class DuckDbNativeRejectSpec extends TestHelper {
         content.contains("2;bob;NOTANUM") shouldBe true
         content.contains("badline;dave") shouldBe true
         content.contains("7;grace;NOTANUM") shouldBe true
+      }
+    }
+  }
+
+  lazy val duckDbPreExistingConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |rejectMaxRecords: 1
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_preexisting_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbPreExistingConfiguration) {
+
+    private def accountNames(): List[String] =
+      queryDuckDb("SELECT name FROM dsvduckpreexist.account ORDER BY name") { rs =>
+        val buf = scala.collection.mutable.ListBuffer[String]()
+        while (rs.next()) buf += rs.getString("name")
+        buf.toList
+      }
+
+    "Native DuckDB load breaching rejectMaxRecords over an already loaded table" should
+    "roll back and leave the rows of the previous load intact" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckpreexist/dsvduckpreexist.sl.yml",
+        datasetDomainName = "dsvduckpreexist",
+        sourceDatasetPathName = "/sample/dsvduckpreexist/XDSVPREEXISTTBL1"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckpreexist",
+          "/sample/dsvduckpreexist/account_dsvduckpreexist.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // a clean file first, so the target table exists and holds rows before the aborted
+        // load below
+        loadPending.isSuccess shouldBe true
+        accountNames() shouldBe List("alice", "carol")
+      }
+
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckpreexist/dsvduckpreexist.sl.yml",
+        datasetDomainName = "dsvduckpreexist",
+        sourceDatasetPathName = "/sample/dsvduckpreexist/XDSVPREEXISTTBL2"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckpreexist",
+          "/sample/dsvduckpreexist/account_dsvduckpreexist.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // 2 rejected lines against rejectMaxRecords = 1, so the load is aborted
+        loadPending.isSuccess shouldBe false
+
+        // the strictly stronger guarantee than "the target was never created": the rows of
+        // the first load are still there, and the single good line of the aborted APPEND
+        // (eve) never landed
+        tableExists("dsvduckpreexist", "account") shouldBe true
+        accountNames() shouldBe List("alice", "carol")
       }
     }
   }
