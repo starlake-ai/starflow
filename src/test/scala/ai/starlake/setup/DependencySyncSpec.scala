@@ -83,4 +83,56 @@ class DependencySyncSpec extends AnyFlatSpec with Matchers {
       withClue(s"url=$url: ") { prefix(url) shouldBe expected }
     }
   }
+
+  "SyncPlan.render" should "collapse to one line when there is nothing to do" in {
+    val plan = new SyncPlan()
+    plan.addUpToDate(new java.io.File("/tmp/a.jar"))
+    plan.addUpToDate(new java.io.File("/tmp/b.jar"))
+    plan.isEmpty shouldBe true
+    plan.render("Dependency plan") shouldBe
+    "All 2 dependencies up to date, nothing to download."
+  }
+
+  it should "list only what changes, with sizes and reasons" in {
+    val plan = new SyncPlan()
+    val artifact = new Artifact(
+      "Postgres",
+      "postgresql-42.7.11.jar",
+      "https://example.invalid/postgresql-42.7.11.jar",
+      java.util.List.of("postgresql-"),
+      true
+    )
+    plan.addUpToDate(new java.io.File("/tmp/kept.jar"))
+    plan.add(
+      new SyncPlan.Download(artifact, new java.io.File("/tmp/postgresql-42.7.11.jar"), 1048576L)
+    )
+    plan.add(new SyncPlan.Deletion(new java.io.File("/tmp/postgresql-42.7.10.jar"), "superseded"))
+    plan.isEmpty shouldBe false
+    plan.bytesToDownload shouldBe 1048576L
+
+    val rendered = plan.render("Dependency plan")
+    rendered should include("Dependency plan")
+    rendered should include("= 1 up to date")
+    rendered should include("+ 1 to download (1 MB)")
+    rendered should include("postgresql-42.7.11.jar")
+    rendered should include("- 1 to remove")
+    rendered should include("postgresql-42.7.10.jar")
+    rendered should include("(superseded)")
+    rendered should not include "kept.jar"
+  }
+
+  it should "report an unknown download size rather than a bogus zero" in {
+    val plan = new SyncPlan()
+    val artifact =
+      new Artifact(
+        "Core",
+        "core.jar",
+        "https://example.invalid/core.jar",
+        java.util.List.of("core"),
+        true
+      )
+    plan.add(new SyncPlan.Download(artifact, new java.io.File("/tmp/core.jar"), -1L))
+    plan.bytesToDownload shouldBe 0L
+    plan.render("Dependency plan") should include("(unknown size)")
+  }
 }
