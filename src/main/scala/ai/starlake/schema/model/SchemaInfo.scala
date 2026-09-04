@@ -719,14 +719,11 @@ case class SchemaInfo(
 
     val isPosition = this.metadata.map(_.resolveFormat()).contains(Format.POSITION)
 
-    // The cast function is engine-specific: SAFE_CAST on BigQuery, TRY_CAST on
-    // DuckDB/Snowflake — callers pass the right one. A no-op cast to a string-like
-    // type is skipped for readability.
-
     // For POSITION, the first-step temp table has a single VARCHAR column named `value`
     // containing the raw fixed-width line. We project each attribute by slicing it,
     // optionally wrapped in SAFE_CAST so a short/malformed line yields NULL on bad cells
-    // instead of failing the entire INSERT.
+    // instead of failing the entire INSERT. The cast function is engine-specific: SAFE_CAST
+    // on BigQuery, TRY_CAST on DuckDB and Snowflake, and callers pass the right one.
     def positionProjection(field: TableAttribute): String = {
       val pos = field.position.getOrElse(
         throw new IllegalStateException(

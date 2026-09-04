@@ -33,9 +33,13 @@ object DuckDbRejectCapture extends LazyLogging {
     Using.resource(conn.createStatement()) { statement =>
       Using.resource(statement.executeQuery(captureCsvRejectsSql)) { rs =>
         while (rs.next()) {
+          // wasNull() reports on the column just read, so the line number is read on its own
+          // line: a SQL NULL there means "unknown line", not line 0.
+          val line = rs.getLong("line")
+          val lineNumber = if (rs.wasNull()) None else Some(line)
           rejected += RejectedLine(
             file = rs.getString("file"),
-            line = Some(rs.getLong("line")),
+            line = lineNumber,
             rawLine = rs.getString("raw_line"),
             error = rs.getString("error")
           )

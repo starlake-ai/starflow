@@ -124,7 +124,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             // leaves it untouched. The temp tables are dropped by the finally block below.
             throw new RejectThresholdExceededException(
               rejectedLines,
-              s"${rejectedLines.size} rejected record(s) exceeds the allowed threshold"
+              rejectThresholdMessage(rejectedLines.size)
             )
           }
           val unionTempTables = tempTables
@@ -316,6 +316,11 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   private def rejectThresholdBreached(rejectedCount: Int): Boolean =
     rejectedCount > settings.appConfig.rejectMaxRecords ||
     (settings.appConfig.rejectAllOnError && rejectedCount > 0)
+
+  /** Shared by the two step and the single step abort sites so the two messages cannot drift.
+    */
+  private def rejectThresholdMessage(rejectedCount: Int): String =
+    s"$rejectedCount rejected record(s) exceeds the allowed threshold"
 
   private def computeEffectiveInputSchema(): SchemaInfo = {
     mergedMetadata.resolveFormat() match {
@@ -606,7 +611,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             // because a ROLLBACK also discards the session scoped reject_errors table.
             throw new RejectThresholdExceededException(
               rejected,
-              s"${rejected.size} rejected record(s) exceeds the allowed threshold"
+              rejectThresholdMessage(rejected.size)
             )
           }
           // Known limitation: SparkUtils.updateJdbcTableSchema (called above for the APPEND
