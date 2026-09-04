@@ -33,6 +33,18 @@ class DuckDbNativeRejectSpec extends TestHelper {
       }
     }
 
+    // The audit sink is configured to a separate, shared connection (see
+    // application-test.conf, audit.sink.connectionRef), not to the domain's own DuckDB file.
+    // That connection is reused, unfiltered, by every test in this suite, so callers must
+    // filter by jobid to see only the rows written by their own load.
+    private def queryAudit[T](sql: String)(f: java.sql.ResultSet => T): T = {
+      val options = settings.appConfig.audit.getConnection().options
+      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
+        val rs = conn.createStatement().executeQuery(sql)
+        f(rs)
+      }
+    }
+
     "Native DuckDB load of a DSV file with malformed lines" should
     "load the good lines and count the rejected ones" in {
       new SpecTrait(
@@ -65,6 +77,44 @@ class DuckDbNativeRejectSpec extends TestHelper {
         counters.get.acceptedCount shouldBe 3
         counters.get.rejectedCount shouldBe 2
         counters.get.inputCount shouldBe 5
+      }
+    }
+
+    "Native DuckDB load with malformed lines" should
+    "record one audit rejected row per rejected line" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckreject/dsvduckreject.sl.yml",
+        datasetDomainName = "dsvduckreject",
+        sourceDatasetPathName = "/sample/dsvduckreject/XDSVREJECTTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckreject",
+          "/sample/dsvduckreject/account_dsvduckreject.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+        // IngestionWorkflow.load aggregates the jobid of every table it loads as a
+        // comma-joined string (starting with an empty accumulator), so a single-table load's
+        // own jobid comes back prefixed with a leading comma. Strip it to get the jobid this
+        // load actually wrote to the audit rejected table.
+        val jobid = result.get.counters.get.jobid.stripPrefix(",")
+
+        val errors = queryAudit(
+          s"SELECT error FROM audit.rejected WHERE domain = 'dsvduckreject' AND jobid = '$jobid' " +
+          "ORDER BY error"
+        ) { rs =>
+          val buf = scala.collection.mutable.ListBuffer[String]()
+          while (rs.next()) buf += rs.getString("error")
+          buf.toList
+        }
+
+        errors.size shouldBe 2
+        errors.count(_.contains("NOTANUM")) shouldBe 1
+        errors.count(_.contains("MISSING COLUMNS")) shouldBe 1
       }
     }
 

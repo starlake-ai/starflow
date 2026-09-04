@@ -284,6 +284,20 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         timestamp = ingestionJob.now
       )(settings, storageHandler)
     }
+    if (rejected.nonEmpty) {
+      NativeRejectedSink
+        .sink(
+          applicationId = ingestionJob.applicationId(),
+          domainName = domain.finalName,
+          tableName = schema.finalName,
+          rejected = rejected,
+          paths = path,
+          timestamp = ingestionJob.now,
+          scheduledDate = scheduledDate,
+          accessToken = ingestionJob.accessToken
+        )(settings, storageHandler, schemaHandler)
+        .get
+    }
   }
 
   /** A load is aborted when it produces more rejects than allowed, or any reject at all when the
