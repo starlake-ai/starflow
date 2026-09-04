@@ -1119,66 +1119,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
             File depsDir = new File(binDir, "deps");
 
-            deleteDependencies(deltaSparkDependencies, depsDir);
-            downloadAndDisplayProgress(deltaSparkDependencies, depsDir, true);
-
-            deleteDependencies(icebergSparkDependencies, depsDir);
-            downloadAndDisplayProgress(icebergSparkDependencies, depsDir, true);
             updateSparkLog4j2Properties(sparkDir);
 
-            deleteDependencies(duckDbDependencies, depsDir);
-            if (ENABLE_DUCKDB) {
-                downloadAndDisplayProgress(duckDbDependencies, depsDir, true);
-            }
-
-            deleteDependencies(flightSqlDependencies, depsDir);
-            if (ENABLE_FLIGHTSQL) {
-                downloadAndDisplayProgress(flightSqlDependencies, depsDir, true);
-            }
-
-            deleteDependencies(confluentDependencies, depsDir);
-            if (ENABLE_KAFKA) {
-                downloadAndDisplayProgress(confluentDependencies, depsDir, true);
-            }
-
-            deleteDependencies(redshiftDependencies, depsDir);
-            if (ENABLE_REDSHIFT) {
-                downloadAndDisplayProgress(redshiftDependencies, depsDir, true);
-            }
-
-            deleteDependencies(bigqueryDependencies, depsDir);
-            if (ENABLE_BIGQUERY) {
-                downloadAndDisplayProgress(bigqueryDependencies, depsDir, true);
-            }
-
-            deleteDependencies(azureDependencies, depsDir);
-            if (ENABLE_AZURE) {
-                downloadAndDisplayProgress(azureDependencies, depsDir, true);
-            }
-
-            deleteDependencies(snowflakeDependencies, depsDir);
-            if (ENABLE_SNOWFLAKE) {
-                downloadAndDisplayProgress(snowflakeDependencies, depsDir, true);
-            }
-
-            deleteDependencies(postgresqlDependencies, depsDir);
-            if (ENABLE_POSTGRESQL) {
-                downloadAndDisplayProgress(postgresqlDependencies, depsDir, true);
-            }
-
-            deleteDependencies(mariadbDependencies, depsDir);
-            if (ENABLE_MARIADB) {
-                downloadAndDisplayProgress(mariadbDependencies, depsDir, true);
-            }
-
-            deleteDependencies(clickhouseDependencies, depsDir);
-            if (ENABLE_CLICKHOUSE) {
-                downloadAndDisplayProgress(clickhouseDependencies, depsDir, true);
-            }
-            deleteDependencies(trinodbDependencies, depsDir);
-            if (ENABLE_TRINODB) {
-                downloadAndDisplayProgress(trinodbDependencies, depsDir, true);
-            }
+            List<Artifact> deps = depsArtifacts();
+            SyncPlan plan = DependencySync.reconcile(deps, depsDir, probeAll(deps), false);
+            System.out.println(plan.render("Dependency plan for Starflow " + SL_VERSION + " (bin/deps)"));
+            apply(plan);
 
             downloadPythonLibs(new File(depsDir, "python-libs"));
 
@@ -1318,6 +1264,70 @@ public class Setup extends ProxySelector implements X509TrustManager {
                ).toArray(ResourceDependency[]::new);
                downloadAndDisplayProgress(dependencies, targetDir, true);
            }
+        }
+    }
+
+    /**
+     * Turn a dependency category into plain Artifacts.
+     *
+     * <p>Two ownership prefixes per artifact. The DERIVED one (from the url) owns the
+     * artifact's own superseded versions - it is the only one that matches for the AWS SDK,
+     * whose label is "aws-java-sdk-bundle" but whose file is bundle-&lt;version&gt;.jar, so
+     * without it every SDK bump leaked the previous bundle. The LEGACY one is today's
+     * artefactName, kept because a few labels deliberately match a PREVIOUS major's file
+     * name: "aws-java-sdk-bundle" cleans up the Spark 3 v1 jar, "bigquery-with-dependencies"
+     * cleans up spark-bigquery-with-dependencies_2.13-*.jar.
+     */
+    private static List<Artifact> toArtifacts(String label, ResourceDependency[] deps, boolean enabled) {
+        List<Artifact> artifacts = new ArrayList<>();
+        for (ResourceDependency dep : deps) {
+            String url = dep.urls[0];
+            String fileName = dep.getUrlName(url);
+            List<String> prefixes = new ArrayList<>();
+            prefixes.add(DependencySync.derivePrefix(url, fileName));
+            if (!prefixes.contains(dep.artefactName)) {
+                prefixes.add(dep.artefactName);
+            }
+            artifacts.add(new Artifact(label, fileName, url, prefixes, enabled));
+        }
+        return artifacts;
+    }
+
+    /** Every artifact that belongs in bin/deps, enabled and disabled alike. */
+    private static List<Artifact> depsArtifacts() {
+        List<Artifact> all = new ArrayList<>();
+        all.addAll(toArtifacts("Delta", deltaSparkDependencies, true));
+        all.addAll(toArtifacts("Iceberg", icebergSparkDependencies, true));
+        all.addAll(toArtifacts("DuckDB", duckDbDependencies, ENABLE_DUCKDB));
+        all.addAll(toArtifacts("FlightSQL", flightSqlDependencies, ENABLE_FLIGHTSQL));
+        all.addAll(toArtifacts("Kafka", confluentDependencies, ENABLE_KAFKA));
+        all.addAll(toArtifacts("Redshift", redshiftDependencies, ENABLE_REDSHIFT));
+        all.addAll(toArtifacts("BigQuery", bigqueryDependencies, ENABLE_BIGQUERY));
+        all.addAll(toArtifacts("Azure", azureDependencies, ENABLE_AZURE));
+        all.addAll(toArtifacts("Snowflake", snowflakeDependencies, ENABLE_SNOWFLAKE));
+        all.addAll(toArtifacts("Postgres", postgresqlDependencies, ENABLE_POSTGRESQL));
+        all.addAll(toArtifacts("Mariadb", mariadbDependencies, ENABLE_MARIADB));
+        all.addAll(toArtifacts("Clickhouse", clickhouseDependencies, ENABLE_CLICKHOUSE));
+        all.addAll(toArtifacts("Trino", trinodbDependencies, ENABLE_TRINODB));
+        return all;
+    }
+
+    /** Deletions first, so a superseded jar is gone before its replacement lands. */
+    private static void apply(SyncPlan plan) throws IOException, InterruptedException {
+        for (SyncPlan.Deletion deletion : plan.getToDelete()) {
+            deleteFile(deletion.file);
+        }
+        for (SyncPlan.Download download : plan.getToDownload()) {
+            File parent = download.target.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            // fileName, not label: downloadAndDisplayProgress prints the artefact name, and
+            // "Downloading postgresql-42.7.11.jar..." is what the user needs to see, not
+            // "Downloading Postgres..." repeated once per jar in the category.
+            downloadAndDisplayProgress(
+                    new ResourceDependency(download.artifact.fileName, download.artifact.url),
+                    (resource, url) -> download.target);
         }
     }
 
