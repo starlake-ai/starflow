@@ -8,8 +8,7 @@ lazy val javacCompilerVersion = "17"
 
 
 javacOptions ++= Seq(
-  "-source", javacCompilerVersion,
-  "-target", javacCompilerVersion,
+  "--release", javacCompilerVersion,
   "-Xlint"
 )
 
