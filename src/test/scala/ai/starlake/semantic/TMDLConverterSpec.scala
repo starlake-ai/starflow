@@ -283,7 +283,7 @@ class TMDLConverterSpec extends AnyFlatSpec with Matchers {
         .convert("ecommerce_analytics", YamlSerde.mapper.readTree(modelYaml), None)
         .toMap
         .apply("tables/orders.tmdl")
-    none should include("\t\t\t\t// TODO Starlake: set the connector for your warehouse")
+    none should include("\t\t\t\t// TODO Starflow: set the connector for your warehouse")
     none should include("\t\t\t\tSource = Sql.Database(\"SERVER_TODO\", \"DATABASE_TODO\"),")
 
     val duck = Some(
@@ -294,7 +294,7 @@ class TMDLConverterSpec extends AnyFlatSpec with Matchers {
         .convert("ecommerce_analytics", YamlSerde.mapper.readTree(modelYaml), duck)
         .toMap
         .apply("tables/orders.tmdl")
-    d should include("// TODO Starlake: set the connector for your warehouse")
+    d should include("// TODO Starflow: set the connector for your warehouse")
   }
 
   it should "double embedded double quotes in the M query string" in {
@@ -331,7 +331,7 @@ class TMDLConverterSpec extends AnyFlatSpec with Matchers {
   it should "fall back to BLANK() with the original SQL for untranslatable metrics" in {
     val orders = files()("tables/orders.tmdl")
     orders should include(
-      "\t/// TODO Starlake: translate original SQL to DAX: SUM(a)/NULLIF(SUM(b),0)"
+      "\t/// TODO Starflow: translate original SQL to DAX: SUM(a)/NULLIF(SUM(b),0)"
     )
     orders should include("\tmeasure total_revenue = BLANK()")
   }
@@ -352,7 +352,7 @@ class TMDLConverterSpec extends AnyFlatSpec with Matchers {
       .convert("stray", YamlSerde.mapper.readTree(yaml), None)
       .toMap
       .apply("tables/sales.tmdl")
-    table should include("\t/// TODO Starlake: translate original SQL to DAX: SUM(profit)")
+    table should include("\t/// TODO Starflow: translate original SQL to DAX: SUM(profit)")
     table should include("\tmeasure stray_sum = BLANK()")
   }
 

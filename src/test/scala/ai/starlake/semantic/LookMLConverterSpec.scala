@@ -198,7 +198,7 @@ class LookMLConverterSpec extends AnyFlatSpec with Matchers {
       LookMLConverter.convert("unowned_metric_model", YamlSerde.mapper.readTree(yaml), "wh").toMap
     val orders = files("orders.view.lkml")
     orders should include(
-      "# starlake: verify this measure, expression could not be mapped to a native LookML type"
+      "# starflow: verify this measure, expression could not be mapped to a native LookML type"
     )
     orders should include("measure: total_revenue {")
     orders should include("type: number")
@@ -221,7 +221,7 @@ class LookMLConverterSpec extends AnyFlatSpec with Matchers {
       LookMLConverter.convert("fallback_model", YamlSerde.mapper.readTree(yaml), "wh").toMap
     val sales = files("sales.view.lkml")
     sales should include(
-      "# starlake: verify this measure, expression could not be mapped to a native LookML type"
+      "# starflow: verify this measure, expression could not be mapped to a native LookML type"
     )
     sales should include("measure: weird_ratio {")
     sales should include("type: number")
