@@ -171,8 +171,8 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
       }
     }
 
-    "Native DuckDB load of a POSITION file with a truncated line" should
-    "reject the short line" in {
+    "Native DuckDB load of a POSITION file with a truncated line and a blank line" should
+    "reject both" in {
       new SpecTrait(
         sourceDomainOrJobPathname = "/sample/positionduckshort/positionduckshort.sl.yml",
         datasetDomainName = "positionduckshort",
@@ -201,6 +201,11 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
           buf.toList
         }
 
+        // The empty line in the middle of the file comes back from the first step as
+        // value = NULL, not as the empty string, so a bare length(value) predicate evaluates
+        // to NULL for it and it is neither rejected nor deleted. It then reaches the second
+        // step as SUBSTR(NULL, ...) and lands as an all NULL row, name included, even though
+        // name is declared required. No such row here.
         rows.map(_._1) shouldBe List("Blank     ", "Jane      ", "John      ")
         // The Blank line is 15 characters long, so it clears the length clause, and its
         // amount slice is all spaces. The TRIM guard on the cast clause is what keeps it out
@@ -208,15 +213,16 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
         // column would be rejected. It loads with a NULL amount instead.
         rows.find(_._1.trim == "Blank").map(_._2) shouldBe Some(None)
         rows.find(_._1.trim == "John").flatMap(_._2) shouldBe Some(12345L)
-        // only the truncated line is rejected
-        result.get.counters.get.rejectedCount shouldBe 1
+        // the truncated line and the blank line, and nothing else
+        result.get.counters.get.rejectedCount shouldBe 2
 
-        // the length clause fired, not the cast clause, and it names the length it requires
+        // the length clause fired on both, not the cast clause, and it names the length it
+        // requires
         val errors = rejectedErrors("positionduckshort", result.get.counters.get.jobid)
-        errors.size shouldBe 1
-        errors.head should endWith(
-          "line is shorter than the 15 characters required by the declared positions"
-        )
+        errors.size shouldBe 2
+        errors.count(
+          _.endsWith("line is shorter than the 15 characters required by the declared positions")
+        ) shouldBe 2
       }
     }
   }

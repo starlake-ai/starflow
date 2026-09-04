@@ -237,6 +237,58 @@ class DuckDbNativeRejectSpec extends TestHelper {
     }
   }
 
+  lazy val duckDbOptionsConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_options_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbOptionsConfiguration) {
+
+    // The table below carries ignore_errors = false in its metadata options, which used to be
+    // interpolated verbatim next to the store_rejects the loader injects. DuckDB answers that
+    // combination with "Binder Error: STORE_REJECTS option is only supported when IGNORE_ERRORS
+    // is not manually set to false", failing a load that worked before reject capture existed.
+    "Native DuckDB load of a table whose options fight the reject capture" should
+    "drop those options and load as if they were not there" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckopts/dsvduckopts.sl.yml",
+        datasetDomainName = "dsvduckopts",
+        sourceDatasetPathName = "/sample/dsvduckopts/XDSVOPTSTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckopts",
+          "/sample/dsvduckopts/account_dsvduckopts.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+
+        val names = queryDuckDb("SELECT name FROM dsvduckopts.account ORDER BY name") { rs =>
+          val buf = scala.collection.mutable.ListBuffer[String]()
+          while (rs.next()) buf += rs.getString("name")
+          buf.toList
+        }
+        names shouldBe List("alice", "carol", "eve")
+        result.get.counters.get.acceptedCount shouldBe 3
+        result.get.counters.get.rejectedCount shouldBe 2
+      }
+    }
+  }
+
   lazy val duckDbReplayConfiguration: Config = {
     val config = ConfigFactory.parseString(
       s"""

@@ -67,9 +67,12 @@ object DuckDbRejectCapture extends LazyLogging {
       Nil
     } else {
       val minimumLength = positioned.flatMap(_.position).map(_.last).max + 1
+      // An empty input line comes back from the first step as value = NULL, not as the empty
+      // string, so a bare length(value) would evaluate to NULL and the line would be neither
+      // rejected nor deleted. coalesce makes it fall on the reject side of the predicate.
       val shortLine =
         (
-          s"length(value) < $minimumLength",
+          s"coalesce(length(value), 0) < $minimumLength",
           s"line is shorter than the $minimumLength characters required by the declared positions"
         )
       val castClauses = positioned.flatMap { attr =>
@@ -117,7 +120,9 @@ object DuckDbRejectCapture extends LazyLogging {
             rejected += RejectedLine(
               file = filePath,
               line = None,
-              rawLine = rs.getString("value"),
+              // an empty input line reads back as NULL, and the replay file must carry the
+              // line as it was, so an empty line rather than the string "null"
+              rawLine = Option(rs.getString("value")).getOrElse(""),
               error = rs.getString("sl_reject_error")
             )
           }

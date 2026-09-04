@@ -322,6 +322,34 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   private def rejectThresholdMessage(rejectedCount: Int): String =
     s"$rejectedCount rejected record(s) exceeds the allowed threshold"
 
+  /** The read_csv options the reject capture owns. `store_rejects` is injected by the DSV load
+    * below and the rejected lines are read back from the session scoped `reject_errors` table, so a
+    * user option that turns error skipping off or renames the reject tables breaks a load that
+    * worked before reject capture existed: `ignore_errors = false` makes DuckDB refuse
+    * `store_rejects` outright, and `rejects_table` moves the table the capture reads from.
+    */
+  private val reservedReadCsvOptions =
+    Set("ignore_errors", "store_rejects", "rejects_table", "rejects_scan")
+
+  /** Drops the options above from what the user declared, naming each one so the setting is not
+    * silently ignored.
+    */
+  private def readCsvOptionsWithoutReserved(
+    options: Map[String, String]
+  ): Map[String, String] = {
+    val (reserved, kept) = options.partition { case (key, _) =>
+      reservedReadCsvOptions.contains(key.trim.toLowerCase)
+    }
+    reserved.foreach { case (key, value) =>
+      logger.warn(
+        s"Ignoring the read_csv option $key = $value declared on " +
+        s"${domain.finalName}.${schema.finalName}: the DuckDB native loader sets the error " +
+        s"handling of read_csv itself so that malformed lines are captured as rejects"
+      )
+    }
+    kept
+  }
+
   private def computeEffectiveInputSchema(): SchemaInfo = {
     mergedMetadata.resolveFormat() match {
       case Format.DSV =>
@@ -519,7 +547,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                   ""
                 else
                   s"nullstr = '${mergedMetadata.resolveNullValue()}',"
-              val options = mergedMetadata.getOptions()
+              val options = readCsvOptionsWithoutReserved(mergedMetadata.getOptions())
               val extraOptions =
                 if (options.nonEmpty)
                   options

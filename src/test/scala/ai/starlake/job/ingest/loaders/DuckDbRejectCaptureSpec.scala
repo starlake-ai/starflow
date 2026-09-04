@@ -20,11 +20,15 @@ class DuckDbRejectCaptureSpec extends TestHelper {
 
   private val ddlTypes = Map("name" -> "VARCHAR", "amount" -> "BIGINT")
 
+  // The length guard is written with coalesce because an empty input line comes back from the
+  // first step as value = NULL: a bare length(value) would make the whole OR evaluate to NULL,
+  // so the line would be neither rejected nor deleted, and the second step would project it
+  // into an all NULL row.
   "positionRejectClauses" should "guard the line length and cast every non string slice" in {
     val clauses = DuckDbRejectCapture.positionRejectClauses(schema, ddlTypes)
 
     clauses.map(_._1) shouldBe List(
-      "length(value) < 15",
+      "coalesce(length(value), 0) < 15",
       "(TRIM(SUBSTR(value, 11, 5)) <> '' AND TRY_CAST(SUBSTR(value, 11, 5) AS BIGINT) IS NULL)"
     )
     clauses.map(_._2) shouldBe List(
