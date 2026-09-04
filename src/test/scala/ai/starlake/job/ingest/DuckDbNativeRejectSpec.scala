@@ -175,6 +175,12 @@ class DuckDbNativeRejectSpec extends TestHelper {
           Some("account.sl.yml")
         )
 
+        // DatasetArea.replay("dsvduckreject") is the same directory for every WithSettings
+        // block in this spec (starlakeTestRoot is shared, and cleanMetadata does not touch
+        // it), so start from a clean slate to keep this test independent of what other tests
+        // in this file left behind.
+        storageHandler.delete(DatasetArea.replay("dsvduckreject"))
+
         loadPending.isSuccess shouldBe true
 
         val replayFiles = storageHandler
@@ -235,6 +241,12 @@ class DuckDbNativeRejectSpec extends TestHelper {
           "/sample/dsvduckreject/account_dsvduckreject.sl.yml",
           Some("account.sl.yml")
         )
+
+        // DatasetArea.replay("dsvduckreject") is the same directory for every WithSettings
+        // block in this spec (starlakeTestRoot is shared, and cleanMetadata does not touch
+        // it), so start from a clean slate to keep this test independent of what other tests
+        // in this file left behind.
+        storageHandler.delete(DatasetArea.replay("dsvduckreject"))
 
         loadPending.isSuccess shouldBe false
 
