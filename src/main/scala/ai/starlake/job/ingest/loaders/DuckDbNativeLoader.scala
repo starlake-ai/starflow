@@ -292,13 +292,16 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
 
   /** The first physical line of the first input file, so the replay file can be ingested again by a
     * table that declares a header. Read verbatim rather than rebuilt from the attribute names, so
-    * it survives renamed or reordered source columns.
+    * it survives renamed or reordered source columns. DSV and POSITION both drop that line on the
+    * way in, DSV through the read_csv header option and POSITION through skip = 1, so both need it
+    * back on the way out or a re-ingest would silently drop the first rejected record.
     */
   private def replayHeaderLine(): Option[String] = {
-    val isDsvWithHeader =
-      mergedMetadata.resolveFormat() == Format.DSV &&
+    val format = mergedMetadata.resolveFormat()
+    val hasHeaderLine =
+      (format == Format.DSV || format == Format.POSITION) &&
       mergedMetadata.resolveWithHeader().booleanValue()
-    if (isDsvWithHeader) {
+    if (hasHeaderLine) {
       path.headOption.flatMap { p =>
         Try {
           storageHandler.readAndExecute(p, Charset.forName(mergedMetadata.resolveEncoding())) {
@@ -316,12 +319,19 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
 
   /** Writes the rejected lines where the user can act on them: the replay file when
     * sinkReplayToFile is set, and the audit rejected table.
+    *
+    * The declared names are used, not the final ones. `IngestionAudit.buildAuditLog` writes
+    * `domain.name` and `schema.name` into audit.audit, and the Spark reject path
+    * (`IngestionJob.saveRejected`) writes the same declared names into audit.rejected and into the
+    * replay file name. A table carrying a `rename` would otherwise leave audit.rejected rows that
+    * no longer join audit.audit on (jobid, domain, schema), and a replay file under a different
+    * domain area than the Spark loader writes to.
     */
   private def reportRejects(rejected: List[RejectedLine]): Unit = {
     if (rejected.nonEmpty && settings.appConfig.sinkReplayToFile) {
       ReplayFileWriter.write(
-        domainName = domain.finalName,
-        tableName = schema.finalName,
+        domainName = domain.name,
+        tableName = schema.name,
         rejectedLines = rejected,
         header = replayHeaderLine(),
         encoding = mergedMetadata.resolveEncoding(),
@@ -332,8 +342,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       NativeRejectedSink
         .sink(
           applicationId = ingestionJob.applicationId(),
-          domainName = domain.finalName,
-          tableName = schema.finalName,
+          domainName = domain.name,
+          tableName = schema.name,
           rejected = rejected,
           paths = path,
           timestamp = ingestionJob.now,

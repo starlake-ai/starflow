@@ -728,6 +728,101 @@ class DuckDbNativeRejectSpec extends TestHelper {
     }
   }
 
+  lazy val duckDbRenameConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |sinkReplayToFile: true
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_rename_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbRenameConfiguration) {
+
+    // The reject trail has to be named the way the rest of the audit trail is named.
+    // IngestionAudit.buildAuditLog writes domain.name and schema.name into audit.audit, and the
+    // Spark reject path (IngestionJob.saveRejected) writes the same declared names into
+    // audit.rejected and into the replay file name. The native loader used to write the final
+    // names, so a table carrying a rename left audit.rejected rows that no longer joined
+    // audit.audit on (jobid, domain, schema), and a replay file the Spark loader would not have
+    // written there. Every other fixture in this file is free of rename, where name and finalName
+    // are the same string and the bug is invisible.
+    "Native DuckDB load of a table declaring a rename" should
+    "name the audit rejected rows and the replay file after the declared table" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckrename/dsvduckrename.sl.yml",
+        datasetDomainName = "dsvduckrename",
+        sourceDatasetPathName = "/sample/dsvduckrename/XDSVRENAMETBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckrename",
+          "/sample/dsvduckrename/account_dsvduckrename.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // DatasetArea.replay("dsvduckrename") survives cleanMetadata, so start from a clean
+        // slate, as the other replay blocks in this file do.
+        storageHandler.delete(DatasetArea.replay("dsvduckrename"))
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+
+        // the rename is honored where it belongs: the rows land in the renamed target table
+        tableExists("dsvduckrename", "account_renamed") shouldBe true
+        tableExists("dsvduckrename", "account") shouldBe false
+
+        val jobid = result.get.counters.get.jobid.stripPrefix(",")
+
+        val rejectedNames = queryAudit(
+          s"SELECT domain, schema FROM audit.rejected WHERE jobid = '$jobid' ORDER BY error"
+        ) { rs =>
+          val buf = scala.collection.mutable.ListBuffer[(String, String)]()
+          while (rs.next()) buf += ((rs.getString("domain"), rs.getString("schema")))
+          buf.toList
+        }
+        rejectedNames shouldBe List(
+          ("dsvduckrename", "account"),
+          ("dsvduckrename", "account")
+        )
+
+        // and the audit.audit rows of the very same load. The LOAD row is the one the rejected
+        // rows have to join, and it carries the declared name. The two step path also runs its
+        // second step through an AutoTask, which logs its own TRANSFORM row against the table it
+        // actually writes into, so that one carries the renamed name and is expected to.
+        val auditNames = queryAudit(
+          s"SELECT domain, schema, step FROM audit.audit WHERE jobid = '$jobid' ORDER BY step"
+        ) { rs =>
+          val buf = scala.collection.mutable.ListBuffer[(String, String, String)]()
+          while (rs.next())
+            buf += ((rs.getString("domain"), rs.getString("schema"), rs.getString("step")))
+          buf.toList
+        }
+        auditNames shouldBe List(
+          ("dsvduckrename", "account", "LOAD"),
+          ("dsvduckrename", "account_renamed", "TRANSFORM")
+        )
+        rejectedNames.distinct shouldBe
+        auditNames.filter(_._3 == "LOAD").map { case (d, s, _) => (d, s) }
+
+        val replayFiles = storageHandler
+          .list(DatasetArea.replay("dsvduckrename"), extension = ".replay", recursive = false)
+          .map(_.path)
+        replayFiles.size shouldBe 1
+        replayFiles.head.getName should startWith("dsvduckrename.account.")
+      }
+    }
+  }
+
   lazy val duckDbSecondStepFailureConfiguration: Config = {
     val config = ConfigFactory.parseString(
       s"""

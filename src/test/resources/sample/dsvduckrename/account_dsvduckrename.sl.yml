@@ -1,0 +1,16 @@
+---
+version: 1
+table:
+  name: "account"
+  rename: "account_renamed"
+  pattern: "XDSVRENAME.*"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "name"
+      type: "string"
+      required: true
+    - name: "amount"
+      type: "double"
+      required: false

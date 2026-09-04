@@ -54,8 +54,16 @@ object DuckDbRejectCapture extends LazyLogging {
 
   /** Builds the (predicate, message) pairs that decide whether a fixed width line is rejected.
     * Positions are zero based and inclusive, so an attribute at [first, last] is sliced as
-    * SUBSTR(value, first + 1, last - first + 1) and a complete record needs at least last + 1
-    * characters.
+    * SUBSTR(value, first + 1, last - first + 1).
+    *
+    * The line length is only checked against the REQUIRED positioned attributes: a line has to
+    * reach the end of every required field, but a fixed width source that right trims blanks
+    * legitimately stops short when its trailing optional fields are empty, and rejecting those
+    * lines would abort loads that worked before reject capture existed. The slice of an absent
+    * optional field comes back as the empty string, the TRIM guard below then suppresses its cast
+    * clause and the second step loads NULL, which is exactly what the Spark POSITION path does with
+    * an empty optional cell. When no positioned attribute is required there is no length clause at
+    * all, only the cast clauses.
     */
   def positionRejectClauses(
     schema: SchemaInfo,
@@ -66,15 +74,17 @@ object DuckDbRejectCapture extends LazyLogging {
     if (positioned.isEmpty) {
       Nil
     } else {
-      val minimumLength = positioned.flatMap(_.position).map(_.last).max + 1
+      val requiredPositions = positioned.filter(_.resolveRequired()).flatMap(_.position)
       // An empty input line comes back from the first step as value = NULL, not as the empty
       // string, so a bare length(value) would evaluate to NULL and the line would be neither
       // rejected nor deleted. coalesce makes it fall on the reject side of the predicate.
-      val shortLine =
+      val shortLine = Option.when(requiredPositions.nonEmpty) {
+        val minimumLength = requiredPositions.map(_.last).max + 1
         (
           s"coalesce(length(value), 0) < $minimumLength",
-          s"line is shorter than the $minimumLength characters required by the declared positions"
+          s"line is shorter than the $minimumLength characters that cover every required attribute"
         )
+      }
       val castClauses = positioned.flatMap { attr =>
         val position = attr.position.get
         ddlTypesByAttribute.get(attr.name).filterNot(SchemaInfo.isStringLikeDdlType).map {
@@ -87,7 +97,7 @@ object DuckDbRejectCapture extends LazyLogging {
             )
         }
       }
-      shortLine :: castClauses
+      shortLine.toList ::: castClauses
     }
   }
 
