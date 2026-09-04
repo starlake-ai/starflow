@@ -135,4 +135,168 @@ class DependencySyncSpec extends AnyFlatSpec with Matchers {
     plan.bytesToDownload shouldBe 0L
     plan.render("Dependency plan") should include("(unknown size)")
   }
+
+  private val emptySizes = new java.util.HashMap[String, java.lang.Long]()
+
+  private def artifact(
+    label: String,
+    fileName: String,
+    url: String,
+    enabled: Boolean = true,
+    legacyLabel: String = null
+  ): Artifact = {
+    val prefixes = new java.util.ArrayList[String]()
+    prefixes.add(DependencySync.derivePrefix(url, fileName))
+    if (legacyLabel != null) prefixes.add(legacyLabel)
+    new Artifact(label, fileName, url, prefixes, enabled)
+  }
+
+  private def tempDirWith(names: String*): java.io.File = {
+    val dir = java.nio.file.Files.createTempDirectory("sl-sync-").toFile
+    dir.deleteOnExit()
+    names.foreach { n =>
+      val f = new java.io.File(dir, n)
+      java.nio.file.Files.write(f.toPath, Array.fill[Byte](10)(0))
+      f.deleteOnExit()
+    }
+    dir
+  }
+
+  private def sizes(pairs: (String, Long)*): java.util.Map[String, java.lang.Long] = {
+    val m = new java.util.HashMap[String, java.lang.Long]()
+    pairs.foreach { case (k, v) => m.put(k, java.lang.Long.valueOf(v)) }
+    m
+  }
+
+  private val pgUrl =
+    "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.11/postgresql-42.7.11.jar"
+  private val pgArt = artifact("Postgres", "postgresql-42.7.11.jar", pgUrl)
+  private val sfUrl =
+    "https://repo1.maven.org/maven2/net/snowflake/snowflake-jdbc/4.3.3/snowflake-jdbc-4.3.3.jar"
+
+  "reconcile" should "download everything into an empty directory" in {
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), tempDirWith(), emptySizes, false)
+    plan.getToDownload should have size 1
+    plan.getToDownload.get(0).artifact.fileName shouldBe "postgresql-42.7.11.jar"
+    plan.getToDelete shouldBe empty
+    plan.getUpToDate shouldBe empty
+  }
+
+  it should "keep a present file whose size matches the remote size" in {
+    val dir = tempDirWith("postgresql-42.7.11.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), dir, sizes(pgUrl -> 10L), false)
+    plan.getToDownload shouldBe empty
+    plan.getToDelete shouldBe empty
+    plan.getUpToDate should have size 1
+    plan.isEmpty shouldBe true
+  }
+
+  it should "re-download a present file whose size does not match" in {
+    val dir = tempDirWith("postgresql-42.7.11.jar")
+    val plan =
+      DependencySync.reconcile(java.util.List.of(pgArt), dir, sizes(pgUrl -> 999999L), false)
+    plan.getToDownload should have size 1
+    plan.getUpToDate shouldBe empty
+  }
+
+  it should "keep a present file when the remote size is unknown, so an offline run is a no-op" in {
+    val dir = tempDirWith("postgresql-42.7.11.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), dir, sizes(pgUrl -> -1L), false)
+    plan.getToDownload shouldBe empty
+    plan.getUpToDate should have size 1
+  }
+
+  it should "remove a superseded version and fetch the new one" in {
+    val dir = tempDirWith("postgresql-42.7.10.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), dir, emptySizes, false)
+    plan.getToDownload should have size 1
+    plan.getToDelete should have size 1
+    plan.getToDelete.get(0).file.getName shouldBe "postgresql-42.7.10.jar"
+    plan.getToDelete.get(0).reason shouldBe "superseded"
+  }
+
+  it should "remove the jars of a disabled category and download nothing for it" in {
+    val disabled = artifact("Snowflake", "snowflake-jdbc-4.3.3.jar", sfUrl, enabled = false)
+    val dir = tempDirWith("snowflake-jdbc-4.3.3.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(disabled), dir, emptySizes, false)
+    plan.getToDownload shouldBe empty
+    plan.getToDelete should have size 1
+    plan.getToDelete.get(0).reason shouldBe "Snowflake disabled"
+  }
+
+  it should "leave a hand-copied unknown jar alone" in {
+    val dir = tempDirWith("postgresql-42.7.11.jar", "my-private-driver-1.0.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), dir, sizes(pgUrl -> 10L), false)
+    plan.getToDelete shouldBe empty
+    plan.getUpToDate.size shouldBe 1
+  }
+
+  it should "clean the current bundle jar as well as the legacy aws-java-sdk-bundle jar" in {
+    val awsUrl =
+      "https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar"
+    val aws =
+      artifact("Redshift", "bundle-2.29.52.jar", awsUrl, legacyLabel = "aws-java-sdk-bundle")
+    val dir = tempDirWith("bundle-2.20.0.jar", "aws-java-sdk-bundle-1.12.500.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(aws), dir, emptySizes, false)
+    plan.getToDelete.size shouldBe 2
+    plan.getToDownload should have size 1
+  }
+
+  it should "not delete anything just because the directory path contains an artefact name" in {
+    val root = java.nio.file.Files.createTempDirectory("postgresql-").toFile
+    root.deleteOnExit()
+    val f = new java.io.File(root, "my-private-driver-1.0.jar")
+    java.nio.file.Files.write(f.toPath, Array.fill[Byte](10)(0))
+    f.deleteOnExit()
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), root, emptySizes, false)
+    plan.getToDelete shouldBe empty
+  }
+
+  it should "download everything when forced, whatever is on disk" in {
+    val dir = tempDirWith("postgresql-42.7.11.jar")
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), dir, sizes(pgUrl -> 10L), true)
+    plan.getToDownload should have size 1
+    plan.getUpToDate shouldBe empty
+  }
+
+  it should "treat a missing directory as empty rather than failing" in {
+    val missing = new java.io.File(
+      System.getProperty("java.io.tmpdir"),
+      "sl-sync-does-not-exist-" + System.nanoTime()
+    )
+    val plan = DependencySync.reconcile(java.util.List.of(pgArt), missing, emptySizes, false)
+    plan.getToDownload should have size 1
+    plan.getToDelete shouldBe empty
+  }
+
+  it should "remove a superseded python wheel" in {
+    // Regression test: the old code used the full versioned file name as the artefact name,
+    // so a wheel bump never matched the previous wheel and python-libs grew without bound.
+    val wheelUrl =
+      "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/python-libs/starlake_airflow-0.6.11-py3-none-any.whl"
+    val wheel = artifact("Python libs", "starlake_airflow-0.6.11-py3-none-any.whl", wheelUrl)
+    val dir = tempDirWith("starlake_airflow-0.6.10-py3-none-any.whl")
+    val plan = DependencySync.reconcile(java.util.List.of(wheel), dir, emptySizes, false)
+    plan.getToDelete should have size 1
+    plan.getToDelete.get(0).file.getName shouldBe "starlake_airflow-0.6.10-py3-none-any.whl"
+    plan.getToDownload should have size 1
+  }
+
+  it should "never let one artifact own another artifact's current file" in {
+    // If this fails, syncing artifact A would classify artifact B's CURRENT file as
+    // superseded and delete it. Fix by making the colliding prefix more specific, never by
+    // relaxing the assertion.
+    import scala.jdk.CollectionConverters._
+    val artifacts = goldenPrefixes.map { case (url, _) =>
+      val fileName = url.substring(url.lastIndexOf('/') + 1)
+      artifact("golden", fileName, url)
+    }
+    val asJava = artifacts.asJava
+    artifacts.foreach { a =>
+      val owner = DependencySync.ownerOf(a.fileName, asJava)
+      withClue(s"${a.fileName} is owned by ${owner.fileName}: ") {
+        owner.fileName shouldBe a.fileName
+      }
+    }
+  }
 }

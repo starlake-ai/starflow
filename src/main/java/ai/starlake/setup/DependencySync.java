@@ -1,5 +1,11 @@
 package ai.starlake.setup;
 
+import java.io.File;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 /**
  * Pure reconciliation between the artifacts the installer wants and the files already
  * on disk. No static state, no network, no writes: everything it needs is passed in.
@@ -59,5 +65,87 @@ public final class DependencySync {
             segment = segment.substring(1);
         }
         return segment;
+    }
+
+    /**
+     * Diff the artifacts the installer wants against what {@code dir} already holds.
+     *
+     * @param artifacts   every artifact the installer knows about, ENABLED AND DISABLED
+     *                    alike - the disabled ones are what let a turned-off category get
+     *                    cleaned up instead of orphaned
+     * @param dir         directory to reconcile; a directory that does not exist is treated
+     *                    as empty
+     * @param remoteSizes remote byte size per {@link Artifact#url}; a missing entry or a
+     *                    value {@code <= 0} means the size could not be determined, and a
+     *                    correctly named file is then kept (so a fully provisioned install
+     *                    is an offline no-op instead of a hard failure)
+     * @param force       classify every enabled artifact as a download, whatever is on disk
+     */
+    public static SyncPlan reconcile(List<Artifact> artifacts, File dir, Map<String, Long> remoteSizes, boolean force) {
+        SyncPlan plan = new SyncPlan();
+
+        Set<String> desiredNames = new HashSet<>();
+        for (Artifact artifact : artifacts) {
+            if (artifact.enabled) {
+                desiredNames.add(artifact.fileName);
+            }
+        }
+
+        File[] present = dir.listFiles();
+        if (present == null) {
+            present = new File[0];
+        }
+
+        for (Artifact artifact : artifacts) {
+            if (!artifact.enabled) {
+                continue;
+            }
+            File target = new File(dir, artifact.fileName);
+            long remote = sizeOf(remoteSizes, artifact.url);
+            boolean usable = !force
+                    && target.isFile()
+                    && (remote <= 0 || target.length() == remote);
+            if (usable) {
+                plan.addUpToDate(target);
+            } else {
+                plan.add(new SyncPlan.Download(artifact, target, remote));
+            }
+        }
+
+        for (File file : present) {
+            if (!file.isFile() || desiredNames.contains(file.getName())) {
+                continue;
+            }
+            Artifact owner = ownerOf(file.getName(), artifacts);
+            if (owner != null) {
+                String reason = owner.enabled ? "superseded" : owner.label + " disabled";
+                plan.add(new SyncPlan.Deletion(file, reason));
+            }
+        }
+        return plan;
+    }
+
+    /**
+     * The artifact a file on disk belongs to, or null when nothing manages it - a jar the
+     * user hand-copied into bin/deps, which the installer must never touch.
+     *
+     * <p>Matched against the file NAME. The old code matched {@code File.getPath()}, so an
+     * installation directory whose path happened to contain an artefact name made every
+     * file in bin/deps a match and got it deleted.
+     */
+    static Artifact ownerOf(String fileName, List<Artifact> artifacts) {
+        for (Artifact artifact : artifacts) {
+            for (String prefix : artifact.ownershipPrefixes) {
+                if (!prefix.isEmpty() && fileName.contains(prefix)) {
+                    return artifact;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static long sizeOf(Map<String, Long> remoteSizes, String url) {
+        Long size = remoteSizes.get(url);
+        return size == null ? -1L : size;
     }
 }
