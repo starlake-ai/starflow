@@ -322,4 +322,76 @@ class DuckDbNativeRejectSpec extends TestHelper {
       }
     }
   }
+
+  lazy val duckDbOverwriteConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_overwrite_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbOverwriteConfiguration) {
+
+    private def queryDuckDb[T](sql: String)(f: java.sql.ResultSet => T): T = {
+      val options = settings.appConfig.connections("test-duckdb").options
+      JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
+        val rs = conn.createStatement().executeQuery(sql)
+        f(rs)
+      }
+    }
+
+    "Native DuckDB load with OVERWRITE strategy" should
+    "report the accepted count of the new rows rather than a delta against the replaced table" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckoverwrite/dsvduckoverwrite.sl.yml",
+        datasetDomainName = "dsvduckoverwrite",
+        sourceDatasetPathName = "/sample/dsvduckreject/XDSVREJECTTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckoverwrite",
+          "/sample/dsvduckoverwrite/account_dsvduckoverwrite.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // Not the point of this test, but a regression on the fresh-table path should
+        // still be visible here.
+        val firstResult = loadPending
+        firstResult.isSuccess shouldBe true
+        firstResult.get.counters.isDefined shouldBe true
+        firstResult.get.counters.get.acceptedCount shouldBe 3
+        firstResult.get.counters.get.rejectedCount shouldBe 2
+        firstResult.get.counters.get.inputCount shouldBe 5
+
+        // Loading the same file again replaces the 3 previously accepted rows with 3 new
+        // ones. Before the fix, acceptedCount is computed as a delta against the table
+        // that OVERWRITE just emptied and refilled, so it comes back as 0.
+        val secondResult = loadPending
+        secondResult.isSuccess shouldBe true
+        secondResult.get.counters.isDefined shouldBe true
+        secondResult.get.counters.get.acceptedCount shouldBe 3
+        secondResult.get.counters.get.rejectedCount shouldBe 2
+        secondResult.get.counters.get.inputCount shouldBe 5
+
+        val names = queryDuckDb(
+          "SELECT name FROM dsvduckoverwrite.account ORDER BY name"
+        ) { rs =>
+          val buf = scala.collection.mutable.ListBuffer[String]()
+          while (rs.next()) buf += rs.getString("name")
+          buf.toList
+        }
+        names shouldBe List("alice", "carol", "eve")
+      }
+    }
+  }
 }

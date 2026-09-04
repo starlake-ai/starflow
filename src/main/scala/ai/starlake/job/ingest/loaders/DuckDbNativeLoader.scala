@@ -224,7 +224,15 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             )
             count
         }
-      val acceptedCount = (currentRowCount - initialRowCount).toLong
+      // OVERWRITE replaces the target's previous contents (singleStepLoad drops and
+      // recreates the table, and the two step path's AutoTask replaces the rows), so
+      // initialRowCount no longer describes what was there before this load's rows landed.
+      // currentRowCount alone is the accepted count in that case. Do not turn this back into
+      // a delta: for OVERWRITE the delta undercounts, or goes negative, whenever the
+      // replaced table held rows before this load.
+      val acceptedCount =
+        if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE) currentRowCount.toLong
+        else (currentRowCount - initialRowCount).toLong
       // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count.
       val format = mergedMetadata.resolveFormat()
       val rejectsSupported = format == Format.DSV || format == Format.POSITION

@@ -1,0 +1,12 @@
+---
+version: 1
+load:
+  name: "dsvduckoverwrite"
+  metadata:
+    directory: "__SL_TEST_ROOT__/dsvduckoverwrite"
+    format: "DSV"
+    separator: ";"
+    withHeader: true
+    loader: "native"
+    writeStrategy:
+      type: "OVERWRITE"
