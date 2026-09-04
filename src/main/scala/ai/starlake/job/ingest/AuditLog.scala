@@ -111,7 +111,7 @@ case class AuditLog(
     val selectStatement = template.richFormat(
       Map(
         "jobid"         -> escapeLiteral(jobid),
-        "paths"         -> paths.map(escapeLiteral).getOrElse("null"),
+        "paths"         -> paths.map(escapeLiteral(_)).getOrElse("null"),
         "domain"        -> escapeLiteral(domain),
         "schema"        -> escapeLiteral(schema),
         "success"       -> success,

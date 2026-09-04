@@ -60,10 +60,19 @@ object AuditTaskBuilder {
     * line carrying the first still aborted the whole load, which is precisely what the caller uses
     * this for. Removing every brace can neither leave a delimiter nor build one, and applying it
     * twice changes nothing, so please do not "improve" it back into pairwise stripping.
+    *
+    * @param quoteReplacement
+    *   What a single quote becomes. Defaults to a dash, which is what every caller that inlines a
+    *   value into a quoted SQL literal wants. A caller that inlines SQL text of its own, such as
+    *   the expectations sink, wants that text to stay readable and passes a value that stays safe
+    *   inside the enclosing single quoted literal instead, for example a double quote. The fixpoint
+    *   argument above only holds if `quoteReplacement` itself contains no quote, backslash or
+    *   brace, since it is not run back through this method; every call site in this codebase passes
+    *   a literal constant, so that is a review-time invariant, not a runtime check.
     */
-  def escapeLiteral(value: String): String =
+  def escapeLiteral(value: String, quoteReplacement: String = "-"): String =
     value
-      .replaceAll("'", "-")
+      .replaceAll("'", quoteReplacement)
       .replaceAll("\\\\", "-")
       .replaceAll("\\n", " ")
       .replaceAll("[{}]", "")

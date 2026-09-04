@@ -53,22 +53,26 @@ case class ExpectationReport(
 
   def asSelect(engineName: Engine)(implicit settings: Settings): String = {
     import ai.starlake.utils.Formatter.*
+    import ai.starlake.job.ingest.AuditTaskBuilder.escapeLiteral
     timestamp.setNanos(0)
     val template = ExpectationJob.selectTemplate(engineName)
-    def replaceQuote(s: String): String =
-      s.replaceAll("'", "\"").replaceAll("\n", " ").replaceAll("\\{\\{", "").replaceAll("}}", "")
+    // name, params, sql and exception record free form text, including SQL, which is full of
+    // single quotes. Passing a double quote as the replacement keeps that text readable, unlike
+    // the default dash every other field below uses, and stays safe inside the single quoted
+    // literal the template wraps each value in.
+    def escapeText(s: String): String = escapeLiteral(s, "\"")
     val mapParam =
       Map(
-        "jobid"     -> jobId,
-        "database"  -> database.getOrElse(""),
-        "domain"    -> domain,
-        "schema"    -> schema,
+        "jobid"     -> escapeLiteral(jobId),
+        "database"  -> escapeLiteral(database.getOrElse("")),
+        "domain"    -> escapeLiteral(domain),
+        "schema"    -> escapeLiteral(schema),
         "timestamp" -> timestamp.toString(),
-        "name"      -> replaceQuote(name),
-        "params"    -> replaceQuote(params),
-        "sql"       -> replaceQuote(sql.getOrElse("")),
+        "name"      -> escapeText(name),
+        "params"    -> escapeText(params),
+        "sql"       -> escapeText(sql.getOrElse("")),
         "count"     -> count.getOrElse(0L).toString,
-        "exception" -> replaceQuote(exception.getOrElse("")),
+        "exception" -> escapeText(exception.getOrElse("")),
         "success"   -> success.toString
       )
     val selectStatement = template.richFormat(mapParam, Map.empty)
