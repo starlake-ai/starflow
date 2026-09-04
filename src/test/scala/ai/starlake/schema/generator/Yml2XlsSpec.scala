@@ -83,7 +83,7 @@ class Yml2XlsSpec extends TestHelper {
     val expected =
       """
         |Usage: starlake yml2xls [options]
-        |Export Starlake YAML domain and table definitions to an Excel spreadsheet.
+        |Export Starflow YAML domain and table definitions to an Excel spreadsheet.
         |
         |  --domain <value>  domains to convert to XLS
         |  --iamPolicyTagsFile <value>

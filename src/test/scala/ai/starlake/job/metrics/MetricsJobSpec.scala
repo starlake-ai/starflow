@@ -168,7 +168,7 @@ class MetricsJobSpec extends TestHelper with JdbcChecks {
       val expected =
         """
           |Usage: starlake metrics [options]
-          |Compute data quality metrics (continuous, discrete, and frequency metrics) on loaded tables. See [Metrics Guide](/guides/load/metrics).
+          |Compute data quality metrics (continuous, discrete, and frequency metrics) on loaded tables. See [Metrics Guide](/starflow/guides/load/metrics).
           |  --domain <value>   Domain Name
           |  --schema <value>   Schema Name
           |  --authInfo <value> Auth Info.  Google Cloud use: gcpProjectId and gcpSAJsonKey

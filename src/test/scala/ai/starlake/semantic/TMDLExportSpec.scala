@@ -77,7 +77,7 @@ class TMDLExportSpec extends TestHelper {
       orders should include("\t\tisKey")
       orders should include("\tmeasure avg_order_value = AVERAGE('orders'[order_total])")
       // unknown connection name falls back to the generic source
-      orders should include("// TODO Starlake: set the connector for your warehouse")
+      orders should include("// TODO Starflow: set the connector for your warehouse")
       orders should include("FROM ANALYTICS_DB.ECOMMERCE.ORDERS")
 
       storage.read(new Path(outDir, "relationships.tmdl")) should include(

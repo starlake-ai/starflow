@@ -9,7 +9,7 @@ class InferSchemaInfoSpec extends TestHelper {
       val expected =
         """
           |Usage: starlake infer-schema [options]
-          |Infer a Starlake table schema from a sample data file (CSV, JSON, etc.) and generate the corresponding YAML configuration. See [Load Tutorial](/guides/load/tutorial).
+          |Infer a Starflow table schema from a sample data file (CSV, JSON, etc.) and generate the corresponding YAML configuration. See [Load Tutorial](/starflow/guides/load/tutorial).
           |
           |  --domain <value>       Domain Name
           |  --table <value>        Table Name
