@@ -58,7 +58,13 @@ change lands in one file.
    `starlake_airflow` 0.6.10 to 0.6.11 leaves both wheels in
    `bin/deps/python-libs`. Fixed by deriving ownership from the wheel's
    distribution name.
-3. **Truncated downloads are silently accepted.** Nothing compares bytes
+3. **Stale AWS SDK v2 bundles accumulate.** `AWS_JAVA_SDK_JAR` carries the
+   artefact label `aws-java-sdk-bundle` (deliberately, to clean up the legacy
+   Spark 3 v1 jar - see the comment at `Setup.java:514`), but the file it
+   actually downloads is `bundle-<version>.jar`, which that label does not
+   match. Every AWS SDK bump therefore leaves the previous `bundle-*.jar`
+   behind. Fixed by the derived ownership prefix in Part 2.
+4. **Truncated downloads are silently accepted.** Nothing compares bytes
    written against `Content-Length`; a killed download surfaces later as a
    `ClassNotFoundException`. This must be fixed here, because the plan now
    trusts on-disk sizes: without it a truncated file would be cached as up to
@@ -105,8 +111,13 @@ present*, so adding a mirror later does not force a re-download.
 ## Part 2: Reconciliation
 
 ```java
-SyncPlan reconcile(List<Managed> managed, File dir, SizeProbe probe)
+SyncPlan reconcile(List<Artifact> artifacts, File dir, Map<String, Long> remoteSizes, boolean force)
 ```
+
+`reconcile` is pure: plain data in, plan out, no static state and no network.
+Remote sizes are probed separately by `probeAll(...)` and passed in as a map
+(`-1` meaning "could not be determined"), so the reconciler needs no injected
+probe interface and the test needs no stub.
 
 Every file in `dir` and every desired artifact is classified:
 
@@ -117,9 +128,27 @@ Every file in `dir` and every desired artifact is classified:
 | `toDelete`   | Present, name matches a known `artefactName`, not in the desired set                    |
 | `ignored`    | Present, matches no known `artefactName` (hand-copied jars) - untouched, not reported   |
 
-Ownership is decided by `artefactName` against `File.getName()`, scanning the
+Ownership is decided against `File.getName()` (never `getPath()`), scanning the
 **full** category list *including disabled ones*. That is what makes turning
 Snowflake off actually remove `snowflake-jdbc-*.jar` instead of orphaning it.
+
+A file is owned when its name contains **either** of two prefixes:
+
+- the **derived prefix**, computed from the artifact's own URL as the file name
+  truncated at the version, where the version is the second-to-last URL path
+  segment with any leading `v` stripped (`.../bundle/2.29.52/bundle-2.29.52.jar`
+  yields `bundle-`). When that segment does not appear in the file name (python
+  wheels, winutils), the fallback is the name up to the first `-` followed by a
+  digit (`starlake_airflow-`), else the whole name.
+- the **legacy label**, i.e. today's `artefactName`. Retained so the deliberate
+  cross-major cleanups keep working: `aws-java-sdk-bundle` still removes the
+  Spark 3 v1 jar, and `bigquery-with-dependencies` still removes the old
+  `spark-bigquery-with-dependencies_2.13-*.jar`.
+
+The derived prefix is what fixes defect 3; the legacy label alone never matched
+`bundle-*.jar`. Two invariants are enforced by test: no artifact's desired file
+name may be owned by a *different* artifact, and the current desired names are
+excluded from `toDelete` before deletion runs.
 
 ### Size probing
 
@@ -202,7 +231,10 @@ Flags:
 
 - **`SL_FORCE_DOWNLOAD=true`** - every desired artifact is classified
   `toDownload` regardless of what is on disk, reproducing today's behavior for
-  one run. Probe failures are hard errors in this mode.
+  one run. Probing is skipped entirely in this mode: there is no decision left
+  to make, so a failed probe would only cost a round trip and an unknown size
+  in the printed plan. The download itself still fails loudly on a network
+  problem.
 - **`SL_DRY_RUN=true`** - print the plan and exit 0 before any delete or
   download. `versions.sh` / `versions.cmd` is **not** rewritten in this mode,
   which matters because it is the file `starlake.sh`'s consistency check reads.
@@ -217,18 +249,40 @@ Flags:
 
 `downloadAndDisplayProgress` compares bytes written against `Content-Length` on
 completion; on mismatch it deletes the partial file and fails. Required by
-defect 3, and a precondition for trusting sizes in the plan.
+defect 4, and a precondition for trusting sizes in the plan.
 
 ## Testing
 
-`Setup.java` is a default-package standalone file with no test coverage today.
-The reconciler is the part worth testing and is pure given a desired list and a
-directory listing, so `reconcile(...)` and the ownership predicate take plain
-arguments: no static state, no network. Network probing sits behind a small
-`SizeProbe` interface that the spec stubs.
+`Setup.java` lives in the **unnamed package**, which no test in a named package
+can reference. Rather than write the test in the unnamed package too, the pure
+core moves into a real package: `ai.starlake.setup.DependencySync` and
+`ai.starlake.setup.SyncPlan`, both plain Java (they ship inside `setup.jar`,
+which runs as `java -cp setup.jar Setup` with no Scala library on the
+classpath). `Setup.java` imports them - importing *from* a named package *into*
+the unnamed package is legal Java, only the reverse is forbidden.
 
-New spec at `src/test/scala/ai/starlake/setup/SetupSyncSpec.scala`, driving the
-reconciler against temp directories:
+The bridge type is plain data, so the reconciler never sees
+`ResourceDependency`:
+
+```java
+public final class Artifact {
+    public final String label;                  // category label, for the plan output
+    public final String fileName;               // desired file name
+    public final String url;
+    public final List<String> ownershipPrefixes;
+    public final boolean enabled;
+}
+```
+
+This forces a change to `packageSetup` in `build.sbt`, which today packages a
+hardcoded list of exactly three class files (`Setup.class`,
+`Setup$UserPwdAuth.class`, `Setup$ResourceDependency.class`) flattened to the
+jar root by `IO.jar(... -> f.getName())`. Any new nested class is silently
+omitted and fails at runtime with `NoClassDefFoundError`. The task list starts
+by replacing that list with a directory scan that preserves relative paths.
+
+New spec at `src/test/scala/ai/starlake/setup/DependencySyncSpec.scala`, driving
+the reconciler against temp directories:
 
 - fresh install (empty dir): everything in `toDownload`, nothing in `toDelete`
 - no-op re-run: everything in `upToDate`, plan prints the single-line summary
@@ -237,10 +291,15 @@ reconciler against temp directories:
 - hand-copied unknown jar: classified `ignored`, never deleted
 - stale python wheel: older version in `toDelete` (regression test for defect 2)
 - size mismatch on a correctly named file: forced into `toDownload`
-- probe failure on a present file: classified `upToDate` (offline no-op)
-- probe failure under `SL_FORCE_DOWNLOAD`: hard error
+- probe failure on a present file (size `-1`): classified `upToDate` (offline
+  no-op)
+- `force = true`: everything in `toDownload` regardless of disk state
 - install dir path containing an artefact name: no spurious deletions
   (regression test for defect 1)
+- stale `bundle-*.jar` removed while the legacy `aws-java-sdk-bundle-*.jar`
+  cleanup still fires (regression test for defect 3)
+- ownership prefix derivation asserted for all 28 declared dependencies, plus
+  the invariant that no artifact's desired name is owned by another artifact
 
 Manual verification before this is considered done:
 
