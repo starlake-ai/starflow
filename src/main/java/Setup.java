@@ -519,9 +519,11 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     private static final ResourceDependency DUCKDB_JAR = new ResourceDependency("duckdb_jdbc", "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/" + DUCKDB_VERSION + "/duckdb_jdbc-" + DUCKDB_VERSION + ".jar");
     private static final ResourceDependency FLIGHT_SQL_JDBC_JAR = new ResourceDependency("flight-sql-jdbc-driver", "https://repo1.maven.org/maven2/org/apache/arrow/flight-sql-jdbc-driver/" + FLIGHT_SQL_JDBC_VERSION + "/flight-sql-jdbc-driver-" + FLIGHT_SQL_JDBC_VERSION + ".jar");
-    // Keep the artefact label "aws-java-sdk-bundle" (deleteDependencies matches on it by
-    // substring) so an in-place upgrade from a Spark 3 install still cleans up the old v1
-    // aws-java-sdk-bundle-*.jar before this v2 bundle-*.jar lands next to it.
+    // Keep the artefact label "aws-java-sdk-bundle": it is carried as a LEGACY ownership
+    // prefix (see toArtifacts) so an in-place upgrade from a Spark 3 install still cleans up
+    // the old v1 aws-java-sdk-bundle-*.jar. The v2 bundle-*.jar this actually downloads is
+    // owned by the prefix derived from the url instead - the label never matched it, which is
+    // why every AWS SDK bump used to leak the previous bundle.
     private static final ResourceDependency AWS_JAVA_SDK_JAR = new ResourceDependency("aws-java-sdk-bundle", "https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/" + AWS_JAVA_SDK_V2_VERSION + "/bundle-" + AWS_JAVA_SDK_V2_VERSION + ".jar");
     private static final ResourceDependency HADOOP_AWS_JAR = new ResourceDependency("hadoop-aws", "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/" + HADOOP_AWS_VERSION + "/hadoop-aws-" + HADOOP_AWS_VERSION + ".jar");
     private static final ResourceDependency REDSHIFT_JDBC_JAR = new ResourceDependency("redshift-jdbc42", "https://repo1.maven.org/maven2/com/amazon/redshift/redshift-jdbc42/" + REDSHIFT_JDBC_VERSION + "/redshift-jdbc42-" + REDSHIFT_JDBC_VERSION + ".jar");
@@ -1157,7 +1159,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
         // download no longer leaves the machine without an API.
 
         ResourceDependency apiZip = SL_API_RELEASE_ZIP;
-        downloadAndDisplayProgress(new ResourceDependency[]{apiZip}, binDir, false);
+        downloadAndDisplayProgress(new ResourceDependency[]{apiZip}, binDir);
         apiZip.getUrlNames().stream().map(zipName -> new File(binDir, zipName)).filter(File::exists).forEach(zipFile -> {
             try {
                 unzip(zipFile, binDir);
@@ -1228,7 +1230,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     public static void downloadSpark(File binDir) throws IOException, InterruptedException {
         ResourceDependency sparkJar = SPARK_JAR;
-        downloadAndDisplayProgress(new ResourceDependency[]{sparkJar}, binDir, false);
+        downloadAndDisplayProgress(new ResourceDependency[]{sparkJar}, binDir);
         sparkJar.getUrlNames().stream().map(tgzName -> new File(binDir, tgzName)).filter(File::exists).forEach(sparkFile -> {
             String tgzName = sparkFile.getName();
             ProcessBuilder builder = new ProcessBuilder("tar", "-xzf", sparkFile.getAbsolutePath(), "-C", binDir.getAbsolutePath()).inheritIO();
@@ -1252,28 +1254,40 @@ public class Setup extends ProxySelector implements X509TrustManager {
         if (!targetDir.exists()) {
             targetDir.mkdirs();
         }
+        // versions.txt IS the desired-state manifest, so it is always refetched.
         ResourceDependency versionsFile = new ResourceDependency("versions.txt", PYTHON_LIBS_URL + "versions.txt");
         downloadAndDisplayProgress(versionsFile, (resource, url) -> new File(targetDir, "versions.txt"));
-        
+
         File versionsTxt = new File(targetDir, "versions.txt");
-        if (versionsTxt.exists()) {
-            List<String> filesToDownload = new ArrayList<>();
-           try (BufferedReader br = new BufferedReader(new FileReader(versionsTxt))) {
-               String line;
-               while ((line = br.readLine()) != null) {
-                   String trimmedLine = line.trim();
-                   if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("#")) {
-                       filesToDownload.add(trimmedLine);
-                   }
-               }
-           }
-           if (!filesToDownload.isEmpty()) {
-               ResourceDependency[] dependencies = filesToDownload.stream().map(fileName -> 
-                   new ResourceDependency(fileName, PYTHON_LIBS_URL + fileName)
-               ).toArray(ResourceDependency[]::new);
-               downloadAndDisplayProgress(dependencies, targetDir, true);
-           }
+        if (!versionsTxt.exists()) {
+            return;
         }
+        List<String> filesToDownload = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(versionsTxt))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String trimmedLine = line.trim();
+                if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("#")) {
+                    filesToDownload.add(trimmedLine);
+                }
+            }
+        }
+        if (filesToDownload.isEmpty()) {
+            return;
+        }
+        // Ownership must come from the wheel's DISTRIBUTION name, not its full file name.
+        // Building a ResourceDependency whose artefactName was the versioned file name meant
+        // the old cleanup only ever matched the identical name, so every wheel bump left the
+        // previous version behind and python-libs grew without bound.
+        List<Artifact> wheels = new ArrayList<>();
+        for (String fileName : filesToDownload) {
+            String url = PYTHON_LIBS_URL + fileName;
+            wheels.add(new Artifact("Python libs", fileName, url,
+                    Collections.singletonList(DependencySync.derivePrefix(url, fileName)), true));
+        }
+        SyncPlan plan = DependencySync.reconcile(wheels, targetDir, probeAll(wheels), false);
+        System.out.println(plan.render("Python libs plan (bin/deps/python-libs)"));
+        apply(plan);
     }
 
     /**
@@ -1410,28 +1424,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
         }
     }
 
-    private static void downloadAndDisplayProgress(ResourceDependency[] dependencies, File targetDir, boolean replaceJar) throws IOException, InterruptedException {
+    private static void downloadAndDisplayProgress(ResourceDependency[] dependencies, File targetDir) throws IOException, InterruptedException {
         if (!targetDir.exists()) {
             targetDir.mkdirs();
         }
-        if (replaceJar) {
-            deleteDependencies(dependencies, targetDir);
-        }
         for (ResourceDependency dependency : dependencies) {
             downloadAndDisplayProgress(dependency, (resource, url) -> new File(targetDir, resource.getUrlName(url)));
-        }
-    }
-
-    private static void deleteDependencies(ResourceDependency[] dependencies, File targetDir) {
-        if (targetDir.exists()) {
-            for (ResourceDependency dependency : dependencies) {
-                File[] files = targetDir.listFiles(f -> f.getPath().contains(dependency.artefactName));
-                if (files != null) {
-                    for (File file : files) {
-                        deleteFile(file);
-                    }
-                }
-            }
         }
     }
 
