@@ -9,9 +9,9 @@ import java.nio.charset.Charset
 import java.sql.Timestamp
 import java.text.SimpleDateFormat
 
-/** Writes rejected input lines to a replay file that can be dropped back into the landing
-  * area and ingested again. Engine neutral on purpose: it takes raw lines rather than a
-  * DataFrame, so native loaders can use it without pulling in Spark.
+/** Writes rejected input lines to a replay file that can be dropped back into the landing area and
+  * ingested again. Engine neutral on purpose: it takes raw lines rather than a DataFrame, so native
+  * loaders can use it without pulling in Spark.
   */
 object ReplayFileWriter extends LazyLogging {
 
