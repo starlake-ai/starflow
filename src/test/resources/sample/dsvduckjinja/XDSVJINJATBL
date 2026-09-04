@@ -2,3 +2,4 @@ id;name;amount
 1;alice;10.5
 2;bob;NOT{{ANUM}}X'Y
 3;carol;7
+4;dan;NOT{%ANUM%}Z

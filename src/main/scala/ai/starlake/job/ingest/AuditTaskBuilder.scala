@@ -36,16 +36,21 @@ import ai.starlake.schema.model.{AutoTaskInfo, Engine}
 object AuditTaskBuilder {
 
   /** Neutralizes a value that is inlined into an audit SELECT. Quotes and newlines would break the
-    * literal, and `{{` or `}}` would be picked up by the Jinja pass that AutoTask runs on the SQL
-    * before executing it, since the task is built with `parseSQL = true`. Shared by every caller of
-    * `buildTask` so the two escapings cannot drift apart.
+    * literal, and a Jinja delimiter would be picked up by the Jinja pass that AutoTask runs on the
+    * SQL before executing it, since the task is built with `parseSQL = true`. All three delimiter
+    * pairs have to go, not only `{{ }}`: an unknown expression such as `{{ANUM}}` merely renders to
+    * the empty string and mangles the recorded value, but an unknown tag such as `{%ANUM%}` is a
+    * FATAL error whatever `failOnUnknownTokens` says, and `Jinjava.render` throws on it, which
+    * would fail the whole job over a single value. Shared by every caller of `buildTask` so the
+    * escapings cannot drift apart.
     */
   def escapeLiteral(value: String): String =
     value
       .replaceAll("'", "-")
       .replaceAll("\\n", " ")
-      .replaceAll("\\{\\{", "")
-      .replaceAll("}}", "")
+      // the opening delimiters {{ {% {# and the closing ones }} %} #}
+      .replaceAll("\\{[{%#]", "")
+      .replaceAll("[}%#]}", "")
 
   /** @param name
     *   Name of the AutoTask, unique per caller.

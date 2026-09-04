@@ -189,9 +189,12 @@ class DuckDbNativeRejectSpec extends TestHelper {
   new WithSettings(duckDbJinjaConfiguration) {
 
     // DuckDB embeds the offending value verbatim in its CSV error messages, so input data
-    // reaches the Jinja pass that AutoTask runs on the audit SELECT (parseSQL = true). The
+    // reaches the Jinja pass that AutoTask runs on the audit SELECT (parseSQL = true). One
     // input line below carries {{ANUM}}, which that pass used to resolve as an unknown
     // variable and replace with the empty string, silently rewriting the recorded error.
+    // The next one carries {%ANUM%}: an unknown tag is a FATAL error whatever
+    // failOnUnknownTokens says, and Jinjava.render throws on it, so an unescaped {% used to
+    // abort the whole load instead of rejecting the single line that carried it.
     "Native DuckDB load of a DSV line containing Jinja delimiters" should
     "record it in the audit rejected table without failing the load" in {
       new SpecTrait(
@@ -216,7 +219,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
         names shouldBe List("alice", "carol")
-        result.get.counters.get.rejectedCount shouldBe 1
+        result.get.counters.get.rejectedCount shouldBe 2
 
         val jobid = result.get.counters.get.jobid.stripPrefix(",")
         val errors = queryAudit(
@@ -227,12 +230,18 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
 
-        errors.size shouldBe 1
-        // the escaping strips the braces and turns the single quote into a dash, so the value
-        // the engine reported survives in a form the Jinja pass cannot act on. Without it the
-        // Jinja pass eats {{ANUM}} and the row reads NOTX-Y.
-        errors.head should include("NOTANUMX-Y")
-        errors.head should not include "{{"
+        errors.size shouldBe 2
+        // the escaping strips the delimiters and turns the single quote into a dash, so the
+        // value the engine reported survives in a form the Jinja pass cannot act on. Without
+        // it the Jinja pass eats {{ANUM}} and the row reads NOTX-Y.
+        errors.count(_.contains("NOTANUMX-Y")) shouldBe 1
+        // and without it {%ANUM%} throws, so there would be no row here at all: the load
+        // would have failed on the assertion above.
+        errors.count(_.contains("NOTANUMZ")) shouldBe 1
+        errors.foreach { error =>
+          error should not include "{{"
+          error should not include "{%"
+        }
       }
     }
   }
