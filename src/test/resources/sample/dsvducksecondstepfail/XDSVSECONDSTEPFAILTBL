@@ -1,0 +1,4 @@
+id;name;amount
+1;alice;10.5
+2;bob;NOTANUM
+3;carol;7

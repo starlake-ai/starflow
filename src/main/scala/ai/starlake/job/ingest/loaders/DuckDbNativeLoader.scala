@@ -193,7 +193,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             syncStrategy = TableSync.ALL,
             createIfAbsent = true
           )
-          job.run()
+          // A failed second step means none of this load's rows reached the target. Dropping
+          // the Try reported it as a successful load, which with the counters below reads
+          // "success, 0 accepted, N rejected, replay file written" for a load that lost
+          // everything. Throw instead: the finally below still drops the temporary tables,
+          // and the exception is not a RejectThresholdExceededException, so the recoverWith
+          // at the end of run() leaves it alone and the load fails.
+          job.run().get
           rejectedLines
         } finally {
           tempTables.foreach { tempTable =>

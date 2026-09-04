@@ -651,6 +651,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
     val config = ConfigFactory.parseString(
       s"""
          |connectionRef: "test-duckdb"
+         |sinkReplayToFile: true
          |audit.sink.connectionRef: "broken-audit"
          |connections.test-duckdb {
          |    type = "jdbc"
@@ -695,11 +696,75 @@ class DuckDbNativeRejectSpec extends TestHelper {
           Some("account.sl.yml")
         )
 
+        // sinkReplayToFile is on in this block, so both halves of reportRejects run and the
+        // replay file has to be written before the sink is even reached. Start from a clean
+        // slate so the assertion below cannot pass on a file another test left behind.
+        storageHandler.delete(DatasetArea.replay("dsvduckreplayfail"))
+
         loadPending.isSuccess shouldBe false
 
         // nothing was committed, so once the audit connection is fixed the same file can be
         // loaded again without appending the good rows twice
         tableExists("dsvduckreplayfail", "account") shouldBe false
+
+        // the replay file is written first, so the user still gets the lines to fix even
+        // though the audit sink took the load down right after
+        val replayFiles = storageHandler
+          .list(DatasetArea.replay("dsvduckreplayfail"), extension = ".replay", recursive = false)
+          .map(_.path)
+        replayFiles.size shouldBe 1
+        storageHandler.read(replayFiles.head) shouldBe
+        "id;name;amount\n2;bob;NOTANUM\nbadline;dave\n"
+      }
+    }
+  }
+
+  lazy val duckDbSecondStepFailureConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_secondstep_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbSecondStepFailureConfiguration) {
+
+    // The two step path used to drop the Try returned by the second step task, so a task that
+    // failed after the rejects had been reported was still reported as a successful load: the
+    // counters read "success, 0 accepted, 1 rejected" for a load whose accepted rows were
+    // rolled back. The table below carries a postsql statement against a table that does not
+    // exist, which fails the task after its INSERT and before its commit.
+    "Native DuckDB load whose second step task fails" should
+    "fail the load rather than report it as successful" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvducksecondstepfail/dsvducksecondstepfail.sl.yml",
+        datasetDomainName = "dsvducksecondstepfail",
+        sourceDatasetPathName = "/sample/dsvducksecondstepfail/XDSVSECONDSTEPFAILTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvducksecondstepfail",
+          "/sample/dsvducksecondstepfail/account_dsvducksecondstepfail.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        loadPending.isSuccess shouldBe false
+
+        // the target is created by updateJdbcTableSchema before the task runs, so what has to
+        // be checked is that it holds none of this load's rows, not that it is absent
+        queryDuckDb("SELECT count(*) AS cnt FROM dsvducksecondstepfail.account") { rs =>
+          rs.next()
+          rs.getInt("cnt")
+        } shouldBe 0
       }
     }
   }

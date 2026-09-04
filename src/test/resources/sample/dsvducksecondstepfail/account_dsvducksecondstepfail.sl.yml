@@ -1,0 +1,19 @@
+---
+version: 1
+table:
+  name: "account"
+  pattern: "XDSVSECONDSTEPFAIL.*"
+  # runs inside the second step task, after its INSERT and before its commit, so the task
+  # fails with the accepted rows staged but never committed
+  postsql:
+    - "INSERT INTO dsvducksecondstepfail.sl_no_such_table SELECT 1"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "name"
+      type: "string"
+      required: true
+    - name: "amount"
+      type: "double"
+      required: false

@@ -105,25 +105,25 @@ case class AuditLog(
 
   def asSelect(engineName: Engine)(implicit settings: Settings): String = {
     import ai.starlake.utils.Formatter._
-    def replaceQuote(s: String): String = AuditTaskBuilder.escapeLiteral(s)
+    import AuditTaskBuilder.escapeLiteral
     timestamp.setNanos(0)
     val template: String = AuditLog.selectTemplate(engineName)
     val selectStatement = template.richFormat(
       Map(
         "jobid"         -> jobid,
-        "paths"         -> paths.map(p => p.replaceAll("'", "-")).getOrElse("null"),
-        "domain"        -> replaceQuote(domain),
-        "schema"        -> replaceQuote(schema),
+        "paths"         -> paths.map(escapeLiteral).getOrElse("null"),
+        "domain"        -> escapeLiteral(domain),
+        "schema"        -> escapeLiteral(schema),
         "success"       -> success,
         "count"         -> count,
         "countAccepted" -> countAccepted,
         "countRejected" -> countRejected,
         "timestamp"     -> timestamp.toString(),
         "duration"      -> duration,
-        "message"       -> replaceQuote(limitMessage),
+        "message"       -> escapeLiteral(limitMessage),
         "step"          -> step,
         "database"      -> database.getOrElse(""),
-        "tenant"        -> replaceQuote(tenant),
+        "tenant"        -> escapeLiteral(tenant),
         "scheduledDate" -> scheduledDate.getOrElse(timestamp.toString)
       ),
       Map.empty
