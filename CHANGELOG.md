@@ -1,6 +1,10 @@
 
 # Release notes
 
+# 1.8.3:
+__Bug fix__:
+- **DuckDB extraction finds its tables again** (#1734): `starlake extract-data` against DuckDB aborted with `SL_LAST_EXPORT table not found. Please create it.` after reporting `Found 0 tables`, whatever `SL_CREATE_SCHEMA_IF_NOT_EXISTS` was set to. duckdb_jdbc 1.5.3 (shipped since 1.6.0) reports base tables with the JDBC standard type `TABLE` instead of `BASE TABLE`, so the DuckDB workaround that rewrote `TABLE` to `BASE TABLE` made every table-metadata lookup return nothing: neither the audit table nor the tables to extract were ever found. Both spellings are now passed, which works on old and new drivers alike.
+
 # 1.8.2:
 __Rebrand__:
 - **Starlake Starflow**: the product is now named Starflow (Starlake is the umbrella brand). The CLI version banner, help text, installer messages, and documentation say Starflow. **Nothing technical changes**: the binary is still `starlake`, packages and Maven coordinates stay `ai.starlake`, and `SL_*`/`STARLAKE_*` environment variables, config keys, and YAML formats are untouched. The repository moved to `github.com/starlake-ai/starflow`; old URLs redirect, and all download URLs now point at the new location.
