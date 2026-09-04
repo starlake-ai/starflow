@@ -93,12 +93,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             }
         }
       val twoSteps = requireTwoSteps(effectiveSchema)
-      if (twoSteps) {
-        val tempTables =
+      val rejected: List[RejectedLine] = if (twoSteps) {
+        val tempTablesWithRejects =
           path.map { p =>
             logger.info(s"Loading $p to temporary table")
             val tempTable = SQLUtils.temporaryTableName(effectiveSchema.finalName)
-            singleStepLoad(domain.finalName, tempTable, schemaWithMergedMetadata, List(p))
+            val rejects =
+              singleStepLoad(domain.finalName, tempTable, schemaWithMergedMetadata, List(p))
             val escapedPath = p.toString.replace("'", "''")
             val filenameSQL =
               s"ALTER TABLE ${domain.finalName}.$tempTable ADD COLUMN ${CometColumns.cometInputFileNameColumn} STRING DEFAULT '$escapedPath';"
@@ -110,8 +111,10 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               JdbcDbUtils.execute(filenameSQL, conn)
 
             }
-            tempTable
+            (tempTable, rejects)
           }
+        val tempTables = tempTablesWithRejects.map(_._1)
+        val rejectedLines = tempTablesWithRejects.flatMap(_._2)
 
         try {
           val unionTempTables = tempTables
@@ -176,6 +179,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             createIfAbsent = true
           )
           job.run()
+          rejectedLines
         } finally {
           tempTables.foreach { tempTable =>
             Try {
@@ -195,8 +199,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       } else {
         singleStepLoad(domain.finalName, schema.finalName, schemaWithMergedMetadata, path)
       }
-      initialRowCount
-    }.map { initialRowCount =>
+      (initialRowCount, rejected)
+    }.map { case (initialRowCount, rejected) =>
       val countSql =
         s"SELECT COUNT(*) AS cnt FROM ${domain.finalName}.${schema.finalName};"
 
@@ -210,11 +214,16 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             )
             count
         }
+      val acceptedCount = (currentRowCount - initialRowCount).toLong
+      // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count.
+      val rejectsSupported = mergedMetadata.resolveFormat() == Format.DSV
+      val rejectedCount = if (rejectsSupported) rejected.size.toLong else -1L
+      val inputCount = if (rejectsSupported) acceptedCount + rejectedCount else acceptedCount
       List(
         IngestionCounters(
-          inputCount = currentRowCount - initialRowCount,
-          acceptedCount = currentRowCount - initialRowCount,
-          rejectedCount = -1,
+          inputCount = inputCount,
+          acceptedCount = acceptedCount,
+          rejectedCount = rejectedCount,
           paths = path.map(_.toString),
           jobid = ingestionJob.applicationId()
         )
@@ -315,7 +324,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     table: String,
     schema: SchemaInfo,
     path: List[Path]
-  ) = {
+  ): List[RejectedLine] = {
     val isTemporary = table.startsWith("zztmp_")
     // For POSITION format the first step loads each line as a single VARCHAR
     // column named `value`; the second step slices it via SUBSTR.
@@ -427,6 +436,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               else
                 ""
 
+            // store_rejects makes DuckDB skip and record malformed lines instead of
+            // aborting the whole INSERT. The rejected lines are read back below, on this
+            // same connection, because reject_errors is a session scoped temp table.
             val sql = s"""INSERT INTO $domainAndTableName SELECT
                | * FROM read_csv(
                | ${paths},
@@ -434,10 +446,12 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                | header = ${mergedMetadata.resolveWithHeader()},
                | quote = '${mergedMetadata.resolveQuote()}',
                | escape = '${mergedMetadata.resolveEscape()}',
+               | store_rejects = true,
                | $nullstr
                | $extraOptions
                | columns = { $columnsString});""".stripMargin
             JdbcDbUtils.execute(sql, conn)
+            DuckDbRejectCapture.captureCsvRejects(conn)
 
           case Format.POSITION =>
             // Load each line of the fixed-width file as a single VARCHAR column named
@@ -462,6 +476,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                | $encoding
                | columns = {'value': 'VARCHAR'});""".stripMargin
             JdbcDbUtils.execute(sql, conn)
+            List.empty[RejectedLine]
 
           case Format.JSON_FLAT | Format.JSON =>
             val format =
@@ -486,7 +501,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                   JdbcDbUtils.execute(sql, conn)
               }
             }
-          case _ =>
+            List.empty[RejectedLine]
+          case _ => List.empty[RejectedLine]
         }
     }
   }
