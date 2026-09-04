@@ -587,6 +587,21 @@ launch_starlake() {
 }
 
 
+# --force / --dry-run for install, reinstall and upgrade. Both must be EXPORTED, not just
+# set: launch_setup spawns `java -cp setup.jar Setup` as a subprocess and a shell-local
+# variable never reaches it - the same constraint documented for the ENABLE_* flags at the
+# top of this script.
+#   --force    re-download every dependency whatever is already on disk
+#   --dry-run  print the plan and exit without downloading, deleting or rewriting versions.sh
+parse_sync_flags() {
+  for arg in "$@"; do
+    case "$arg" in
+      --force)   export SL_FORCE_DOWNLOAD=true ;;
+      --dry-run) export SL_DRY_RUN=true ;;
+    esac
+  done
+}
+
 case "$1" in
   --version|version)
 	  echo Starflow $SL_VERSION
@@ -605,6 +620,7 @@ case "$1" in
 	  echo Redshift Spark connector ${SPARK_REDSHIFT_VERSION}
     ;;
   install|reinstall)
+    parse_sync_flags "$@"
     # Pin setup.jar to the release being installed whenever SL_VERSION names
     # one. Setup.java's compiled-in defaults (Spark, Hadoop and every connector
     # pin) are what get written to versions.sh and provisioned into bin/, so
@@ -662,6 +678,8 @@ case "$1" in
         case "$1" in
             --version=*) FORCED_SL_VERSION="${1#*=}" ;;
             --version) shift; FORCED_SL_VERSION="$1" ;;
+            --force) export SL_FORCE_DOWNLOAD=true ;;
+            --dry-run) export SL_DRY_RUN=true ;;
         esac
         shift
     done

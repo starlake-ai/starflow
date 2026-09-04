@@ -559,6 +559,21 @@ goto :eof
     if /i "%~1" == "--version" goto :du_version_flag
     set "_du_arg=%~1"
     if /i "!_du_arg:~0,10!" == "--version=" goto :du_version_eq
+    if /i "%~1" == "--force" goto :du_force_flag
+    if /i "%~1" == "--dry-run" goto :du_dry_run_flag
+    shift
+    goto :du_parse_args
+
+    rem Separate unparenthesized labels for the same reason the --version branch is one:
+    rem cmd.exe substitutes %1..%9 in a ( ... ) block at parse time, so a shift inside a
+    rem block would not affect a later %~1 read in that same block.
+    :du_force_flag
+    set "SL_FORCE_DOWNLOAD=true"
+    shift
+    goto :du_parse_args
+
+    :du_dry_run_flag
+    set "SL_DRY_RUN=true"
     shift
     goto :du_parse_args
 
@@ -617,6 +632,15 @@ goto :eof
     goto :eof
 
 :install_command
+    rem --force / --dry-run. Set (not just local): Setup runs as a subprocess of
+    rem :launch_setup and reads both from the environment, mirroring starlake.sh.
+    rem   --force    re-download every dependency whatever is already on disk
+    rem   --dry-run  print the plan and exit without downloading, deleting or
+    rem              rewriting versions.cmd
+    for %%A in (%*) do (
+        if /i "%%~A" == "--force" set "SL_FORCE_DOWNLOAD=true"
+        if /i "%%~A" == "--dry-run" set "SL_DRY_RUN=true"
+    )
     rem Pin setup.jar to the release being installed whenever SL_VERSION names
     rem one. Setup.java's compiled-in defaults (Spark, Hadoop and every
     rem connector pin) are what get written to versions.cmd and provisioned

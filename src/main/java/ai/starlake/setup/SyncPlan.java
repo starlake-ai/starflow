@@ -93,8 +93,12 @@ public final class SyncPlan {
         StringBuilder sb = new StringBuilder(header).append("\n");
         sb.append("  = ").append(upToDate.size()).append(" up to date\n");
         if (!toDownload.isEmpty()) {
+            long known = bytesToDownload();
+            // "0 B" would read as "nothing to transfer" when in fact no size could be
+            // determined - which is the normal case under SL_FORCE_DOWNLOAD, where probing is
+            // skipped entirely.
             sb.append("  + ").append(toDownload.size()).append(" to download (")
-              .append(humanSize(bytesToDownload())).append(")\n");
+              .append(known > 0 ? humanSize(known) : "size unknown").append(")\n");
             for (Download download : toDownload) {
                 sb.append("      ").append(download.artifact.fileName).append("  ")
                   .append(download.size > 0 ? "(" + humanSize(download.size) + ")" : "(unknown size)")

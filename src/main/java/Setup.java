@@ -299,6 +299,17 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     private static final boolean ENABLE_API = envIsTrueWithDefaultTrue("ENABLE_API");
 
+    // Force restores the pre-diff behaviour for one run: everything is re-downloaded whatever
+    // is on disk. Probing is skipped entirely - there is no decision left to make, and the
+    // download itself still fails loudly if the network is down.
+    private static final boolean SL_FORCE_DOWNLOAD = envIsTrue("SL_FORCE_DOWNLOAD");
+    private static final boolean SL_DRY_RUN = envIsTrue("SL_DRY_RUN");
+
+    /** Remote sizes for a plan, or an empty map when forcing: nothing left to decide. */
+    private static Map<String, Long> sizesFor(List<Artifact> artifacts) {
+        return SL_FORCE_DOWNLOAD ? new java.util.HashMap<>() : probeAll(artifacts);
+    }
+
     private static final String SCALA_VERSION = getEnv("SCALA_VERSION").orElse("2.13");
 
     // STARLAKE. SL_VERSION is the single source of truth for the core jar.
@@ -1069,7 +1080,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
             }
 
             final File targetDir = new File(args[0]);
-            if (!targetDir.exists()) {
+            if (!targetDir.exists() && !SL_DRY_RUN) {
                 targetDir.mkdirs();
                 System.out.println("Created target directory " + targetDir.getAbsolutePath());
             }
@@ -1078,7 +1089,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
             final File binDir = new File(targetDir, "bin");
 
-            if (isWindowsOs()) {
+            // One plan across bin/deps, bin/sl and python-libs: the three roots are reconciled
+            // separately but printed and applied once, so the user sees a single diff and
+            // SL_DRY_RUN has exactly one place to bail out of.
+            SyncPlan overall = new SyncPlan();
+
+            if (isWindowsOs() && !SL_DRY_RUN) {
                 final File hadoopDir = new File(binDir, "hadoop");
                 final File hadoopBinDir = new File(hadoopDir, "bin");
                 deleteRecursively(hadoopDir);
@@ -1094,7 +1110,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
             // SL_CORE_JAR points at a locally built assembly (CI docker builds, local dev):
             // install then works even when the release/pre-release does not exist yet.
             String localCoreJar = getEnv("SL_CORE_JAR").orElse(null);
-            if (localCoreJar != null) {
+            if (localCoreJar != null && !SL_DRY_RUN) {
                 File coreJar = new File(localCoreJar);
                 if (!coreJar.isFile()) {
                     throw new RuntimeException("SL_CORE_JAR is set but no file found at " + coreJar.getAbsolutePath());
@@ -1103,7 +1119,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
                 java.nio.file.Files.copy(coreJar.toPath(), new File(slDir, coreJar.getName()).toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 System.out.println("Using local starlake-core jar " + coreJar.getAbsolutePath());
-            } else {
+            } else if (localCoreJar == null) {
                 // No deleteRecursively here: the assembly is the single biggest download of the
                 // whole install (215 MB for 1.8.3), and re-fetching an identical jar on every run
                 // is what made `upgrade` feel like a fresh install. The reconciler still
@@ -1112,32 +1128,42 @@ public class Setup extends ProxySelector implements X509TrustManager {
                 // is left alone, which is deliberately narrower than the wipe it replaces.
                 List<Artifact> core =
                         toArtifacts("Starflow core", new ResourceDependency[]{STARLAKE_RELEASE_JAR}, true);
-                SyncPlan corePlan = DependencySync.reconcile(core, slDir, probeAll(core), false);
-                System.out.println(corePlan.render("Core jar plan for Starflow " + SL_VERSION + " (bin/sl)"));
-                apply(corePlan);
+                overall.mergeFrom(
+                        DependencySync.reconcile(core, slDir, sizesFor(core), SL_FORCE_DOWNLOAD));
             }
 
-            if (ENABLE_API) {
+            if (ENABLE_API && !SL_DRY_RUN) {
                 downloadApi(targetDir);
             }
 
             File sparkDir = new File(binDir, "spark");
             // deleteRecursively(sparkDir);
-            if (!sparkDir.exists()) {
+            if (!sparkDir.exists() && !SL_DRY_RUN) {
                 downloadSpark(binDir);
             }
 
 
             File depsDir = new File(binDir, "deps");
 
-            updateSparkLog4j2Properties(sparkDir);
+            if (!SL_DRY_RUN) {
+                updateSparkLog4j2Properties(sparkDir);
+            }
 
             List<Artifact> deps = depsArtifacts();
-            SyncPlan plan = DependencySync.reconcile(deps, depsDir, probeAll(deps), false);
-            System.out.println(plan.render("Dependency plan for Starflow " + SL_VERSION + " (bin/deps)"));
-            apply(plan);
+            overall.mergeFrom(
+                    DependencySync.reconcile(deps, depsDir, sizesFor(deps), SL_FORCE_DOWNLOAD));
 
-            downloadPythonLibs(new File(depsDir, "python-libs"));
+            overall.mergeFrom(downloadPythonLibs(new File(depsDir, "python-libs")));
+
+            System.out.println(overall.render("Dependency plan for Starflow " + SL_VERSION
+                    + " (bin/deps, bin/sl, python-libs)"));
+            if (SL_DRY_RUN) {
+                // Deliberately before generateVersions: versions.sh is what starlake.sh's
+                // consistency check reads, so a dry run must not touch it.
+                System.out.println("SL_DRY_RUN is set: nothing downloaded, nothing deleted.");
+                return;
+            }
+            apply(overall);
 
 
 
@@ -1250,17 +1276,24 @@ public class Setup extends ProxySelector implements X509TrustManager {
         });
     }
 
-    private static void downloadPythonLibs(File targetDir) throws IOException, InterruptedException {
-        if (!targetDir.exists()) {
+    private static SyncPlan downloadPythonLibs(File targetDir) throws IOException, InterruptedException {
+        if (!targetDir.exists() && !SL_DRY_RUN) {
             targetDir.mkdirs();
         }
-        // versions.txt IS the desired-state manifest, so it is always refetched.
+        // versions.txt IS the desired-state manifest, so it is always refetched. Under a dry
+        // run it goes to a temp file instead: refetching it into the tree would rewrite a real
+        // file, which is exactly what a dry run promises not to do.
         ResourceDependency versionsFile = new ResourceDependency("versions.txt", PYTHON_LIBS_URL + "versions.txt");
-        downloadAndDisplayProgress(versionsFile, (resource, url) -> new File(targetDir, "versions.txt"));
+        final File versionsTxt = SL_DRY_RUN
+                ? File.createTempFile("sl-python-versions", ".txt")
+                : new File(targetDir, "versions.txt");
+        if (SL_DRY_RUN) {
+            versionsTxt.deleteOnExit();
+        }
+        downloadAndDisplayProgress(versionsFile, (resource, url) -> versionsTxt);
 
-        File versionsTxt = new File(targetDir, "versions.txt");
         if (!versionsTxt.exists()) {
-            return;
+            return new SyncPlan();
         }
         List<String> filesToDownload = new ArrayList<>();
         try (BufferedReader br = new BufferedReader(new FileReader(versionsTxt))) {
@@ -1273,7 +1306,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
             }
         }
         if (filesToDownload.isEmpty()) {
-            return;
+            return new SyncPlan();
         }
         // Ownership must come from the wheel's DISTRIBUTION name, not its full file name.
         // Building a ResourceDependency whose artefactName was the versioned file name meant
@@ -1285,9 +1318,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
             wheels.add(new Artifact("Python libs", fileName, url,
                     Collections.singletonList(DependencySync.derivePrefix(url, fileName)), true));
         }
-        SyncPlan plan = DependencySync.reconcile(wheels, targetDir, probeAll(wheels), false);
-        System.out.println(plan.render("Python libs plan (bin/deps/python-libs)"));
-        apply(plan);
+        return DependencySync.reconcile(wheels, targetDir, sizesFor(wheels), SL_FORCE_DOWNLOAD);
     }
 
     /**

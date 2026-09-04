@@ -121,6 +121,22 @@ class DependencySyncSpec extends AnyFlatSpec with Matchers {
     rendered should not include "kept.jar"
   }
 
+  it should "say size unknown instead of 0 B when no size could be determined" in {
+    val plan = new SyncPlan()
+    val a =
+      new Artifact(
+        "Core",
+        "core.jar",
+        "https://example.invalid/core.jar",
+        java.util.List.of("core"),
+        true
+      )
+    plan.add(new SyncPlan.Download(a, new java.io.File("/tmp/core.jar"), -1L))
+    val rendered = plan.render("Dependency plan")
+    rendered should include("+ 1 to download (size unknown)")
+    rendered should not include "(0 B)"
+  }
+
   it should "report an unknown download size rather than a bogus zero" in {
     val plan = new SyncPlan()
     val artifact =
