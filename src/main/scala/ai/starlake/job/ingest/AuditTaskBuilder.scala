@@ -26,11 +26,12 @@ import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.{AutoTaskInfo, Engine}
 
 /** Builds the AutoTask that writes a literal SELECT ... UNION ALL into an audit table
-  * (`audit.audit` or `audit.rejected`). Shared by [[AuditLog]], which logs load and transform
+  * (`audit.audit` or `audit.rejected`). Shared by `AuditLog`, which logs load and transform
   * outcomes, and by `NativeRejectedSink`, which logs rejected input lines for the DuckDB native
-  * loader. Both sites only ever differ by the task name, the audit table name, the SELECT SQL,
-  * the application id, the scheduled date and the access token, everything else about the task
-  * comes from `settings.appConfig.audit`.
+  * loader. Both sites only ever differ by the task name, the audit table name, the SELECT SQL, the
+  * application id, the scheduled date and the access token. Everything else about the task comes
+  * from `settings.appConfig.audit`, except the task timeout, which comes from
+  * `settings.appConfig.shortJobTimeoutMs`.
   */
 object AuditTaskBuilder {
 
