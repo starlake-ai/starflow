@@ -754,12 +754,13 @@ object JdbcDbUtils extends LazyLogging {
           )
         case d if d.isDuckDb() =>
           // https://duckdb.org/docs/sql/information_schema.html
-          val tableTypesWithBaseTable = jdbcSchema.tableTypes.map { tt =>
+          // duckdb_jdbc <= 1.4.x expects "BASE TABLE" while >= 1.5.x expects the JDBC
+          // standard "TABLE"; getTables treats the types array as an OR filter so we pass both.
+          val tableTypesWithBaseTable = jdbcSchema.tableTypes.flatMap { tt =>
             if (tt == "TABLE")
-              "BASE TABLE"
+              List("TABLE", "BASE TABLE")
             else
-              tt
-
+              List(tt)
           }.toArray
           val tableTypes =
             if (tableTypesWithBaseTable.nonEmpty) tableTypesWithBaseTable else null
