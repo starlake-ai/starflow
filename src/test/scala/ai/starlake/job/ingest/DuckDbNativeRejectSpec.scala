@@ -200,6 +200,11 @@ class DuckDbNativeRejectSpec extends TestHelper {
     // and left to right, so deleting }} and #} joined what was around them and the escaping
     // handed the Jinja pass a {%ANUM%} it had synthesized itself, aborting the load over a
     // line that never carried a tag. escapeLiteral now drops every brace instead.
+    // The last line carries a backslash, which the audit sink dialects that treat it as an
+    // escape character inside string literals (Snowflake, BigQuery, MySQL) would read as
+    // escaping whatever follows it, up to the literal's closing quote. Postgres, the audit sink
+    // here, is standard conforming and would have stored it as is, so this pins that the
+    // replacement happens rather than proving anything about those dialects.
     "Native DuckDB load of a DSV line containing Jinja delimiters" should
     "record it in the audit rejected table without failing the load" in {
       new SpecTrait(
@@ -224,7 +229,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
         names shouldBe List("alice", "carol")
-        result.get.counters.get.rejectedCount shouldBe 3
+        result.get.counters.get.rejectedCount shouldBe 4
 
         val jobid = result.get.counters.get.jobid.stripPrefix(",")
         val errors = queryAudit(
@@ -235,7 +240,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
 
-        errors.size shouldBe 3
+        errors.size shouldBe 4
         // the escaping drops every brace and turns the single quote into a dash, so the value
         // the engine reported survives in a form the Jinja pass cannot act on. Without it the
         // Jinja pass eats {{ANUM}} and the row reads NOTX-Y.
@@ -247,9 +252,14 @@ class DuckDbNativeRejectSpec extends TestHelper {
         // the line that carried no delimiter of its own. Pairwise stripping built {%ANUM%}
         // out of it and threw, so this row only exists because the braces now go wholesale.
         errors.count(_.contains("NOT%ANUM%#W")) shouldBe 1
+        // the backslash is neutralized the same way the single quote is, so the recorded row
+        // reads NOT-ANUM. Doubling it instead would be wrong on the standard conforming
+        // dialects, which would then store the doubled backslash.
+        errors.count(_.contains("NOT-ANUM")) shouldBe 1
         errors.foreach { error =>
           error should not include "{"
           error should not include "}"
+          error should not include "\\"
         }
       }
     }

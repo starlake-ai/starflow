@@ -621,7 +621,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
 
             case Format.POSITION =>
               // Load each line of the fixed-width file as a single VARCHAR column named
-              // `value`. The field delimiter is set to SOH (\x01) — a control char
+              // `value`. The field delimiter is set to SOH (\x01), a control char
               // vanishingly unlikely to appear in fixed-width data, so each line becomes
               // one field. Quote and escape are disabled so any `"` or `\` in the data is
               // treated as a literal byte. Same approach as the BigQuery native loader.

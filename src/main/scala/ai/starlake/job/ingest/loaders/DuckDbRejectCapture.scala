@@ -40,7 +40,10 @@ object DuckDbRejectCapture extends LazyLogging {
           rejected += RejectedLine(
             file = rs.getString("file"),
             line = lineNumber,
-            rawLine = rs.getString("raw_line"),
+            // csv_line is SQL NULL for the error types that carry no usable line, invalid
+            // encoding and line size over maximum among them, and the replay file must not
+            // grow the literal string "null" out of one
+            rawLine = Option(rs.getString("raw_line")).getOrElse(""),
             error = rs.getString("error")
           )
         }

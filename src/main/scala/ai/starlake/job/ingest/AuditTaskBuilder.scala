@@ -36,30 +36,35 @@ import ai.starlake.schema.model.{AutoTaskInfo, Engine}
 object AuditTaskBuilder {
 
   /** Neutralizes a value that is inlined into an audit SELECT. Quotes and newlines would break the
-    * literal, and a Jinja delimiter would be picked up by the Jinja pass that AutoTask runs on the
-    * SQL before executing it, since the task is built with `parseSQL = true`. All three delimiter
-    * pairs have to go, not only `{{ }}`: an unknown expression such as `{{ANUM}}` merely renders to
-    * the empty string and mangles the recorded value, but an unknown tag such as `{%ANUM%}` is a
-    * FATAL error whatever `failOnUnknownTokens` says, and `Jinjava.render` throws on it, which
-    * would fail the whole job over a single value. Shared by every caller of `buildTask` so the
-    * escapings cannot drift apart.
+    * literal, a backslash would break it on the dialects that treat it as an escape character
+    * inside string literals (Snowflake, BigQuery and MySQL among them, where a value ending in a
+    * backslash escapes the closing quote and aborts the load), and a Jinja delimiter would be
+    * picked up by the Jinja pass that AutoTask runs on the SQL before executing it, since the task
+    * is built with `parseSQL = true`. Backslashes are replaced rather than doubled because doubling
+    * is not dialect safe either: a standard conforming dialect would then store the doubled
+    * backslash. All three delimiter pairs have to go, not only `{{ }}`: an unknown expression such
+    * as `{{ANUM}}` merely renders to the empty string and mangles the recorded value, but an
+    * unknown tag such as `{%ANUM%}` is a FATAL error whatever `failOnUnknownTokens` says, and
+    * `Jinjava.render` throws on it, which would fail the whole job over a single value. Shared by
+    * every caller of `buildTask` so the escapings cannot drift apart.
     *
-    * The invariant is that the result contains no brace at all, so no Jinja delimiter can survive
-    * the escaping and none can be assembled out of what does. Every Jinja delimiter needs a brace
-    * (`{{ }}`, `{% %}`, `{# #}`), and it also means the result is immune to the `{{key}}`
-    * substitution `Formatter.richFormat` runs over the same template. This is why the braces go
-    * wholesale and not pairwise. Stripping the six delimiters as pairs looks tighter but is not a
-    * fixpoint: each `replaceAll` pass is non overlapping and left to right, so a deletion joins the
-    * characters on either side of it and the join is never rescanned, which lets the escaping
-    * SYNTHESIZE a live delimiter out of an input that carried none. Pairwise stripping turned
-    * `{}}%ANUM%#}}` into `{%ANUM%}` and `{}}{ANUM}%}}` into `{{ANUM}}`, so a DSV line carrying the
-    * first still aborted the whole load, which is precisely what the caller uses this for. Removing
-    * every brace can neither leave a delimiter nor build one, and applying it twice changes
-    * nothing, so please do not "improve" it back into pairwise stripping.
+    * The invariant is that the result contains no quote, no backslash and no brace at all, so no
+    * Jinja delimiter can survive the escaping and none can be assembled out of what does. Every
+    * Jinja delimiter needs a brace (`{{ }}`, `{% %}`, `{# #}`), and it also means the result is
+    * immune to the `{{key}}` substitution `Formatter.richFormat` runs over the same template. This
+    * is why the braces go wholesale and not pairwise. Stripping the six delimiters as pairs looks
+    * tighter but is not a fixpoint: each `replaceAll` pass is non overlapping and left to right, so
+    * a deletion joins the characters on either side of it and the join is never rescanned, which
+    * lets the escaping SYNTHESIZE a live delimiter out of an input that carried none. Pairwise
+    * stripping turned `{}}%ANUM%#}}` into `{%ANUM%}` and `{}}{ANUM}%}}` into `{{ANUM}}`, so a DSV
+    * line carrying the first still aborted the whole load, which is precisely what the caller uses
+    * this for. Removing every brace can neither leave a delimiter nor build one, and applying it
+    * twice changes nothing, so please do not "improve" it back into pairwise stripping.
     */
   def escapeLiteral(value: String): String =
     value
       .replaceAll("'", "-")
+      .replaceAll("\\\\", "-")
       .replaceAll("\\n", " ")
       .replaceAll("[{}]", "")
 

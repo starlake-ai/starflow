@@ -4,3 +4,4 @@ id;name;amount
 3;carol;7
 4;dan;NOT{%ANUM%}Z
 5;erin;NOT{}}%ANUM%#}}W
+6;frank;NOT\ANUM
