@@ -88,20 +88,19 @@ change lands in one file.
 
 ## Part 1: Desired state
 
-Introduce a record pairing each category with its enable flag:
+A single converter turns a dependency category into the plain `Artifact` list
+the reconciler consumes:
 
 ```java
-record Managed(String label, ResourceDependency[] deps, boolean enabled) {}
+List<Artifact> toArtifacts(String label, ResourceDependency[] deps, boolean enabled)
 ```
 
-(Records are available: Java sources compile with `--release 17` as of
-`bc0a995c4`.)
-
-The 13 delete/download blocks in `main()` collapse into one list built from the
-existing `ENABLE_*` fields. `label` is the user-facing category name used in
-the plan output ("Snowflake disabled"). `deltaSparkDependencies` and
-`icebergSparkDependencies` are listed with `enabled = true`, matching today's
-unconditional behavior.
+The 13 delete/download blocks in `main()` collapse into one `depsArtifacts()`
+call built from the existing `ENABLE_*` fields. `label` is the user-facing
+category name used in the plan output ("Snowflake disabled").
+`deltaSparkDependencies` and `icebergSparkDependencies` are passed
+`enabled = true`, matching today's unconditional behavior. No intermediate
+category type is needed: `Artifact` already carries the label and the flag.
 
 Desired filename for a resource is `dep.getUrlName(urls[0])`. Every
 `ResourceDependency` in the deps set has exactly one URL today; where a
