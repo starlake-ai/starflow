@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.sql.{Connection, ResultSet}
 import scala.collection.mutable.ListBuffer
-import scala.util.Using
+import scala.util.{Try, Using}
 import scala.util.control.NonFatal
 
 /** Reads back the lines DuckDB refused while loading.
@@ -131,7 +131,14 @@ object DuckDbRejectCapture extends LazyLogging {
       }
       if (captured.nonEmpty) {
         logger.warn(s"Rejecting ${captured.count} fixed width line(s) from $filePath")
-        JdbcDbUtils.execute(s"DELETE FROM $tableName WHERE $where", conn)
+        try {
+          JdbcDbUtils.execute(s"DELETE FROM $tableName WHERE $where", conn)
+        } catch {
+          case NonFatal(e) =>
+            // the capture never reaches the caller, so nobody else can delete its spill file
+            discardSpillFiles(captured)
+            throw e
+        }
       }
       captured
     }
@@ -186,12 +193,23 @@ object DuckDbRejectCapture extends LazyLogging {
       } catch {
         case NonFatal(e) =>
           // the caller only learns about the spill file through the capture it never gets
-          Files.deleteIfExists(spillFile)
+          discardSpillFiles(RejectCapture(count, Nil, List(spillFile)))
           throw e
       }
       RejectCapture(count, sample.toList, List(spillFile))
     }
   }
+
+  /** Deletes the spill files of a capture that will never reach a caller, so that a failure on the
+    * way out of a capture does not leave a temporary file nobody owns. Best effort: the failure
+    * being unwound is what matters, not this.
+    */
+  private def discardSpillFiles(capture: RejectCapture): Unit =
+    capture.spillFiles.foreach { spillFile =>
+      Try(Files.deleteIfExists(spillFile)).failed.foreach { e =>
+        logger.warn(s"Failed to delete the temporary reject spill file $spillFile", e)
+      }
+    }
 
   /** The exact number of rejected input lines, counted over the same grouped query the capture
     * reads, so it cannot drift from what the replay file holds.

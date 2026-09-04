@@ -17,6 +17,34 @@ import scala.util.{Failure, Success, Try}
   */
 object NativeRejectedSink extends LazyLogging {
 
+  /** The `path` column of an audit rejected row: every input path of the load attempt that wrote
+    * it. Shared by the write and the delete below so the two cannot drift.
+    */
+  private def pathColumn(paths: List[Path]): String = paths.map(_.toString).mkString(",")
+
+  /** The DELETE that takes back exactly the rows `sink` wrote for one load attempt, used when the
+    * attempt turns out to have failed for a reason unrelated to the data.
+    *
+    * Matched on the same values the sink wrote, escaped the same way, so the two sides cannot
+    * drift. The job id alone would be too wide a net: `JobBase.appName` returns the SL_JOB_ID
+    * environment variable verbatim when it is set, so every job of an orchestrated run shares one
+    * application id, and the domain and the table are constant across two loads of the same table
+    * anyway. The input paths are what identify one attempt among them.
+    */
+  def deleteSql(
+    applicationId: String,
+    domainName: String,
+    tableName: String,
+    paths: List[Path]
+  )(implicit settings: Settings): String = {
+    val jobid = AuditTaskBuilder.escapeLiteral(applicationId)
+    val domain = AuditTaskBuilder.escapeLiteral(domainName)
+    val table = AuditTaskBuilder.escapeLiteral(tableName)
+    val path = AuditTaskBuilder.escapeLiteral(pathColumn(paths))
+    s"DELETE FROM ${settings.appConfig.audit.getDomain()}.rejected " +
+    s"WHERE jobid = '$jobid' AND domain = '$domain' AND schema = '$table' AND path = '$path'"
+  }
+
   def sink(
     applicationId: String,
     domainName: String,
@@ -39,7 +67,7 @@ object NativeRejectedSink extends LazyLogging {
           s"audit rejected table, capped by audit.maxErrors"
         )
       }
-      val rejectedPathName = paths.map(_.toString).mkString(",")
+      val rejectedPathName = pathColumn(paths)
       val auditTimestamp = new Timestamp(timestamp.getTime)
       auditTimestamp.setNanos(0)
       val records = limited.map { line =>

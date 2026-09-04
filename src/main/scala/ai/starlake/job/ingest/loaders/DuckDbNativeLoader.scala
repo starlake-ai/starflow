@@ -364,7 +364,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         header = replayHeaderLine(),
         encoding = mergedMetadata.resolveEncoding(),
         timestamp = ingestionJob.now,
-        jobid = ingestionJob.applicationId()
+        jobid = ingestionJob.applicationId(),
+        inputFileName = path.headOption.map(_.getName)
       )(settings, storageHandler)
     } else {
       None
@@ -431,13 +432,14 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     }
   }
 
-  /** Deletes this attempt's rows from the audit rejected table.
+  /** Deletes this attempt's rows from the audit rejected table, through
+    * `NativeRejectedSink.deleteSql`, which is the exact inverse of what that sink wrote.
     *
-    * Matched on the same three declared values NativeRejectedSink wrote, escaped the same way since
-    * that sink inlines them into a literal SELECT. The job id alone would be too wide a net: when
-    * SL_JOB_ID is set every job of the run shares one application id (Job.scala), so a load of
-    * several tables would take the rejected rows of the tables that loaded fine down with the one
-    * that failed.
+    * Only JDBC audit sinks are cleaned up. On a Cloud Logging sink the entries are immutable, and
+    * on any other non JDBC sink, BigQuery among them, there is no connection here to run a DELETE
+    * through, so on those sinks the rejected rows of a failed attempt stay and the retry adds its
+    * own next to them. That is the behavior this cleanup was added to avoid, so it is warned about
+    * rather than silently accepted.
     */
   private def deleteAuditRejectedRows(): Unit = {
     val audit = settings.appConfig.audit
@@ -453,15 +455,16 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       } else if (!auditConnection.isJdbcUrl()) {
         logger.warn(
           s"The audit sink connection ${audit.getConnectionRef()} is not a JDBC one, so the " +
-          "rejected rows of the load attempt that just failed cannot be deleted"
+          "rejected rows of the load attempt that just failed cannot be deleted and the retry " +
+          "will write its own next to them"
         )
       } else {
-        val jobid = AuditTaskBuilder.escapeLiteral(ingestionJob.applicationId())
-        val domainName = AuditTaskBuilder.escapeLiteral(domain.name)
-        val tableName = AuditTaskBuilder.escapeLiteral(schema.name)
-        val sql =
-          s"DELETE FROM ${audit.getDomain()}.rejected WHERE jobid = '$jobid' " +
-          s"AND domain = '$domainName' AND schema = '$tableName'"
+        val sql = NativeRejectedSink.deleteSql(
+          applicationId = ingestionJob.applicationId(),
+          domainName = domain.name,
+          tableName = schema.name,
+          paths = path
+        )
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), auditConnection.options) {
           conn =>
             JdbcDbUtils.execute(sql, conn)

@@ -38,11 +38,12 @@ class ReplayFileWriterSpec extends TestHelper {
         header = Some("id;name;amount"),
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "sales-orders-XTBL-1757000000000"
+        jobid = "sales-orders-XTBL-1757000000000",
+        inputFileName = Some("XTBL")
       )
 
       path.map(_.getName) shouldBe
-      Some("sales.orders.20260904101112.sales-orders-XTBL-1757000000000.replay")
+      Some("sales.orders.20260904101112.sales-orders-XTBL-1757000000000-XTBL.replay")
       path.map(_.getParent) shouldBe Some(DatasetArea.replay("sales"))
       storageHandler.read(path.get) shouldBe
       "id;name;amount\n2;bob;NOTANUM\nbadline;dave\n"
@@ -56,7 +57,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "job-1"
+        jobid = "job-1",
+        inputFileName = Some("XTBL")
       )
 
       storageHandler.read(path.get) shouldBe "BadRow    abcde\n"
@@ -70,7 +72,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = Some("id;name"),
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "job-1"
+        jobid = "job-1",
+        inputFileName = Some("XTBL")
       )
 
       path shouldBe None
@@ -89,7 +92,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "sales_same_second-orders-XTBL-1757000000000"
+        jobid = "sales_same_second-orders-XTBL-1757000000000",
+        inputFileName = Some("XTBL")
       )
       ReplayFileWriter.write(
         domainName = "sales_same_second",
@@ -98,7 +102,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "sales_same_second-orders-XTBL-1757000000001"
+        jobid = "sales_same_second-orders-XTBL-1757000000001",
+        inputFileName = Some("XTBL")
       )
 
       val written = storageHandler
@@ -108,8 +113,8 @@ class ReplayFileWriterSpec extends TestHelper {
       written.map(storageHandler.read(_)).sorted shouldBe List("first load\n", "second load\n")
     }
 
-    // the job id is built from the domain, the table and the landing file name, so it can carry
-    // anything that file name carried
+    // the job id is built from the domain, the table and the landing file name, and the landing
+    // file name is folded in on its own, so both can carry anything that file name carried
     it should "sanitize the job id out of the file name" in {
       val path = ReplayFileWriter.write(
         domainName = "sales",
@@ -118,11 +123,95 @@ class ReplayFileWriterSpec extends TestHelper {
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "sales-orders-a/b c:d-1757000000000"
+        jobid = "sales-orders-a/b c:d-1757000000000",
+        inputFileName = Some("X TBL/1")
       )
 
       path.map(_.getName) shouldBe
-      Some("sales.orders.20260904101112.sales-orders-a-b-c-d-1757000000000.replay")
+      Some("sales.orders.20260904101112.sales-orders-a-b-c-d-1757000000000-X-TBL-1.replay")
+    }
+
+    // Under SL_JOB_ID every job of the run shares one application id (Job.scala), so the job id
+    // alone does not tell two loads apart: two same second loads of the same table, of two
+    // different landing files, still collide on the name. The input file name is what separates
+    // them, and it is what autoload actually varies.
+    it should "keep two same second loads of different input files apart under one job id" in {
+      storageHandler.delete(DatasetArea.replay("sales_same_jobid"))
+
+      ReplayFileWriter.write(
+        domainName = "sales_same_jobid",
+        tableName = "orders",
+        rejected = rejected("first file"),
+        header = None,
+        encoding = "UTF-8",
+        timestamp = timestamp,
+        jobid = "airflow-run-42",
+        inputFileName = Some("XTBL_2026_09_04_A")
+      )
+      ReplayFileWriter.write(
+        domainName = "sales_same_jobid",
+        tableName = "orders",
+        rejected = rejected("second file"),
+        header = None,
+        encoding = "UTF-8",
+        timestamp = timestamp,
+        jobid = "airflow-run-42",
+        inputFileName = Some("XTBL_2026_09_04_B")
+      )
+
+      val written = storageHandler
+        .list(DatasetArea.replay("sales_same_jobid"), extension = ".replay", recursive = false)
+        .map(_.path)
+      written.size shouldBe 2
+      written.map(storageHandler.read(_)).sorted shouldBe List("first file\n", "second file\n")
+    }
+
+    // The replay file is written before the target rows are inserted, so a name too long to
+    // create would fail a load that used to succeed. Only the tail of the discriminator is kept,
+    // because the input file name that separates two loads is at the end of it while the head
+    // repeats the domain and the table the name already carries.
+    it should "bound the discriminator and keep its discriminating tail" in {
+      val longJobId = "sales-orders-" + ("a" * 200) + "-1757000000000"
+
+      val path = ReplayFileWriter.write(
+        domainName = "sales",
+        tableName = "long",
+        rejected = rejected("2;bob;NOTANUM"),
+        header = None,
+        encoding = "UTF-8",
+        timestamp = timestamp,
+        jobid = longJobId,
+        inputFileName = Some("XTBL_2026_09_04_A")
+      )
+
+      val name = path.get.getName
+      name.length should be <= 120
+      name should startWith("sales.long.20260904101112.")
+      name should endWith("-XTBL_2026_09_04_A.replay")
+    }
+
+    // the charset is resolved before the target file is created: resolving it inside the writer
+    // construction left an empty replay file behind and leaked the stream, because Scala evaluates
+    // storageHandler.output(path) first
+    it should "create no file at all when the encoding is unsupported" in {
+      storageHandler.delete(DatasetArea.replay("sales_bad_encoding"))
+
+      a[java.nio.charset.UnsupportedCharsetException] should be thrownBy {
+        ReplayFileWriter.write(
+          domainName = "sales_bad_encoding",
+          tableName = "orders",
+          rejected = rejected("2;bob;NOTANUM"),
+          header = None,
+          encoding = "NO-SUCH-CHARSET",
+          timestamp = timestamp,
+          jobid = "job-1",
+          inputFileName = Some("XTBL")
+        )
+      }
+
+      storageHandler
+        .list(DatasetArea.replay("sales_bad_encoding"), extension = ".replay", recursive = false)
+        .map(_.path) shouldBe Nil
     }
 
     // one capture per input path, merged in path order by the loader, and the replay file has to
@@ -138,7 +227,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = Some("id;name;amount"),
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "job-1"
+        jobid = "job-1",
+        inputFileName = Some("XTBL")
       )
 
       storageHandler.read(path.get) shouldBe
@@ -156,7 +246,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
-        jobid = "job-1"
+        jobid = "job-1",
+        inputFileName = Some("XTBL")
       )
 
       storageHandler.read(path.get) shouldBe "2;bo\rb;NOTANUM\n"
@@ -170,7 +261,8 @@ class ReplayFileWriterSpec extends TestHelper {
         header = None,
         encoding = "ISO-8859-1",
         timestamp = timestamp,
-        jobid = "job-1"
+        jobid = "job-1",
+        inputFileName = Some("XTBL")
       )
 
       storageHandler.read(path.get, Charset.forName("ISO-8859-1")) shouldBe "1;café\n"

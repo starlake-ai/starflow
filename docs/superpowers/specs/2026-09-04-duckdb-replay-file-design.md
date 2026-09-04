@@ -9,7 +9,9 @@ Replay files are produced only by the Spark ingestion path. `IngestionJob.saveRe
 `sinkReplayToFile` setting, writes `{domain}.{table}.{yyyyMMddHHmmss}.replay` into
 `DatasetArea.replay(domain)`. Its only call site is `SparkIngestionPipeline.scala:51`. That
 name is second resolution only; the native loader's `ReplayFileWriter` below appends the job
-id to it, so the two loaders name their replay files differently.
+id and the input file name to it, so the two loaders name their replay files differently. The
+input file name is needed as well as the job id, because `JobBase.appName` returns SL_JOB_ID
+verbatim when it is set and every job of a run then shares one application id.
 
 The DuckDB native loader has no rejection story at all:
 
@@ -142,7 +144,8 @@ shared with the BigQuery and Snowflake loaders.
 
 ### `ReplayFileWriter` (new, engine neutral)
 
-Writes `DatasetArea.replay(domain)/{domain}.{table}.{yyyyMMddHHmmss}.{jobid}.replay` through
+Writes `DatasetArea.replay(domain)/{domain}.{table}.{yyyyMMddHHmmss}.{jobid}-{input file}.replay`
+through
 `StorageHandler`, in the encoding from `mergedMetadata.resolveEncoding()`: the source
 header line first when `resolveWithHeader()` is true, then each `rawLine` verbatim. No
 Spark, and no part file merge, unlike `IngestionJob.scala:236` which calls
