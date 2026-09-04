@@ -48,31 +48,33 @@ object AuditTaskBuilder {
     * `Jinjava.render` throws on it, which would fail the whole job over a single value. Shared by
     * every caller of `buildTask` so the escapings cannot drift apart.
     *
-    * The invariant is that the result contains no quote, no backslash and no brace at all, so no
-    * Jinja delimiter can survive the escaping and none can be assembled out of what does. Every
-    * Jinja delimiter needs a brace (`{{ }}`, `{% %}`, `{# #}`), and it also means the result is
-    * immune to the `{{key}}` substitution `Formatter.richFormat` runs over the same template. This
-    * is why the braces go wholesale and not pairwise. Stripping the six delimiters as pairs looks
-    * tighter but is not a fixpoint: each `replaceAll` pass is non overlapping and left to right, so
-    * a deletion joins the characters on either side of it and the join is never rescanned, which
-    * lets the escaping SYNTHESIZE a live delimiter out of an input that carried none. Pairwise
-    * stripping turned `{}}%ANUM%#}}` into `{%ANUM%}` and `{}}{ANUM}%}}` into `{{ANUM}}`, so a DSV
-    * line carrying the first still aborted the whole load, which is precisely what the caller uses
-    * this for. Removing every brace can neither leave a delimiter nor build one, and applying it
-    * twice changes nothing, so please do not "improve" it back into pairwise stripping.
+    * The invariant is that the result contains no single quote (given a `quoteReplacement` that
+    * carries none itself), no backslash and no brace at all, so no Jinja delimiter can survive the
+    * escaping and none can be assembled out of what does. Every Jinja delimiter needs a brace (`{{
+    * }}`, `{% %}`, `{# #}`), and it also means the result is immune to the `{{key}}` substitution
+    * `Formatter.richFormat` runs over the same template. This is why the braces go wholesale and
+    * not pairwise. Stripping the six delimiters as pairs looks tighter but is not a fixpoint: each
+    * `replaceAll` pass is non overlapping and left to right, so a deletion joins the characters on
+    * either side of it and the join is never rescanned, which lets the escaping SYNTHESIZE a live
+    * delimiter out of an input that carried none. Pairwise stripping turned `{}}%ANUM%#}}` into
+    * `{%ANUM%}` and `{}}{ANUM}%}}` into `{{ANUM}}`, so a DSV line carrying the first still aborted
+    * the whole load, which is precisely what the caller uses this for. Removing every brace can
+    * neither leave a delimiter nor build one, and applying it twice changes nothing, so please do
+    * not "improve" it back into pairwise stripping.
     *
     * @param quoteReplacement
     *   What a single quote becomes. Defaults to a dash, which is what every caller that inlines a
     *   value into a quoted SQL literal wants. A caller that inlines SQL text of its own, such as
     *   the expectations sink, wants that text to stay readable and passes a value that stays safe
-    *   inside the enclosing single quoted literal instead, for example a double quote. The fixpoint
-    *   argument above only holds if `quoteReplacement` itself contains no quote, backslash or
-    *   brace, since it is not run back through this method; every call site in this codebase passes
-    *   a literal constant, so that is a review-time invariant, not a runtime check.
+    *   inside the enclosing single quoted literal instead, for example a double quote. The value is
+    *   inserted literally (`Matcher.quoteReplacement` neutralizes the `$` and `\` regex replacement
+    *   metacharacters), and a replacement carrying a brace or backslash is cleaned up by the later
+    *   passes, so the one thing a caller must never pass is a single quote, which no later pass
+    *   removes and which would reopen the enclosing literal.
     */
   def escapeLiteral(value: String, quoteReplacement: String = "-"): String =
     value
-      .replaceAll("'", quoteReplacement)
+      .replaceAll("'", java.util.regex.Matcher.quoteReplacement(quoteReplacement))
       .replaceAll("\\\\", "-")
       .replaceAll("\\n", " ")
       .replaceAll("[{}]", "")

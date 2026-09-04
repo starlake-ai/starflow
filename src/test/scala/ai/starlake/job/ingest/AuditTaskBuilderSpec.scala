@@ -46,6 +46,13 @@ class AuditTaskBuilderSpec extends AnyFlatSpec {
     escaped shouldBe "a-b c"
   }
 
+  it should "insert the replacement literally, not as a regex replacement string" in {
+    // replaceAll's second argument treats $ and \ as metacharacters; Matcher.quoteReplacement
+    // makes the parameter literal so a $ bearing replacement cannot throw from the audit path.
+    AuditTaskBuilder.escapeLiteral("a'b", "$1") shouldBe "a$1b"
+    AuditTaskBuilder.escapeLiteral("a'b", "$") shouldBe "a$b"
+  }
+
   "escapeLiteral called with one argument" should
   "produce exactly what it produced before the second parameter was added" in {
     // pinned example: quote becomes a dash, backslash becomes a dash, newline becomes a
