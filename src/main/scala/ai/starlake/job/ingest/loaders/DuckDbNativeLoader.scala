@@ -14,6 +14,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 
+import java.io.BufferedReader
 import java.nio.charset.Charset
 import java.sql.Connection
 import scala.util.{Try, Using}
@@ -201,6 +202,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       }
       (initialRowCount, rejected)
     }.map { case (initialRowCount, rejected) =>
+      reportRejects(rejected)
       val countSql =
         s"SELECT COUNT(*) AS cnt FROM ${domain.finalName}.${schema.finalName};"
 
@@ -228,6 +230,46 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           jobid = ingestionJob.applicationId()
         )
       )
+    }
+  }
+
+  /** The first physical line of the first input file, so the replay file can be ingested again by a
+    * table that declares a header. Read verbatim rather than rebuilt from the attribute names, so
+    * it survives renamed or reordered source columns.
+    */
+  private def replayHeaderLine(): Option[String] = {
+    val isDsvWithHeader =
+      mergedMetadata.resolveFormat() == Format.DSV &&
+      mergedMetadata.resolveWithHeader().booleanValue()
+    if (isDsvWithHeader) {
+      path.headOption.flatMap { p =>
+        Try {
+          storageHandler.readAndExecute(p, Charset.forName(mergedMetadata.resolveEncoding())) {
+            reader => Option(new BufferedReader(reader).readLine())
+          }
+        }.recover { case e =>
+          logger.warn(s"Could not read the header line of $p for the replay file", e)
+          None
+        }.get
+      }
+    } else {
+      None
+    }
+  }
+
+  /** Writes the rejected lines where the user can act on them: the replay file when
+    * sinkReplayToFile is set, and the audit rejected table.
+    */
+  private def reportRejects(rejected: List[RejectedLine]): Unit = {
+    if (rejected.nonEmpty && settings.appConfig.sinkReplayToFile) {
+      ReplayFileWriter.write(
+        domainName = domain.finalName,
+        tableName = schema.finalName,
+        rejectedLines = rejected,
+        header = replayHeaderLine(),
+        encoding = mergedMetadata.resolveEncoding(),
+        timestamp = ingestionJob.now
+      )(settings, storageHandler)
     }
   }
 

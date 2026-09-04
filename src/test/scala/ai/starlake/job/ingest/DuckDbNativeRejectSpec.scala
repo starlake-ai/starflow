@@ -1,6 +1,7 @@
 package ai.starlake.job.ingest
 
 import ai.starlake.TestHelper
+import ai.starlake.config.DatasetArea
 import ai.starlake.extract.JdbcDbUtils
 import com.typesafe.config.{Config, ConfigFactory}
 
@@ -64,6 +65,74 @@ class DuckDbNativeRejectSpec extends TestHelper {
         counters.get.acceptedCount shouldBe 3
         counters.get.rejectedCount shouldBe 2
         counters.get.inputCount shouldBe 5
+      }
+    }
+
+    "Native DuckDB load without sinkReplayToFile" should "write no replay file" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckreject/dsvduckreject.sl.yml",
+        datasetDomainName = "dsvduckreject",
+        sourceDatasetPathName = "/sample/dsvduckreject/XDSVREJECTTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckreject",
+          "/sample/dsvduckreject/account_dsvduckreject.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        loadPending.isSuccess shouldBe true
+
+        storageHandler
+          .list(DatasetArea.replay("dsvduckreject"), extension = ".replay", recursive = false)
+          .map(_.path) shouldBe Nil
+      }
+    }
+  }
+
+  lazy val duckDbReplayConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |sinkReplayToFile: true
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_replay_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbReplayConfiguration) {
+
+    "Native DuckDB load with sinkReplayToFile" should
+    "write the rejected lines verbatim under the replay area, header first" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckreject/dsvduckreject.sl.yml",
+        datasetDomainName = "dsvduckreject",
+        sourceDatasetPathName = "/sample/dsvduckreject/XDSVREJECTTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckreject",
+          "/sample/dsvduckreject/account_dsvduckreject.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        loadPending.isSuccess shouldBe true
+
+        val replayFiles = storageHandler
+          .list(DatasetArea.replay("dsvduckreject"), extension = ".replay", recursive = false)
+          .map(_.path)
+        replayFiles.size shouldBe 1
+        storageHandler.read(replayFiles.head) shouldBe
+        "id;name;amount\n2;bob;NOTANUM\nbadline;dave\n"
       }
     }
   }
