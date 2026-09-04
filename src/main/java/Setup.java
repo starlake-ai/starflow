@@ -1360,6 +1360,8 @@ public class Setup extends ProxySelector implements X509TrustManager {
         try {
             client = clientBuilder.followRedirects(HttpClient.Redirect.ALWAYS).build();
             boolean succesfullyDownloaded = false;
+            long downloadedBytes = 0;
+            long expectedBytes = 0;
             List<String> triedUrlList = new ArrayList<>();
             System.out.println("Downloading " + resource.artefactName + "...");
             for (String urlStr : resource.urls) {
@@ -1415,6 +1417,32 @@ public class Setup extends ProxySelector implements X509TrustManager {
                         }
                         System.out.print(file.getAbsolutePath() + " succesfully downloaded from " + urlFolder);
                         System.out.println();
+                        // A truncated download used to be accepted silently and only showed up much
+                        // later as a ClassNotFoundException. It must fail here now for a second
+                        // reason too: the sync plan decides a file is up to date from its size, so a
+                        // short file would otherwise cache itself as valid forever.
+                        if (lengthOfFile > 0 && total != lengthOfFile) {
+                            downloadedBytes = total;
+                            expectedBytes = lengthOfFile;
+                        }
+                    } catch (IOException e) {
+                        // The stream died mid-copy (the JDK raises this itself when a server
+                        // closes before delivering the Content-Length it promised). The bytes
+                        // already written must not survive: the sync plan decides a file is up
+                        // to date from its size, and a partial jar left here would otherwise be
+                        // re-checked against a remote size it can never match, or worse, match
+                        // by coincidence. Try-with-resources has closed the stream by now, so
+                        // the delete also succeeds on Windows.
+                        deleteFile(file);
+                        throw e;
+                    }
+                    // Outside the try-with-resources: the stream has to be closed before the
+                    // partial file can be deleted on Windows.
+                    if (expectedBytes > 0) {
+                        deleteFile(file);
+                        throw new RuntimeException("Incomplete download of " + resource.artefactName + " from " + urlStr
+                                + ": got " + downloadedBytes + " bytes, expected " + expectedBytes
+                                + ". The partial file was removed; run the installation again.");
                     }
                     succesfullyDownloaded = true;
                     break;
@@ -1427,7 +1455,8 @@ public class Setup extends ProxySelector implements X509TrustManager {
                 throw new RuntimeException("Failed to fetch " + resource.artefactName + " from " + triedUrls);
             }
         }  catch (IOException | InterruptedException e) {
-            System.out.println("Failed to download " + resource.artefactName + " from " + resource.urls);
+            System.out.println("Failed to download " + resource.artefactName + " from "
+                    + String.join(", ", resource.urls));
             throw e;
         }
         finally {
