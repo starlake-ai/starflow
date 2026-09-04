@@ -637,4 +637,61 @@ class DuckDbNativeRejectSpec extends TestHelper {
       }
     }
   }
+
+  lazy val duckDbRejectSinkFailureConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |audit.sink.connectionRef: "broken-audit"
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_sinkfailure_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |connections.broken-audit {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/no/such/directory/audit.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbRejectSinkFailureConfiguration) {
+
+    // The Spark path saves the rejects before the accepted rows
+    // (SparkIngestionPipeline.ingest), so a reject sink that fails means nothing was written.
+    // The native path used to report the rejects after the target rows had been committed,
+    // which left the load reported as failed while the data was in the table, and a retry
+    // under APPEND would then append the good rows a second time. The audit connection below
+    // points at a directory that does not exist, so NativeRejectedSink throws on the first
+    // rejected line of an otherwise ordinary load.
+    "Native DuckDB load whose reject sink fails" should
+    "fail without committing the accepted rows" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckreplayfail/dsvduckreplayfail.sl.yml",
+        datasetDomainName = "dsvduckreplayfail",
+        sourceDatasetPathName = "/sample/dsvduckreplayfail/XDSVREPLAYFAILTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckreplayfail",
+          "/sample/dsvduckreplayfail/account_dsvduckreplayfail.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        loadPending.isSuccess shouldBe false
+
+        // nothing was committed, so once the audit connection is fixed the same file can be
+        // loaded again without appending the good rows twice
+        tableExists("dsvduckreplayfail", "account") shouldBe false
+      }
+    }
+  }
 }

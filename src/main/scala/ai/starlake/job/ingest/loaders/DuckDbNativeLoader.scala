@@ -60,6 +60,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   }
   lazy val effectiveSchema: SchemaInfo = computeEffectiveInputSchema()
   lazy val schemaWithMergedMetadata = effectiveSchema.copy(metadata = Some(mergedMetadata))
+  private lazy val twoSteps: Boolean = requireTwoSteps(effectiveSchema)
 
   def run(): Try[List[IngestionCounters]] = {
     Try {
@@ -94,7 +95,6 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               0
             }
         }
-      val twoSteps = requireTwoSteps(effectiveSchema)
       val rejected: List[RejectedLine] = if (twoSteps) {
         val tempTablesWithRejects =
           path.map { p =>
@@ -127,6 +127,11 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               rejectThresholdMessage(rejectedLines.size)
             )
           }
+          // Rejects first, target rows second, the ordering SparkIngestionPipeline.ingest
+          // uses. If the replay area cannot be written or the audit connection is down, this
+          // throws before anything lands in the target, so the failed load leaves nothing
+          // behind and the same input can be loaded again without double appending.
+          reportRejects(rejectedLines)
           val unionTempTables = tempTables
             .map(s"SELECT * FROM ${domain.finalName}." + _)
             .mkString("(", " UNION ALL ", ")")
@@ -211,7 +216,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       }
       (initialRowCount, rejected)
     }.map { case (initialRowCount, rejected) =>
-      reportRejects(rejected)
+      // The two step path has already reported them, before it wrote its target rows, so
+      // only the single step path is left here. That path is reachable only for a variant
+      // schema, which in practice means JSON, and DuckDB captures no rejects for JSON, so
+      // this call is a no-op today. It is left where it is rather than reordered on
+      // speculation: there is no reject to lose, and the single step INSERT is what would
+      // have to move.
+      if (!twoSteps) reportRejects(rejected)
       val countSql =
         s"SELECT COUNT(*) AS cnt FROM ${domain.finalName}.${schema.finalName};"
 
@@ -231,6 +242,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       // currentRowCount alone is the accepted count in that case. Do not turn this back into
       // a delta: for OVERWRITE the delta undercounts, or goes negative, whenever the
       // replaced table held rows before this load.
+      // Known gap, pre-existing and out of scope here: OVERWRITE_BY_PARTITION,
+      // DELETE_THEN_INSERT and SCD2 can shrink the table too, so they can still report a
+      // negative delta, which inputCount now carries as well.
       val acceptedCount =
         if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE) currentRowCount.toLong
         else (currentRowCount - initialRowCount).toLong
@@ -250,8 +264,16 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       )
     }.recoverWith { case e: RejectThresholdExceededException =>
       // The load is going to fail, but the user still gets the replay file and the audit
-      // rejected rows so they can fix the input and load it again.
-      reportRejects(e.rejected)
+      // rejected rows so they can fix the input and load it again. recoverWith takes a
+      // throwing partial function, so reporting runs in a Try of its own: whatever happens
+      // to it, the failure the user sees is the threshold breach that aborted the load, not
+      // the IO error that followed it.
+      Try(reportRejects(e.rejected)).failed.foreach { reportFailure =>
+        logger.error(
+          "Failed to report the rejected lines of a load aborted on the reject threshold",
+          reportFailure
+        )
+      }
       Failure(e)
     }
   }
