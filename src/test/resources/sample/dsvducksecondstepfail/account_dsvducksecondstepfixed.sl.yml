@@ -1,0 +1,17 @@
+---
+version: 1
+table:
+  name: "account"
+  pattern: "XDSVSECONDSTEPFAIL.*"
+  # same table as account_dsvducksecondstepfail.sl.yml, with the postsql that fails the second
+  # step removed: this is the retry the user runs once the broken SQL is fixed
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "name"
+      type: "string"
+      required: true
+    - name: "amount"
+      type: "double"
+      required: false

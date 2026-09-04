@@ -1,12 +1,16 @@
 package ai.starlake.job.ingest.loaders
 
+import ai.starlake.config.Settings
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.schema.model.SchemaInfo
 import com.typesafe.scalalogging.LazyLogging
 
-import java.sql.Connection
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.sql.{Connection, ResultSet}
 import scala.collection.mutable.ListBuffer
-import scala.util.Using
+import scala.util.{Try, Using}
+import scala.util.control.NonFatal
 
 /** Reads back the lines DuckDB refused while loading.
   *
@@ -28,36 +32,29 @@ object DuckDbRejectCapture extends LazyLogging {
       |GROUP BY 1, 2, 3
       |ORDER BY 1, 2""".stripMargin
 
-  def captureCsvRejects(conn: Connection): List[RejectedLine] = {
-    val rejected = ListBuffer[RejectedLine]()
-    Using.resource(conn.createStatement()) { statement =>
-      Using.resource(statement.executeQuery(captureCsvRejectsSql)) { rs =>
-        while (rs.next()) {
-          // wasNull() reports on the column just read, so the line number is read on its own
-          // line: a SQL NULL there means "unknown line", not line 0.
-          val line = rs.getLong("line")
-          val lineNumber = if (rs.wasNull()) None else Some(line)
-          rejected += RejectedLine(
-            file = rs.getString("file"),
-            line = lineNumber,
-            // csv_line is SQL NULL for the error types that carry no usable line, invalid
-            // encoding and line size over maximum among them, and the replay file must not
-            // grow the literal string "null" out of one
-            rawLine = Option(rs.getString("raw_line")).getOrElse(""),
-            error = rs.getString("error")
-          )
-        }
-      }
+  def captureCsvRejects(conn: Connection)(implicit settings: Settings): RejectCapture = {
+    val captured = capture(conn, captureCsvRejectsSql, "raw_line") { (rs, rawLine) =>
+      // wasNull() reports on the column just read, so the line number is read on its own
+      // line: a SQL NULL there means "unknown line", not line 0.
+      val line = rs.getLong("line")
+      val lineNumber = if (rs.wasNull()) None else Some(line)
+      RejectedLine(
+        file = rs.getString("file"),
+        line = lineNumber,
+        rawLine = rawLine,
+        error = rs.getString("error")
+      )
     }
-    if (rejected.nonEmpty) {
-      logger.warn(s"DuckDB rejected ${rejected.size} line(s) while reading the input files")
+    if (captured.nonEmpty) {
+      logger.warn(s"DuckDB rejected ${captured.count} line(s) while reading the input files")
     }
-    rejected.toList
+    captured
   }
 
-  /** Builds the (predicate, message) pairs that decide whether a fixed width line is rejected.
-    * Positions are zero based and inclusive, so an attribute at [first, last] is sliced as
-    * SUBSTR(value, first + 1, last - first + 1).
+  /** Builds the (predicate, message) pairs that decide whether a fixed width line is rejected. The
+    * slice expression and the cast eligibility rule come from `SchemaInfo.positionSlice` and
+    * `SchemaInfo.castableDdlType`, the same two helpers `buildSecondStepSqlSelectOnLoad` projects
+    * with, so this predicate cannot drift from what the second step actually reads.
     *
     * The line length is only checked against the REQUIRED positioned attributes: a line has to
     * reach the end of every required field, but a fixed width source that right trims blanks
@@ -90,14 +87,12 @@ object DuckDbRejectCapture extends LazyLogging {
       }
       val castClauses = positioned.flatMap { attr =>
         val position = attr.position.get
-        ddlTypesByAttribute.get(attr.name).filterNot(SchemaInfo.isStringLikeDdlType).map {
-          ddlType =>
-            val slice =
-              s"SUBSTR(value, ${position.first + 1}, ${position.last - position.first + 1})"
-            (
-              s"(TRIM($slice) <> '' AND TRY_CAST($slice AS $ddlType) IS NULL)",
-              s"${attr.name}: cannot cast to $ddlType"
-            )
+        SchemaInfo.castableDdlType(ddlTypesByAttribute, attr.name).map { ddlType =>
+          val slice = SchemaInfo.positionSlice(position)
+          (
+            s"(TRIM($slice) <> '' AND TRY_CAST($slice AS $ddlType) IS NULL)",
+            s"${attr.name}: cannot cast to $ddlType"
+          )
         }
       }
       shortLine.toList ::: castClauses
@@ -113,10 +108,10 @@ object DuckDbRejectCapture extends LazyLogging {
     filePath: String,
     schema: SchemaInfo,
     ddlTypesByAttribute: Map[String, String]
-  ): List[RejectedLine] = {
+  )(implicit settings: Settings): RejectCapture = {
     val clauses = positionRejectClauses(schema, ddlTypesByAttribute)
     if (clauses.isEmpty) {
-      Nil
+      RejectCapture.empty
     } else {
       val where = clauses.map(_._1).mkString(" OR ")
       val errorExpression = clauses
@@ -126,26 +121,104 @@ object DuckDbRejectCapture extends LazyLogging {
         .mkString("concat_ws(' | ', ", ", ", ")")
       val selectSql =
         s"SELECT value, $errorExpression AS sl_reject_error FROM $tableName WHERE $where"
-      val rejected = ListBuffer[RejectedLine]()
-      Using.resource(conn.createStatement()) { statement =>
-        Using.resource(statement.executeQuery(selectSql)) { rs =>
-          while (rs.next()) {
-            rejected += RejectedLine(
-              file = filePath,
-              line = None,
-              // an empty input line reads back as NULL, and the replay file must carry the
-              // line as it was, so an empty line rather than the string "null"
-              rawLine = Option(rs.getString("value")).getOrElse(""),
-              error = rs.getString("sl_reject_error")
-            )
-          }
+      val captured = capture(conn, selectSql, "value") { (rs, rawLine) =>
+        RejectedLine(
+          file = filePath,
+          line = None,
+          rawLine = rawLine,
+          error = rs.getString("sl_reject_error")
+        )
+      }
+      if (captured.nonEmpty) {
+        logger.warn(s"Rejecting ${captured.count} fixed width line(s) from $filePath")
+        try {
+          JdbcDbUtils.execute(s"DELETE FROM $tableName WHERE $where", conn)
+        } catch {
+          case NonFatal(e) =>
+            // the capture never reaches the caller, so nobody else can delete its spill file
+            discardSpillFiles(captured)
+            throw e
         }
       }
-      if (rejected.nonEmpty) {
-        logger.warn(s"Rejecting ${rejected.size} fixed width line(s) from $filePath")
-        JdbcDbUtils.execute(s"DELETE FROM $tableName WHERE $where", conn)
-      }
-      rejected.toList
+      captured
     }
   }
+
+  /** Runs the rejected lines query twice on the open connection: once to count them exactly, once
+    * to read them.
+    *
+    * A load that reads a huge file with the wrong delimiter rejects every line of it, so nothing
+    * here may grow with the number of rejects. The count comes from a COUNT over the same query, so
+    * it is exact whatever is kept; at most `audit.maxErrors` lines are materialized, which is all
+    * the audit rejected table can hold anyway; and every raw line goes straight to a local spill
+    * file that the replay writer streams to its output without ever holding it as a String.
+    *
+    * Both statements run on the connection that ran the scan and before any rollback, because
+    * `reject_errors` is session scoped and a rollback discards it.
+    */
+  private def capture(
+    conn: Connection,
+    sql: String,
+    rawLineColumn: String
+  )(rejectedLine: (ResultSet, String) => RejectedLine)(implicit
+    settings: Settings
+  ): RejectCapture = {
+    val count = countOf(conn, sql)
+    if (count == 0L) {
+      RejectCapture.empty
+    } else {
+      val maxSample = settings.appConfig.audit.maxErrors
+      val sample = ListBuffer[RejectedLine]()
+      val spillFile = Files.createTempFile("sl-reject-", ".spill")
+      try {
+        Using.resource(Files.newBufferedWriter(spillFile, StandardCharsets.UTF_8)) { writer =>
+          Using.resource(conn.createStatement()) { statement =>
+            Using.resource(statement.executeQuery(sql)) { rs =>
+              while (rs.next()) {
+                // the raw line column is SQL NULL for an empty input line, and for the CSV error
+                // types that carry no usable line, invalid encoding and line size over maximum
+                // among them. The replay file has to carry the line as it was, so an empty line
+                // rather than the literal string "null".
+                val rawLine = Option(rs.getString(rawLineColumn)).getOrElse("")
+                if (sample.size < maxSample) {
+                  sample += rejectedLine(rs, rawLine)
+                }
+                writer.write(rawLine)
+                // a plain \n, never the platform separator: these bytes are the replay file
+                writer.write('\n')
+              }
+            }
+          }
+        }
+      } catch {
+        case NonFatal(e) =>
+          // the caller only learns about the spill file through the capture it never gets
+          discardSpillFiles(RejectCapture(count, Nil, List(spillFile)))
+          throw e
+      }
+      RejectCapture(count, sample.toList, List(spillFile))
+    }
+  }
+
+  /** Deletes the spill files of a capture that will never reach a caller, so that a failure on the
+    * way out of a capture does not leave a temporary file nobody owns. Best effort: the failure
+    * being unwound is what matters, not this.
+    */
+  private def discardSpillFiles(capture: RejectCapture): Unit =
+    capture.spillFiles.foreach { spillFile =>
+      Try(Files.deleteIfExists(spillFile)).failed.foreach { e =>
+        logger.warn(s"Failed to delete the temporary reject spill file $spillFile", e)
+      }
+    }
+
+  /** The exact number of rejected input lines, counted over the same grouped query the capture
+    * reads, so it cannot drift from what the replay file holds.
+    */
+  private def countOf(conn: Connection, sql: String): Long =
+    Using.resource(conn.createStatement()) { statement =>
+      Using.resource(statement.executeQuery(s"SELECT count(*) AS cnt FROM ($sql)")) { rs =>
+        rs.next()
+        rs.getLong("cnt")
+      }
+    }
 }
