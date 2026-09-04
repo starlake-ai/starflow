@@ -1,9 +1,8 @@
 package ai.starlake.job.ingest.loaders
 
 import ai.starlake.config.Settings
-import ai.starlake.job.transform.TransformContext
+import ai.starlake.job.ingest.AuditTaskBuilder
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
-import ai.starlake.schema.model.{AutoTaskInfo, Engine}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 
@@ -60,42 +59,16 @@ object NativeRejectedSink extends LazyLogging {
         }
         .mkString("\nUNION ALL\n")
 
-      val taskDesc = AutoTaskInfo(
+      val task = AuditTaskBuilder.buildTask(
         name = s"rejected-$applicationId-$domainName-$tableName",
-        sql = Some(selectSql),
-        database = settings.appConfig.audit.getDatabase(),
-        domain = settings.appConfig.audit.getDomain(),
-        table = "rejected",
-        presql = Nil,
-        postsql = Nil,
-        sink = Some(settings.appConfig.audit.sink),
-        _auditTableName = Some("rejected"),
-        connectionRef = settings.appConfig.audit.sink.connectionRef,
-        parseSQL = Some(true),
-        taskTimeoutMs = Some(settings.appConfig.shortJobTimeoutMs)
+        auditTableName = "rejected",
+        selectSql = selectSql,
+        applicationId = applicationId,
+        scheduledDate = scheduledDate,
+        accessToken = accessToken
       )
 
-      val context = TransformContext(
-        appId = Option(applicationId),
-        taskDesc = taskDesc,
-        commandParameters = Map.empty,
-        interactive = None,
-        truncate = false,
-        test = false,
-        logExecution = false,
-        accessToken = accessToken,
-        resultPageSize = 200,
-        resultPageNumber = 1,
-        dryRun = false,
-        scheduledDate = scheduledDate,
-        syncSchema = false
-      )(settings, storageHandler, schemaHandler)
-
-      val engine =
-        if (taskDesc.getSinkConnection().isJdbcUrl()) Engine.JDBC
-        else taskDesc.getSinkConnection().getEngine()
-
-      context.toTask(engine).run() match {
+      task.run() match {
         case Success(_) => ()
         case Failure(e) =>
           logger.error("Failed to write the audit rejected rows", e)

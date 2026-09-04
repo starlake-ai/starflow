@@ -22,7 +22,7 @@ package ai.starlake.job.ingest
 
 import ai.starlake.config.Settings
 import ai.starlake.job.common.TaskSQLStatements
-import ai.starlake.job.transform.{AutoTask, TransformContext}
+import ai.starlake.job.transform.AutoTask
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model._
 import ai.starlake.utils.Formatter.RichFormatter
@@ -263,41 +263,17 @@ object AuditLog extends LazyLogging {
           val selectSql = productionLog
             .map(_.asSelect(auditSink.getConnection().getJdbcEngineName()))
             .mkString("\nUNION ALL\n")
-          val auditTaskDesc = AutoTaskInfo(
-            name = s"audit-$jobId",
-            sql = Some(selectSql),
-            database = settings.appConfig.audit.getDatabase(),
-            domain = settings.appConfig.audit.getDomain(),
-            table = "audit",
-            presql = Nil,
-            postsql = Nil,
-            connectionRef = settings.appConfig.audit.sink.connectionRef,
-            sink = Some(settings.appConfig.audit.sink),
-            parseSQL = Some(true),
-            _auditTableName = Some("audit"),
-            taskTimeoutMs = Some(settings.appConfig.shortJobTimeoutMs)
-          )
-          // When sparkFormat is true, we do not want to use spark to write the logs
-          val engine =
-            if (auditTaskDesc.getSinkConnection().isJdbcUrl()) Engine.JDBC
-            else auditTaskDesc.getSinkConnection().getEngine()
           val scheduledDate = productionLog.headOption.flatMap(_.scheduledDate)
-          val context = TransformContext(
-            appId = Option(jobId),
-            taskDesc = auditTaskDesc,
-            commandParameters = Map.empty,
-            interactive = None,
-            truncate = false,
-            test = false,
-            logExecution = false, // We do not log the job that write the logs :)
-            accessToken = accessToken,
-            resultPageSize = 200,
-            resultPageNumber = 1,
-            dryRun = false,
-            scheduledDate = scheduledDate,
-            syncSchema = false
+          Some(
+            AuditTaskBuilder.buildTask(
+              name = s"audit-$jobId",
+              auditTableName = "audit",
+              selectSql = selectSql,
+              applicationId = jobId,
+              scheduledDate = scheduledDate,
+              accessToken = accessToken
+            )
           )
-          Some(context.toTask(engine))
       }
     } else {
       None
