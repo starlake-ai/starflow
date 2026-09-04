@@ -1,7 +1,11 @@
 package ai.starlake.utils
 
 import ai.starlake.config.Settings
-import ai.starlake.job.sink.bigquery.BigQueryJobBase.{getJsonKeyStream, getJsonKeyStreamFromBase64}
+import ai.starlake.job.sink.bigquery.BigQueryJobBase.{
+  getJsonKeyAbsoluteFile,
+  getJsonKeyStream,
+  getJsonKeyStreamFromBase64
+}
 import com.google.auth.Credentials
 import com.google.auth.oauth2.{
   AccessToken,
@@ -71,5 +75,76 @@ object GcpCredentials extends LazyLogging {
             scala.Option(cred)
         }
     }
+  }
+
+  /** Maps a connection's `authType` (as declared in the YAML config) onto the google.cloud.auth.*
+    * Hadoop properties the GCS connector reads.
+    *
+    * gcs-connector defaults `google.cloud.auth.type` to COMPUTE_ENGINE, so any Hadoop configuration
+    * that does not carry these keys ends up querying the GCE metadata server, which only exists on
+    * Google infrastructure.
+    */
+  def hadoopAuthConf(
+    connectionOptions: Map[String, String]
+  )(implicit settings: Settings): Map[String, String] = {
+    val authType = connectionOptions.getOrElse("authType", "APPLICATION_DEFAULT")
+    val authConf = authType match {
+      case "APPLICATION_DEFAULT" =>
+        Map(
+          "google.cloud.auth.type" -> "APPLICATION_DEFAULT"
+        )
+      /*
+          val gcpAccessToken =
+            GcpUtils.getCredentialUsingWellKnownFile().asInstanceOf[UserCredentials]
+
+          Map(
+            "google.cloud.auth.type"                   -> "USER_CREDENTIALS",
+            "google.cloud.auth.service.account.enable" -> "true",
+            "google.cloud.auth.client.id"              -> gcpAccessToken.getClientId,
+            "google.cloud.auth.client.secret"          -> gcpAccessToken.getClientSecret,
+            "google.cloud.auth.refresh.token"          -> gcpAccessToken.getRefreshToken
+          )
+
+       */
+      case "SERVICE_ACCOUNT_JSON_KEYFILE" =>
+        val jsonKeyFilename = connectionOptions.getOrElse(
+          "jsonKeyfile",
+          throw new Exception("jsonKeyfile attribute is required for SERVICE_ACCOUNT_JSON_KEYFILE")
+        )
+
+        val jsonKeyFile = getJsonKeyAbsoluteFile(jsonKeyFilename)
+        if (!jsonKeyFile.exists()) {
+          throw new Exception(s"jsonKeyfile $jsonKeyFilename does not exist")
+        }
+
+        Map(
+          "google.cloud.auth.type"                         -> "SERVICE_ACCOUNT_JSON_KEYFILE",
+          "google.cloud.auth.service.account.enable"       -> "true",
+          "google.cloud.auth.service.account.json.keyfile" -> jsonKeyFile.toString()
+        )
+      case "USER_CREDENTIALS" =>
+        val clientId = connectionOptions.getOrElse(
+          "clientId",
+          throw new Exception("clientId attribute is required for USER_CREDENTIALS")
+        )
+        val clientSecret = connectionOptions.getOrElse(
+          "clientSecret",
+          throw new Exception("clientSecret attribute is required for USER_CREDENTIALS")
+        )
+        val refreshToken = connectionOptions.getOrElse(
+          "refreshToken",
+          throw new Exception("refreshToken attribute is required for USER_CREDENTIALS")
+        )
+        Map(
+          "google.cloud.auth.type"                   -> "USER_CREDENTIALS",
+          "google.cloud.auth.service.account.enable" -> "true",
+          "google.cloud.auth.client.id"              -> clientId,
+          "google.cloud.auth.client.secret"          -> clientSecret,
+          "google.cloud.auth.refresh.token"          -> refreshToken
+        )
+      case _ =>
+        Map.empty[String, String]
+    }
+    authConf
   }
 }
