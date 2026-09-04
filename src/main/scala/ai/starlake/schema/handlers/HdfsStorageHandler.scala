@@ -22,6 +22,7 @@ package ai.starlake.schema.handlers
 
 import ai.starlake.config.Settings
 import ai.starlake.job.sink.bigquery.BigQueryJobBase
+import ai.starlake.utils.GcpCredentials
 import ai.starlake.utils.conversion.Conversions.convertToScalaIterator
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.*
@@ -41,68 +42,6 @@ class HdfsStorageHandler(fileSystem: String)(implicit
   settings: Settings
 ) extends StorageHandler {
   private var _connectionOptions = Map.empty[String, String]
-
-  private def gcpAuthConf(connectionOptions: Map[String, String]): Map[String, String] = {
-    val authType = connectionOptions.getOrElse("authType", "APPLICATION_DEFAULT")
-    val authConf = authType match {
-      case "APPLICATION_DEFAULT" =>
-        Map(
-          "google.cloud.auth.type" -> "APPLICATION_DEFAULT"
-        )
-      /*
-          val gcpAccessToken =
-            GcpUtils.getCredentialUsingWellKnownFile().asInstanceOf[UserCredentials]
-
-          Map(
-            "google.cloud.auth.type"                   -> "USER_CREDENTIALS",
-            "google.cloud.auth.service.account.enable" -> "true",
-            "google.cloud.auth.client.id"              -> gcpAccessToken.getClientId,
-            "google.cloud.auth.client.secret"          -> gcpAccessToken.getClientSecret,
-            "google.cloud.auth.refresh.token"          -> gcpAccessToken.getRefreshToken
-          )
-
-       */
-      case "SERVICE_ACCOUNT_JSON_KEYFILE" =>
-        val jsonKeyFilename = connectionOptions.getOrElse(
-          "jsonKeyfile",
-          throw new Exception("jsonKeyfile attribute is required for SERVICE_ACCOUNT_JSON_KEYFILE")
-        )
-
-        val jsonKeyFile = BigQueryJobBase.getJsonKeyAbsoluteFile(jsonKeyFilename)
-        if (!jsonKeyFile.exists()) {
-          throw new Exception(s"jsonKeyfile $jsonKeyFilename does not exist")
-        }
-
-        Map(
-          "google.cloud.auth.type"                         -> "SERVICE_ACCOUNT_JSON_KEYFILE",
-          "google.cloud.auth.service.account.enable"       -> "true",
-          "google.cloud.auth.service.account.json.keyfile" -> jsonKeyFile.toString()
-        )
-      case "USER_CREDENTIALS" =>
-        val clientId = connectionOptions.getOrElse(
-          "clientId",
-          throw new Exception("clientId attribute is required for USER_CREDENTIALS")
-        )
-        val clientSecret = connectionOptions.getOrElse(
-          "clientSecret",
-          throw new Exception("clientSecret attribute is required for USER_CREDENTIALS")
-        )
-        val refreshToken = connectionOptions.getOrElse(
-          "refreshToken",
-          throw new Exception("refreshToken attribute is required for USER_CREDENTIALS")
-        )
-        Map(
-          "google.cloud.auth.type"                   -> "USER_CREDENTIALS",
-          "google.cloud.auth.service.account.enable" -> "true",
-          "google.cloud.auth.client.id"              -> clientId,
-          "google.cloud.auth.client.secret"          -> clientSecret,
-          "google.cloud.auth.refresh.token"          -> refreshToken
-        )
-      case _ =>
-        Map.empty[String, String]
-    }
-    authConf
-  }
 
   private def gcpExtraConf(connectionOptions: Map[String, String]): Map[String, String] = {
     val gcpOptions = connectionOptions.filter { case (k, _) => k.startsWith("google.cloud") }
@@ -136,7 +75,7 @@ class HdfsStorageHandler(fileSystem: String)(implicit
           "fs.gs.impl"                    -> "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem"
         )
       }
-    val authConf = gcpAuthConf(connectionOptions)
+    val authConf = GcpCredentials.hadoopAuthConf(connectionOptions)
     fsConfig ++ authConf ++ gcpOptions
   }
 

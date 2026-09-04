@@ -20,6 +20,7 @@
 
 package ai.starlake.config
 
+import ai.starlake.utils.GcpCredentials
 import ai.starlake.utils.Utils
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.SparkConf
@@ -66,22 +67,8 @@ class SparkEnv private (
     if (!isSessionStarted()) {
       val conn = settings.appConfig.getDefaultConnection()
 
-      val isBigQuery = conn.isBigQuery()
-      if (isBigQuery) {
-        val projectId =
-          conn.options
-            .get("projectId")
-            .orElse(Option(com.google.cloud.ServiceOptions.getDefaultProjectId()))
-            .getOrElse(
-              throw new Exception(
-                "define the env variable GOOGLE_CLOUD_PROJECT or set projectId in the connection"
-              )
-            )
-
-        // This sets the billing project for BigQuery
-        config.set("parentProject", conn.options.getOrElse("parentProject", projectId))
-        // This helps if you are using the GCS connector
-        config.set("spark.hadoop.fs.gs.project.id", projectId)
+      if (conn.isBigQuery()) {
+        SparkEnv.bigQueryConf(conn).foreach { case (key, value) => config.set(key, value) }
       }
       val sysProps = System.getProperties()
       if (!SparkSessionBuilder.isSparkConnectActive) {
@@ -210,5 +197,33 @@ object SparkEnv {
       sparkEnv = new SparkEnv(name, settings.jobConf, settings.appConfig.datasets, confTransformer)
     }
     sparkEnv
+  }
+
+  /** Spark properties derived from a BigQuery connection.
+    *
+    * The authType declared on the connection is propagated to the GCS connector used by the Spark
+    * session: gcs-connector defaults `google.cloud.auth.type` to COMPUTE_ENGINE, so without these
+    * keys it queries the GCE metadata server, which only answers on Google infrastructure.
+    */
+  private[starlake] def bigQueryConf(
+    conn: ConnectionInfo
+  )(implicit settings: Settings): Map[String, String] = {
+    val projectId =
+      conn.options
+        .get("projectId")
+        .orElse(Option(com.google.cloud.ServiceOptions.getDefaultProjectId()))
+        .getOrElse(
+          throw new Exception(
+            "define the env variable GOOGLE_CLOUD_PROJECT or set projectId in the connection"
+          )
+        )
+    Map(
+      // This sets the billing project for BigQuery
+      "parentProject" -> conn.options.getOrElse("parentProject", projectId),
+      // This helps if you are using the GCS connector
+      "spark.hadoop.fs.gs.project.id" -> projectId
+    ) ++ GcpCredentials.hadoopAuthConf(conn.options).map { case (key, value) =>
+      s"spark.hadoop.$key" -> value
+    }
   }
 }
