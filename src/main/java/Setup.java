@@ -99,6 +99,14 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import ai.starlake.setup.Artifact;
+import ai.starlake.setup.DependencySync;
+import ai.starlake.setup.SyncPlan;
 
 public class Setup extends ProxySelector implements X509TrustManager {
 
@@ -1310,6 +1318,76 @@ public class Setup extends ProxySelector implements X509TrustManager {
                ).toArray(ResourceDependency[]::new);
                downloadAndDisplayProgress(dependencies, targetDir, true);
            }
+        }
+    }
+
+    /**
+     * Remote byte size of every enabled artifact, keyed by url, -1 when unknown.
+     *
+     * <p>Runs concurrently over a small fixed pool so the whole probe costs roughly one
+     * round trip rather than one per artifact. Never throws: a probe that fails yields -1,
+     * which the reconciler reads as "keep whatever is on disk", making a fully provisioned
+     * install an offline no-op.
+     */
+    private static Map<String, Long> probeAll(List<Artifact> artifacts) {
+        Map<String, Long> sizes = new ConcurrentHashMap<>();
+        List<Artifact> enabled = new ArrayList<>();
+        for (Artifact artifact : artifacts) {
+            if (artifact.enabled) {
+                enabled.add(artifact);
+            }
+        }
+        if (enabled.isEmpty()) {
+            return sizes;
+        }
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(8, enabled.size()));
+        try {
+            for (Artifact artifact : enabled) {
+                pool.submit(() -> sizes.put(artifact.url, probeSize(artifact.url)));
+            }
+            pool.shutdown();
+            if (!pool.awaitTermination(60, TimeUnit.SECONDS)) {
+                pool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            pool.shutdownNow();
+        }
+        return sizes;
+    }
+
+    /**
+     * Remote byte size of one url, or -1.
+     *
+     * <p>HEAD first; some mirrors answer 405 or omit Content-Length, so fall back to a
+     * one-byte ranged GET and read Content-Range. Uses the shared clientBuilder, so proxy,
+     * authenticator, SL_INSECURE and redirect handling match the download path exactly.
+     */
+    private static long probeSize(String url) {
+        try {
+            HttpClient probeClient = clientBuilder.followRedirects(HttpClient.Redirect.ALWAYS).build();
+            HttpRequest head = HttpRequest.newBuilder().uri(URI.create(url))
+                    .method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
+            HttpResponse<Void> headResponse = probeClient.send(head, HttpResponse.BodyHandlers.discarding());
+            if (headResponse.statusCode() == 200) {
+                long length = headResponse.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                if (length > 0) {
+                    return length;
+                }
+            }
+            HttpRequest ranged = HttpRequest.newBuilder().uri(URI.create(url))
+                    .header("Range", "bytes=0-0").GET().build();
+            HttpResponse<byte[]> rangedResponse = probeClient.send(ranged, HttpResponse.BodyHandlers.ofByteArray());
+            if (rangedResponse.statusCode() == 206) {
+                String contentRange = rangedResponse.headers().firstValue("Content-Range").orElse("");
+                int slash = contentRange.lastIndexOf('/');
+                if (slash >= 0 && slash < contentRange.length() - 1) {
+                    return Long.parseLong(contentRange.substring(slash + 1).trim());
+                }
+            }
+            return -1L;
+        } catch (Exception e) {
+            return -1L;
         }
     }
 
