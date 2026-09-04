@@ -17,7 +17,7 @@ import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import java.io.BufferedReader
 import java.nio.charset.Charset
 import java.sql.Connection
-import scala.util.{Try, Using}
+import scala.util.{Failure, Try, Using}
 
 class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   val settings: Settings
@@ -118,6 +118,14 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         val rejectedLines = tempTablesWithRejects.flatMap(_._2)
 
         try {
+          if (rejectThresholdBreached(rejectedLines.size)) {
+            // The target table has not been written yet at this point, so aborting here
+            // leaves it untouched. The temp tables are dropped by the finally block below.
+            throw new RejectThresholdExceededException(
+              rejectedLines,
+              s"${rejectedLines.size} rejected record(s) exceeds the allowed threshold"
+            )
+          }
           val unionTempTables = tempTables
             .map(s"SELECT * FROM ${domain.finalName}." + _)
             .mkString("(", " UNION ALL ", ")")
@@ -230,6 +238,11 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           jobid = ingestionJob.applicationId()
         )
       )
+    }.recoverWith { case e: RejectThresholdExceededException =>
+      // The load is going to fail, but the user still gets the replay file and the audit
+      // rejected rows so they can fix the input and load it again.
+      reportRejects(e.rejected)
+      Failure(e)
     }
   }
 
@@ -272,6 +285,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       )(settings, storageHandler)
     }
   }
+
+  /** A load is aborted when it produces more rejects than allowed, or any reject at all when the
+    * user asked for all or nothing.
+    */
+  private def rejectThresholdBreached(rejectedCount: Int): Boolean =
+    rejectedCount > settings.appConfig.rejectMaxRecords ||
+    (settings.appConfig.rejectAllOnError && rejectedCount > 0)
 
   private def computeEffectiveInputSchema(): SchemaInfo = {
     mergedMetadata.resolveFormat() match {
@@ -385,103 +405,107 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     // Create or update table schema first
     JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
       conn =>
-        // the two lines below are intentional to initialize the database
-        val stmtExternal = conn.createStatement()
-        stmtExternal.close()
-        val tableExists = JdbcDbUtils.tableExists(
-          conn,
-          sinkConnection.jdbcUrl,
-          domainAndTableName,
-          sinkConnection.getJdbcEngineName().toString
-        )
-        JdbcDbUtils.createSchema(conn, domain)
-        strategy.getEffectiveType() match {
-          case WriteStrategyType.APPEND =>
-            if (tableExists) {
-              SparkUtils.updateJdbcTableSchema(
-                "duckdb",
-                conn,
-                sinkConnection.options,
-                domainAndTableName,
-                incomingSparkSchema,
-                attrsWithDDLTypes.toMap
-              )
-            } else {
-              SparkUtils.createTable(
-                "duckdb",
-                conn,
-                domainAndTableName,
-                incomingSparkSchema,
-                caseSensitive = true,
-                temporaryTable = false,
-                optionsWrite,
-                ddlMap
-              )
-              if (!isTemporary) {
-                setPartition(conn, domainAndTableName)
-              }
-            }
-          case _ => //  WriteStrategyType.OVERWRITE or first step of other strategies
-            JdbcDbUtils.dropTable(conn, domainAndTableName)
-            SparkUtils.createTable(
-              "duckdb",
+        val previousAutoCommit = conn.getAutoCommit
+        conn.setAutoCommit(false)
+        val rejected =
+          try {
+            // the two lines below are intentional to initialize the database
+            val stmtExternal = conn.createStatement()
+            stmtExternal.close()
+            val tableExists = JdbcDbUtils.tableExists(
               conn,
+              sinkConnection.jdbcUrl,
               domainAndTableName,
-              incomingSparkSchema,
-              caseSensitive = true,
-              temporaryTable = false,
-              optionsWrite,
-              ddlMap
+              sinkConnection.getJdbcEngineName().toString
             )
-            if (!isTemporary) {
-              setPartition(conn, domainAndTableName)
-            }
-        }
-        val columnsString =
-          attrsWithDDLTypes
-            .map { case (attr, ddlType) =>
-              s"'$attr': '$ddlType'"
-            }
-            .mkString(", ")
-        val paths =
-          path
-            .map { p =>
-              val ps = p.toString
-              if (ps.startsWith("file:"))
-                StorageHandler.localFile(p).pathAsString
-              else if (ps.contains("://")) {
-                // For accessing secured storage like S3 with DuckDB HTTPFS extension,
-                // user needs to have created a secret with the proper configuration
-                JdbcDbUtils.execute("INSTALL httpfs;", conn)
-                JdbcDbUtils.execute("LOAD httpfs;", conn)
-                ps
-              } else {
-                ps
-              }
-            }
-            .mkString("['", "','", "']")
-        mergedMetadata.resolveFormat() match {
-          case Format.DSV =>
-            val nullstr =
-              if (Option(mergedMetadata.resolveNullValue()).isEmpty)
-                ""
-              else
-                s"nullstr = '${mergedMetadata.resolveNullValue()}',"
-            val options = mergedMetadata.getOptions()
-            val extraOptions =
-              if (options.nonEmpty)
-                options
-                  .map { case (k, v) =>
-                    s"$k = '$v'"
+            JdbcDbUtils.createSchema(conn, domain)
+            strategy.getEffectiveType() match {
+              case WriteStrategyType.APPEND =>
+                if (tableExists) {
+                  SparkUtils.updateJdbcTableSchema(
+                    "duckdb",
+                    conn,
+                    sinkConnection.options,
+                    domainAndTableName,
+                    incomingSparkSchema,
+                    attrsWithDDLTypes.toMap
+                  )
+                } else {
+                  SparkUtils.createTable(
+                    "duckdb",
+                    conn,
+                    domainAndTableName,
+                    incomingSparkSchema,
+                    caseSensitive = true,
+                    temporaryTable = false,
+                    optionsWrite,
+                    ddlMap
+                  )
+                  if (!isTemporary) {
+                    setPartition(conn, domainAndTableName)
                   }
-                  .mkString("", ",", ",")
-              else
-                ""
+                }
+              case _ => //  WriteStrategyType.OVERWRITE or first step of other strategies
+                JdbcDbUtils.dropTable(conn, domainAndTableName)
+                SparkUtils.createTable(
+                  "duckdb",
+                  conn,
+                  domainAndTableName,
+                  incomingSparkSchema,
+                  caseSensitive = true,
+                  temporaryTable = false,
+                  optionsWrite,
+                  ddlMap
+                )
+                if (!isTemporary) {
+                  setPartition(conn, domainAndTableName)
+                }
+            }
+            val columnsString =
+              attrsWithDDLTypes
+                .map { case (attr, ddlType) =>
+                  s"'$attr': '$ddlType'"
+                }
+                .mkString(", ")
+            val paths =
+              path
+                .map { p =>
+                  val ps = p.toString
+                  if (ps.startsWith("file:"))
+                    StorageHandler.localFile(p).pathAsString
+                  else if (ps.contains("://")) {
+                    // For accessing secured storage like S3 with DuckDB HTTPFS extension,
+                    // user needs to have created a secret with the proper configuration
+                    JdbcDbUtils.execute("INSTALL httpfs;", conn)
+                    JdbcDbUtils.execute("LOAD httpfs;", conn)
+                    ps
+                  } else {
+                    ps
+                  }
+                }
+                .mkString("['", "','", "']")
+            mergedMetadata.resolveFormat() match {
+              case Format.DSV =>
+                val nullstr =
+                  if (Option(mergedMetadata.resolveNullValue()).isEmpty)
+                    ""
+                  else
+                    s"nullstr = '${mergedMetadata.resolveNullValue()}',"
+                val options = mergedMetadata.getOptions()
+                val extraOptions =
+                  if (options.nonEmpty)
+                    options
+                      .map { case (k, v) =>
+                        s"$k = '$v'"
+                      }
+                      .mkString("", ",", ",")
+                  else
+                    ""
 
-            // store_rejects makes DuckDB skip and record malformed lines instead of
-            // aborting the whole INSERT. The rejected lines are read back below, on this
-            // same connection, because reject_errors is a session scoped temp table.
-            val sql = s"""INSERT INTO $domainAndTableName SELECT
+                // store_rejects makes DuckDB skip and record malformed lines instead of
+                // aborting the whole INSERT. The rejected lines are read back below, on this
+                // same connection, because reject_errors is a session scoped temp table.
+                val sql = s"""INSERT INTO $domainAndTableName SELECT
                | * FROM read_csv(
                | ${paths},
                | delim = '${mergedMetadata.resolveSeparator()}',
@@ -492,22 +516,22 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                | $nullstr
                | $extraOptions
                | columns = { $columnsString});""".stripMargin
-            JdbcDbUtils.execute(sql, conn)
-            DuckDbRejectCapture.captureCsvRejects(conn)
+                JdbcDbUtils.execute(sql, conn)
+                DuckDbRejectCapture.captureCsvRejects(conn)
 
-          case Format.POSITION =>
-            // Load each line of the fixed-width file as a single VARCHAR column named
-            // `value`. The field delimiter is set to SOH (\x01) — a control char
-            // vanishingly unlikely to appear in fixed-width data, so each line becomes
-            // one field. Quote and escape are disabled so any `"` or `\` in the data is
-            // treated as a literal byte. Same approach as the BigQuery native loader.
-            val skip =
-              if (mergedMetadata.resolveWithHeader()) "skip = 1," else ""
-            val encoding =
-              duckDbEncoding(mergedMetadata.resolveEncoding())
-                .map(enc => s"encoding = '$enc',")
-                .getOrElse("")
-            val sql = s"""INSERT INTO $domainAndTableName SELECT
+              case Format.POSITION =>
+                // Load each line of the fixed-width file as a single VARCHAR column named
+                // `value`. The field delimiter is set to SOH (\x01) — a control char
+                // vanishingly unlikely to appear in fixed-width data, so each line becomes
+                // one field. Quote and escape are disabled so any `"` or `\` in the data is
+                // treated as a literal byte. Same approach as the BigQuery native loader.
+                val skip =
+                  if (mergedMetadata.resolveWithHeader()) "skip = 1," else ""
+                val encoding =
+                  duckDbEncoding(mergedMetadata.resolveEncoding())
+                    .map(enc => s"encoding = '$enc',")
+                    .getOrElse("")
+                val sql = s"""INSERT INTO $domainAndTableName SELECT
                | * FROM read_csv(
                | ${paths},
                | delim = e'\\x01',
@@ -517,35 +541,59 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                | $skip
                | $encoding
                | columns = {'value': 'VARCHAR'});""".stripMargin
-            JdbcDbUtils.execute(sql, conn)
-            List.empty[RejectedLine]
+                JdbcDbUtils.execute(sql, conn)
+                List.empty[RejectedLine]
 
-          case Format.JSON_FLAT | Format.JSON =>
-            val format =
-              if (mergedMetadata.resolveArray()) "array"
-              else if (mergedMetadata.resolveMultiline())
-                "unstructured"
-              else
-                "newline_delimited"
-            if (schema.isFlat()) {
-              val sql =
-                s"""INSERT INTO  $domainAndTableName SELECT * FROM read_json($paths, format = '$format', columns = { $columnsString});"""
-              JdbcDbUtils.execute(sql, conn)
-            } else {
-              schema.attributes.head.primitiveType(schemaHandler) match {
-                case Some(PrimitiveType.variant) =>
+              case Format.JSON_FLAT | Format.JSON =>
+                val format =
+                  if (mergedMetadata.resolveArray()) "array"
+                  else if (mergedMetadata.resolveMultiline())
+                    "unstructured"
+                  else
+                    "newline_delimited"
+                if (schema.isFlat()) {
                   val sql =
-                    s"""INSERT INTO $domainAndTableName SELECT * FROM read_json_objects($paths, format = '$format');"""
+                    s"""INSERT INTO  $domainAndTableName SELECT * FROM read_json($paths, format = '$format', columns = { $columnsString});"""
                   JdbcDbUtils.execute(sql, conn)
-                case _ =>
-                  val sql =
-                    s"""INSERT INTO $domainAndTableName SELECT * FROM read_json($paths, auto_detect = true, format = '$format');"""
-                  JdbcDbUtils.execute(sql, conn)
-              }
+                } else {
+                  schema.attributes.head.primitiveType(schemaHandler) match {
+                    case Some(PrimitiveType.variant) =>
+                      val sql =
+                        s"""INSERT INTO $domainAndTableName SELECT * FROM read_json_objects($paths, format = '$format');"""
+                      JdbcDbUtils.execute(sql, conn)
+                    case _ =>
+                      val sql =
+                        s"""INSERT INTO $domainAndTableName SELECT * FROM read_json($paths, auto_detect = true, format = '$format');"""
+                      JdbcDbUtils.execute(sql, conn)
+                  }
+                }
+                List.empty[RejectedLine]
+              case _ => List.empty[RejectedLine]
             }
-            List.empty[RejectedLine]
-          case _ => List.empty[RejectedLine]
+          } catch {
+            case e: Throwable =>
+              Try(conn.rollback())
+              Try(conn.setAutoCommit(previousAutoCommit))
+              throw e
+          }
+        if (!isTemporary && rejectThresholdBreached(rejected.size)) {
+          // Read the rejects before rolling back: a ROLLBACK also discards the session
+          // scoped reject_errors table. The rejects have already been captured into
+          // Scala values above, so this is safe.
+          conn.rollback()
+          conn.setAutoCommit(previousAutoCommit)
+          throw new RejectThresholdExceededException(
+            rejected,
+            s"${rejected.size} rejected record(s) exceeds the allowed threshold"
+          )
         }
+        // Known limitation: SparkUtils.updateJdbcTableSchema (called above for the APPEND
+        // strategy) calls JdbcDbUtils.executeAlterTable, which issues its own commit().
+        // Schema changes are therefore not rolled back by the catch block above; only
+        // data changes are.
+        conn.commit()
+        conn.setAutoCommit(previousAutoCommit)
+        rejected
     }
   }
 }
