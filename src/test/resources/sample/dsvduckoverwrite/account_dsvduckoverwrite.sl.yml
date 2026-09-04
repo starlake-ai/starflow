@@ -1,0 +1,15 @@
+---
+version: 1
+table:
+  name: "account"
+  pattern: "XDSVREJECT.*"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "name"
+      type: "string"
+      required: true
+    - name: "amount"
+      type: "double"
+      required: false

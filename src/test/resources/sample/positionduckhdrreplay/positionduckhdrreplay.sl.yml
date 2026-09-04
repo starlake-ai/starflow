@@ -1,0 +1,11 @@
+---
+version: 1
+load:
+  name: "positionduckhdrreplay"
+  metadata:
+    directory: "__SL_TEST_ROOT__/positionduckhdrreplay"
+    format: "POSITION"
+    withHeader: true
+    loader: "native"
+    writeStrategy:
+      type: "APPEND"

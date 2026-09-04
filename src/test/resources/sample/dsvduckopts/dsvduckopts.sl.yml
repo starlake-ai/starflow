@@ -1,0 +1,14 @@
+---
+version: 1
+load:
+  name: "dsvduckopts"
+  metadata:
+    directory: "__SL_TEST_ROOT__/dsvduckopts"
+    format: "DSV"
+    separator: ";"
+    withHeader: true
+    loader: "native"
+    options:
+      ignore_errors: "false"
+    writeStrategy:
+      type: "APPEND"

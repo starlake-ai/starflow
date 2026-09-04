@@ -1,0 +1,12 @@
+---
+version: 1
+load:
+  name: "dsvduckreplayfail"
+  metadata:
+    directory: "__SL_TEST_ROOT__/dsvduckreplayfail"
+    format: "DSV"
+    separator: ";"
+    withHeader: true
+    loader: "native"
+    writeStrategy:
+      type: "APPEND"

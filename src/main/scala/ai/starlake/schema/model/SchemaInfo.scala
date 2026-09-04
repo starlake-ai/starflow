@@ -719,19 +719,11 @@ case class SchemaInfo(
 
     val isPosition = this.metadata.map(_.resolveFormat()).contains(Format.POSITION)
 
-    // The cast function is engine-specific: SAFE_CAST on BigQuery, TRY_CAST on
-    // DuckDB/Snowflake — callers pass the right one. A no-op cast to a string-like
-    // type is skipped for readability.
-    def isStringLikeDdlType(ddlType: String): Boolean = {
-      val upper = ddlType.trim.toUpperCase
-      upper == "STRING" || upper.startsWith("VARCHAR") || upper.startsWith("CHAR") ||
-      upper == "TEXT"
-    }
-
     // For POSITION, the first-step temp table has a single VARCHAR column named `value`
     // containing the raw fixed-width line. We project each attribute by slicing it,
     // optionally wrapped in SAFE_CAST so a short/malformed line yields NULL on bad cells
-    // instead of failing the entire INSERT.
+    // instead of failing the entire INSERT. The cast function is engine-specific: SAFE_CAST
+    // on BigQuery, TRY_CAST on DuckDB and Snowflake, and callers pass the right one.
     def positionProjection(field: TableAttribute): String = {
       val pos = field.position.getOrElse(
         throw new IllegalStateException(
@@ -742,7 +734,7 @@ case class SchemaInfo(
       val raw = s"SUBSTR(value, ${pos.first + 1}, $length)"
       val finalName = s"$attributeQuote${field.getFinalName()}$attributeQuote"
       ddlTypesByAttribute.get(field.name) match {
-        case Some(ddlType) if !isStringLikeDdlType(ddlType) =>
+        case Some(ddlType) if !SchemaInfo.isStringLikeDdlType(ddlType) =>
           s"$safeCastFunction($raw AS $ddlType) as $finalName"
         case _ =>
           s"$raw as $finalName"
@@ -857,6 +849,17 @@ case class SchemaInfo(
 object SchemaInfo {
 
   val SL_INTERNAL_TABLE = "SL_INTERNAL_TABLE"
+
+  /** True when a DDL type behaves like a string, so a cast to it in the second step projection
+    * would be a no-op. Shared by buildSecondStepSqlSelectOnLoad, where such a cast is skipped for
+    * readability, and by the DuckDB POSITION reject predicate, where such an attribute is not cast
+    * at all.
+    */
+  def isStringLikeDdlType(ddlType: String): Boolean = {
+    val upper = ddlType.trim.toUpperCase
+    upper == "STRING" || upper.startsWith("VARCHAR") || upper.startsWith("CHAR") ||
+    upper == "TEXT"
+  }
 
   def mapping(
     domainName: String,

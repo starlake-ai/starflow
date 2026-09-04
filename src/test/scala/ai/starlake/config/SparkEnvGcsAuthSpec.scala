@@ -4,9 +4,9 @@ import com.typesafe.config.{ConfigFactory, ConfigParseOptions}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** The GCS connector defaults google.cloud.auth.type to COMPUTE_ENGINE, so a Spark session
-  * that does not carry the connection's authType queries the GCE metadata server and fails
-  * anywhere outside Google infrastructure.
+/** The GCS connector defaults google.cloud.auth.type to COMPUTE_ENGINE, so a Spark session that
+  * does not carry the connection's authType queries the GCE metadata server and fails anywhere
+  * outside Google infrastructure.
   */
 class SparkEnvGcsAuthSpec extends AnyFlatSpec with Matchers {
 
