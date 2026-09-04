@@ -9,15 +9,14 @@ import scala.util.Using
 /** Reads back the lines DuckDB refused while loading.
   *
   * `reject_scans` and `reject_errors` are session scoped temporary tables populated by
-  * `read_csv(..., store_rejects = true)`. They only exist on the connection that ran the
-  * scan, and a ROLLBACK discards them, so they must be read on that same connection and
-  * before any rollback.
+  * `read_csv(..., store_rejects = true)`. They only exist on the connection that ran the scan, and
+  * a ROLLBACK discards them, so they must be read on that same connection and before any rollback.
   */
 object DuckDbRejectCapture extends LazyLogging {
 
-  /** DuckDB records one row per bad column, so a line with two bad columns yields two
-    * rows. The GROUP BY collapses them into one entry per input line, which keeps the
-    * resulting count comparable to the accepted row count.
+  /** DuckDB records one row per bad column, so a line with two bad columns yields two rows. The
+    * GROUP BY collapses them into one entry per input line, which keeps the resulting count
+    * comparable to the accepted row count.
     */
   private val captureCsvRejectsSql =
     """SELECT s.file_path AS file, e.line AS line, e.csv_line AS raw_line,
