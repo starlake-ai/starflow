@@ -132,6 +132,13 @@ class DuckDbNativeRejectSpec extends TestHelper {
           Some("account.sl.yml")
         )
 
+        // DatasetArea.replay("dsvduckreject") is the same directory for every WithSettings
+        // block in this spec (starlakeTestRoot is shared, and cleanMetadata does not touch
+        // it). This block never enables sinkReplayToFile, so nothing here writes a replay
+        // file, but clearing it anyway keeps this assertion self-contained rather than
+        // relying on running before the tests that do write one.
+        storageHandler.delete(DatasetArea.replay("dsvduckreject"))
+
         loadPending.isSuccess shouldBe true
 
         storageHandler
