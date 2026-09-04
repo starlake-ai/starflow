@@ -99,6 +99,14 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import ai.starlake.setup.Artifact;
+import ai.starlake.setup.DependencySync;
+import ai.starlake.setup.SyncPlan;
 
 public class Setup extends ProxySelector implements X509TrustManager {
 
@@ -290,6 +298,17 @@ public class Setup extends ProxySelector implements X509TrustManager {
     }
 
     private static final boolean ENABLE_API = envIsTrueWithDefaultTrue("ENABLE_API");
+
+    // Force restores the pre-diff behaviour for one run: everything is re-downloaded whatever
+    // is on disk. Probing is skipped entirely - there is no decision left to make, and the
+    // download itself still fails loudly if the network is down.
+    private static final boolean SL_FORCE_DOWNLOAD = envIsTrue("SL_FORCE_DOWNLOAD");
+    private static final boolean SL_DRY_RUN = envIsTrue("SL_DRY_RUN");
+
+    /** Remote sizes for a plan, or an empty map when forcing: nothing left to decide. */
+    private static Map<String, Long> sizesFor(List<Artifact> artifacts) {
+        return SL_FORCE_DOWNLOAD ? new java.util.HashMap<>() : probeAll(artifacts);
+    }
 
     private static final String SCALA_VERSION = getEnv("SCALA_VERSION").orElse("2.13");
 
@@ -511,9 +530,11 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     private static final ResourceDependency DUCKDB_JAR = new ResourceDependency("duckdb_jdbc", "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/" + DUCKDB_VERSION + "/duckdb_jdbc-" + DUCKDB_VERSION + ".jar");
     private static final ResourceDependency FLIGHT_SQL_JDBC_JAR = new ResourceDependency("flight-sql-jdbc-driver", "https://repo1.maven.org/maven2/org/apache/arrow/flight-sql-jdbc-driver/" + FLIGHT_SQL_JDBC_VERSION + "/flight-sql-jdbc-driver-" + FLIGHT_SQL_JDBC_VERSION + ".jar");
-    // Keep the artefact label "aws-java-sdk-bundle" (deleteDependencies matches on it by
-    // substring) so an in-place upgrade from a Spark 3 install still cleans up the old v1
-    // aws-java-sdk-bundle-*.jar before this v2 bundle-*.jar lands next to it.
+    // Keep the artefact label "aws-java-sdk-bundle": it is carried as a LEGACY ownership
+    // prefix (see toArtifacts) so an in-place upgrade from a Spark 3 install still cleans up
+    // the old v1 aws-java-sdk-bundle-*.jar. The v2 bundle-*.jar this actually downloads is
+    // owned by the prefix derived from the url instead - the label never matched it, which is
+    // why every AWS SDK bump used to leak the previous bundle.
     private static final ResourceDependency AWS_JAVA_SDK_JAR = new ResourceDependency("aws-java-sdk-bundle", "https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/" + AWS_JAVA_SDK_V2_VERSION + "/bundle-" + AWS_JAVA_SDK_V2_VERSION + ".jar");
     private static final ResourceDependency HADOOP_AWS_JAR = new ResourceDependency("hadoop-aws", "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/" + HADOOP_AWS_VERSION + "/hadoop-aws-" + HADOOP_AWS_VERSION + ".jar");
     private static final ResourceDependency REDSHIFT_JDBC_JAR = new ResourceDependency("redshift-jdbc42", "https://repo1.maven.org/maven2/com/amazon/redshift/redshift-jdbc42/" + REDSHIFT_JDBC_VERSION + "/redshift-jdbc42-" + REDSHIFT_JDBC_VERSION + ".jar");
@@ -1059,7 +1080,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
             }
 
             final File targetDir = new File(args[0]);
-            if (!targetDir.exists()) {
+            if (!targetDir.exists() && !SL_DRY_RUN) {
                 targetDir.mkdirs();
                 System.out.println("Created target directory " + targetDir.getAbsolutePath());
             }
@@ -1068,7 +1089,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
             final File binDir = new File(targetDir, "bin");
 
-            if (isWindowsOs()) {
+            // One plan across bin/deps, bin/sl and python-libs: the three roots are reconciled
+            // separately but printed and applied once, so the user sees a single diff and
+            // SL_DRY_RUN has exactly one place to bail out of.
+            SyncPlan overall = new SyncPlan();
+
+            if (isWindowsOs() && !SL_DRY_RUN) {
                 final File hadoopDir = new File(binDir, "hadoop");
                 final File hadoopBinDir = new File(hadoopDir, "bin");
                 deleteRecursively(hadoopDir);
@@ -1081,11 +1107,10 @@ public class Setup extends ProxySelector implements X509TrustManager {
             }
 
             File slDir = new File(binDir, "sl");
-            deleteRecursively(slDir);
             // SL_CORE_JAR points at a locally built assembly (CI docker builds, local dev):
             // install then works even when the release/pre-release does not exist yet.
             String localCoreJar = getEnv("SL_CORE_JAR").orElse(null);
-            if (localCoreJar != null) {
+            if (localCoreJar != null && !SL_DRY_RUN) {
                 File coreJar = new File(localCoreJar);
                 if (!coreJar.isFile()) {
                     throw new RuntimeException("SL_CORE_JAR is set but no file found at " + coreJar.getAbsolutePath());
@@ -1094,85 +1119,51 @@ public class Setup extends ProxySelector implements X509TrustManager {
                 java.nio.file.Files.copy(coreJar.toPath(), new File(slDir, coreJar.getName()).toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 System.out.println("Using local starlake-core jar " + coreJar.getAbsolutePath());
-            } else {
-                downloadAndDisplayProgress(new ResourceDependency[]{STARLAKE_RELEASE_JAR}, slDir, false);
+            } else if (localCoreJar == null) {
+                // No deleteRecursively here: the assembly is the single biggest download of the
+                // whole install (215 MB for 1.8.3), and re-fetching an identical jar on every run
+                // is what made `upgrade` feel like a fresh install. The reconciler still
+                // guarantees exactly one assembly in bin/sl - any other starlake-core jar is
+                // classified superseded. A non-jar file in bin/sl matches no ownership prefix and
+                // is left alone, which is deliberately narrower than the wipe it replaces.
+                List<Artifact> core =
+                        toArtifacts("Starflow core", new ResourceDependency[]{STARLAKE_RELEASE_JAR}, true);
+                overall.mergeFrom(
+                        DependencySync.reconcile(core, slDir, sizesFor(core), SL_FORCE_DOWNLOAD));
             }
 
-            if (ENABLE_API) {
+            if (ENABLE_API && !SL_DRY_RUN) {
                 downloadApi(targetDir);
             }
 
             File sparkDir = new File(binDir, "spark");
             // deleteRecursively(sparkDir);
-            if (!sparkDir.exists()) {
+            if (!sparkDir.exists() && !SL_DRY_RUN) {
                 downloadSpark(binDir);
             }
 
 
             File depsDir = new File(binDir, "deps");
 
-            deleteDependencies(deltaSparkDependencies, depsDir);
-            downloadAndDisplayProgress(deltaSparkDependencies, depsDir, true);
-
-            deleteDependencies(icebergSparkDependencies, depsDir);
-            downloadAndDisplayProgress(icebergSparkDependencies, depsDir, true);
-            updateSparkLog4j2Properties(sparkDir);
-
-            deleteDependencies(duckDbDependencies, depsDir);
-            if (ENABLE_DUCKDB) {
-                downloadAndDisplayProgress(duckDbDependencies, depsDir, true);
+            if (!SL_DRY_RUN) {
+                updateSparkLog4j2Properties(sparkDir);
             }
 
-            deleteDependencies(flightSqlDependencies, depsDir);
-            if (ENABLE_FLIGHTSQL) {
-                downloadAndDisplayProgress(flightSqlDependencies, depsDir, true);
-            }
+            List<Artifact> deps = depsArtifacts();
+            overall.mergeFrom(
+                    DependencySync.reconcile(deps, depsDir, sizesFor(deps), SL_FORCE_DOWNLOAD));
 
-            deleteDependencies(confluentDependencies, depsDir);
-            if (ENABLE_KAFKA) {
-                downloadAndDisplayProgress(confluentDependencies, depsDir, true);
-            }
+            overall.mergeFrom(downloadPythonLibs(new File(depsDir, "python-libs")));
 
-            deleteDependencies(redshiftDependencies, depsDir);
-            if (ENABLE_REDSHIFT) {
-                downloadAndDisplayProgress(redshiftDependencies, depsDir, true);
+            System.out.println(overall.render("Dependency plan for Starflow " + SL_VERSION
+                    + " (bin/deps, bin/sl, python-libs)"));
+            if (SL_DRY_RUN) {
+                // Deliberately before generateVersions: versions.sh is what starlake.sh's
+                // consistency check reads, so a dry run must not touch it.
+                System.out.println("SL_DRY_RUN is set: nothing downloaded, nothing deleted.");
+                return;
             }
-
-            deleteDependencies(bigqueryDependencies, depsDir);
-            if (ENABLE_BIGQUERY) {
-                downloadAndDisplayProgress(bigqueryDependencies, depsDir, true);
-            }
-
-            deleteDependencies(azureDependencies, depsDir);
-            if (ENABLE_AZURE) {
-                downloadAndDisplayProgress(azureDependencies, depsDir, true);
-            }
-
-            deleteDependencies(snowflakeDependencies, depsDir);
-            if (ENABLE_SNOWFLAKE) {
-                downloadAndDisplayProgress(snowflakeDependencies, depsDir, true);
-            }
-
-            deleteDependencies(postgresqlDependencies, depsDir);
-            if (ENABLE_POSTGRESQL) {
-                downloadAndDisplayProgress(postgresqlDependencies, depsDir, true);
-            }
-
-            deleteDependencies(mariadbDependencies, depsDir);
-            if (ENABLE_MARIADB) {
-                downloadAndDisplayProgress(mariadbDependencies, depsDir, true);
-            }
-
-            deleteDependencies(clickhouseDependencies, depsDir);
-            if (ENABLE_CLICKHOUSE) {
-                downloadAndDisplayProgress(clickhouseDependencies, depsDir, true);
-            }
-            deleteDependencies(trinodbDependencies, depsDir);
-            if (ENABLE_TRINODB) {
-                downloadAndDisplayProgress(trinodbDependencies, depsDir, true);
-            }
-
-            downloadPythonLibs(new File(depsDir, "python-libs"));
+            apply(overall);
 
 
 
@@ -1194,7 +1185,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
         // download no longer leaves the machine without an API.
 
         ResourceDependency apiZip = SL_API_RELEASE_ZIP;
-        downloadAndDisplayProgress(new ResourceDependency[]{apiZip}, binDir, false);
+        downloadAndDisplayProgress(new ResourceDependency[]{apiZip}, binDir);
         apiZip.getUrlNames().stream().map(zipName -> new File(binDir, zipName)).filter(File::exists).forEach(zipFile -> {
             try {
                 unzip(zipFile, binDir);
@@ -1265,7 +1256,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     public static void downloadSpark(File binDir) throws IOException, InterruptedException {
         ResourceDependency sparkJar = SPARK_JAR;
-        downloadAndDisplayProgress(new ResourceDependency[]{sparkJar}, binDir, false);
+        downloadAndDisplayProgress(new ResourceDependency[]{sparkJar}, binDir);
         sparkJar.getUrlNames().stream().map(tgzName -> new File(binDir, tgzName)).filter(File::exists).forEach(sparkFile -> {
             String tgzName = sparkFile.getName();
             ProcessBuilder builder = new ProcessBuilder("tar", "-xzf", sparkFile.getAbsolutePath(), "-C", binDir.getAbsolutePath()).inheritIO();
@@ -1285,56 +1276,191 @@ public class Setup extends ProxySelector implements X509TrustManager {
         });
     }
 
-    private static void downloadPythonLibs(File targetDir) throws IOException, InterruptedException {
-        if (!targetDir.exists()) {
+    private static SyncPlan downloadPythonLibs(File targetDir) throws IOException, InterruptedException {
+        if (!targetDir.exists() && !SL_DRY_RUN) {
             targetDir.mkdirs();
         }
+        // versions.txt IS the desired-state manifest, so it is always refetched. Under a dry
+        // run it goes to a temp file instead: refetching it into the tree would rewrite a real
+        // file, which is exactly what a dry run promises not to do.
         ResourceDependency versionsFile = new ResourceDependency("versions.txt", PYTHON_LIBS_URL + "versions.txt");
-        downloadAndDisplayProgress(versionsFile, (resource, url) -> new File(targetDir, "versions.txt"));
-        
-        File versionsTxt = new File(targetDir, "versions.txt");
-        if (versionsTxt.exists()) {
-            List<String> filesToDownload = new ArrayList<>();
-           try (BufferedReader br = new BufferedReader(new FileReader(versionsTxt))) {
-               String line;
-               while ((line = br.readLine()) != null) {
-                   String trimmedLine = line.trim();
-                   if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("#")) {
-                       filesToDownload.add(trimmedLine);
-                   }
-               }
-           }
-           if (!filesToDownload.isEmpty()) {
-               ResourceDependency[] dependencies = filesToDownload.stream().map(fileName -> 
-                   new ResourceDependency(fileName, PYTHON_LIBS_URL + fileName)
-               ).toArray(ResourceDependency[]::new);
-               downloadAndDisplayProgress(dependencies, targetDir, true);
-           }
+        final File versionsTxt = SL_DRY_RUN
+                ? File.createTempFile("sl-python-versions", ".txt")
+                : new File(targetDir, "versions.txt");
+        if (SL_DRY_RUN) {
+            versionsTxt.deleteOnExit();
+        }
+        downloadAndDisplayProgress(versionsFile, (resource, url) -> versionsTxt);
+
+        if (!versionsTxt.exists()) {
+            return new SyncPlan();
+        }
+        List<String> filesToDownload = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(versionsTxt))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String trimmedLine = line.trim();
+                if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("#")) {
+                    filesToDownload.add(trimmedLine);
+                }
+            }
+        }
+        if (filesToDownload.isEmpty()) {
+            return new SyncPlan();
+        }
+        // Ownership must come from the wheel's DISTRIBUTION name, not its full file name.
+        // Building a ResourceDependency whose artefactName was the versioned file name meant
+        // the old cleanup only ever matched the identical name, so every wheel bump left the
+        // previous version behind and python-libs grew without bound.
+        List<Artifact> wheels = new ArrayList<>();
+        for (String fileName : filesToDownload) {
+            String url = PYTHON_LIBS_URL + fileName;
+            wheels.add(new Artifact("Python libs", fileName, url,
+                    Collections.singletonList(DependencySync.derivePrefix(url, fileName)), true));
+        }
+        return DependencySync.reconcile(wheels, targetDir, sizesFor(wheels), SL_FORCE_DOWNLOAD);
+    }
+
+    /**
+     * Turn a dependency category into plain Artifacts.
+     *
+     * <p>Two ownership prefixes per artifact. The DERIVED one (from the url) owns the
+     * artifact's own superseded versions - it is the only one that matches for the AWS SDK,
+     * whose label is "aws-java-sdk-bundle" but whose file is bundle-&lt;version&gt;.jar, so
+     * without it every SDK bump leaked the previous bundle. The LEGACY one is today's
+     * artefactName, kept because a few labels deliberately match a PREVIOUS major's file
+     * name: "aws-java-sdk-bundle" cleans up the Spark 3 v1 jar, "bigquery-with-dependencies"
+     * cleans up spark-bigquery-with-dependencies_2.13-*.jar.
+     */
+    private static List<Artifact> toArtifacts(String label, ResourceDependency[] deps, boolean enabled) {
+        List<Artifact> artifacts = new ArrayList<>();
+        for (ResourceDependency dep : deps) {
+            String url = dep.urls[0];
+            String fileName = dep.getUrlName(url);
+            List<String> prefixes = new ArrayList<>();
+            prefixes.add(DependencySync.derivePrefix(url, fileName));
+            if (!prefixes.contains(dep.artefactName)) {
+                prefixes.add(dep.artefactName);
+            }
+            artifacts.add(new Artifact(label, fileName, url, prefixes, enabled));
+        }
+        return artifacts;
+    }
+
+    /** Every artifact that belongs in bin/deps, enabled and disabled alike. */
+    private static List<Artifact> depsArtifacts() {
+        List<Artifact> all = new ArrayList<>();
+        all.addAll(toArtifacts("Delta", deltaSparkDependencies, true));
+        all.addAll(toArtifacts("Iceberg", icebergSparkDependencies, true));
+        all.addAll(toArtifacts("DuckDB", duckDbDependencies, ENABLE_DUCKDB));
+        all.addAll(toArtifacts("FlightSQL", flightSqlDependencies, ENABLE_FLIGHTSQL));
+        all.addAll(toArtifacts("Kafka", confluentDependencies, ENABLE_KAFKA));
+        all.addAll(toArtifacts("Redshift", redshiftDependencies, ENABLE_REDSHIFT));
+        all.addAll(toArtifacts("BigQuery", bigqueryDependencies, ENABLE_BIGQUERY));
+        all.addAll(toArtifacts("Azure", azureDependencies, ENABLE_AZURE));
+        all.addAll(toArtifacts("Snowflake", snowflakeDependencies, ENABLE_SNOWFLAKE));
+        all.addAll(toArtifacts("Postgres", postgresqlDependencies, ENABLE_POSTGRESQL));
+        all.addAll(toArtifacts("Mariadb", mariadbDependencies, ENABLE_MARIADB));
+        all.addAll(toArtifacts("Clickhouse", clickhouseDependencies, ENABLE_CLICKHOUSE));
+        all.addAll(toArtifacts("Trino", trinodbDependencies, ENABLE_TRINODB));
+        return all;
+    }
+
+    /** Deletions first, so a superseded jar is gone before its replacement lands. */
+    private static void apply(SyncPlan plan) throws IOException, InterruptedException {
+        for (SyncPlan.Deletion deletion : plan.getToDelete()) {
+            deleteFile(deletion.file);
+        }
+        for (SyncPlan.Download download : plan.getToDownload()) {
+            File parent = download.target.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            // fileName, not label: downloadAndDisplayProgress prints the artefact name, and
+            // "Downloading postgresql-42.7.11.jar..." is what the user needs to see, not
+            // "Downloading Postgres..." repeated once per jar in the category.
+            downloadAndDisplayProgress(
+                    new ResourceDependency(download.artifact.fileName, download.artifact.url),
+                    (resource, url) -> download.target);
         }
     }
 
-    private static void downloadAndDisplayProgress(ResourceDependency[] dependencies, File targetDir, boolean replaceJar) throws IOException, InterruptedException {
+    /**
+     * Remote byte size of every enabled artifact, keyed by url, -1 when unknown.
+     *
+     * <p>Runs concurrently over a small fixed pool so the whole probe costs roughly one
+     * round trip rather than one per artifact. Never throws: a probe that fails yields -1,
+     * which the reconciler reads as "keep whatever is on disk", making a fully provisioned
+     * install an offline no-op.
+     */
+    private static Map<String, Long> probeAll(List<Artifact> artifacts) {
+        Map<String, Long> sizes = new ConcurrentHashMap<>();
+        List<Artifact> enabled = new ArrayList<>();
+        for (Artifact artifact : artifacts) {
+            if (artifact.enabled) {
+                enabled.add(artifact);
+            }
+        }
+        if (enabled.isEmpty()) {
+            return sizes;
+        }
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(8, enabled.size()));
+        try {
+            for (Artifact artifact : enabled) {
+                pool.submit(() -> sizes.put(artifact.url, probeSize(artifact.url)));
+            }
+            pool.shutdown();
+            if (!pool.awaitTermination(60, TimeUnit.SECONDS)) {
+                pool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            pool.shutdownNow();
+        }
+        return sizes;
+    }
+
+    /**
+     * Remote byte size of one url, or -1.
+     *
+     * <p>HEAD first; some mirrors answer 405 or omit Content-Length, so fall back to a
+     * one-byte ranged GET and read Content-Range. Uses the shared clientBuilder, so proxy,
+     * authenticator, SL_INSECURE and redirect handling match the download path exactly.
+     */
+    private static long probeSize(String url) {
+        try {
+            HttpClient probeClient = clientBuilder.followRedirects(HttpClient.Redirect.ALWAYS).build();
+            HttpRequest head = HttpRequest.newBuilder().uri(URI.create(url))
+                    .method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
+            HttpResponse<Void> headResponse = probeClient.send(head, HttpResponse.BodyHandlers.discarding());
+            if (headResponse.statusCode() == 200) {
+                long length = headResponse.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                if (length > 0) {
+                    return length;
+                }
+            }
+            HttpRequest ranged = HttpRequest.newBuilder().uri(URI.create(url))
+                    .header("Range", "bytes=0-0").GET().build();
+            HttpResponse<byte[]> rangedResponse = probeClient.send(ranged, HttpResponse.BodyHandlers.ofByteArray());
+            if (rangedResponse.statusCode() == 206) {
+                String contentRange = rangedResponse.headers().firstValue("Content-Range").orElse("");
+                int slash = contentRange.lastIndexOf('/');
+                if (slash >= 0 && slash < contentRange.length() - 1) {
+                    return Long.parseLong(contentRange.substring(slash + 1).trim());
+                }
+            }
+            return -1L;
+        } catch (Exception e) {
+            return -1L;
+        }
+    }
+
+    private static void downloadAndDisplayProgress(ResourceDependency[] dependencies, File targetDir) throws IOException, InterruptedException {
         if (!targetDir.exists()) {
             targetDir.mkdirs();
-        }
-        if (replaceJar) {
-            deleteDependencies(dependencies, targetDir);
         }
         for (ResourceDependency dependency : dependencies) {
             downloadAndDisplayProgress(dependency, (resource, url) -> new File(targetDir, resource.getUrlName(url)));
-        }
-    }
-
-    private static void deleteDependencies(ResourceDependency[] dependencies, File targetDir) {
-        if (targetDir.exists()) {
-            for (ResourceDependency dependency : dependencies) {
-                File[] files = targetDir.listFiles(f -> f.getPath().contains(dependency.artefactName));
-                if (files != null) {
-                    for (File file : files) {
-                        deleteFile(file);
-                    }
-                }
-            }
         }
     }
 
@@ -1360,6 +1486,8 @@ public class Setup extends ProxySelector implements X509TrustManager {
         try {
             client = clientBuilder.followRedirects(HttpClient.Redirect.ALWAYS).build();
             boolean succesfullyDownloaded = false;
+            long downloadedBytes = 0;
+            long expectedBytes = 0;
             List<String> triedUrlList = new ArrayList<>();
             System.out.println("Downloading " + resource.artefactName + "...");
             for (String urlStr : resource.urls) {
@@ -1415,6 +1543,32 @@ public class Setup extends ProxySelector implements X509TrustManager {
                         }
                         System.out.print(file.getAbsolutePath() + " succesfully downloaded from " + urlFolder);
                         System.out.println();
+                        // A truncated download used to be accepted silently and only showed up much
+                        // later as a ClassNotFoundException. It must fail here now for a second
+                        // reason too: the sync plan decides a file is up to date from its size, so a
+                        // short file would otherwise cache itself as valid forever.
+                        if (lengthOfFile > 0 && total != lengthOfFile) {
+                            downloadedBytes = total;
+                            expectedBytes = lengthOfFile;
+                        }
+                    } catch (IOException e) {
+                        // The stream died mid-copy (the JDK raises this itself when a server
+                        // closes before delivering the Content-Length it promised). The bytes
+                        // already written must not survive: the sync plan decides a file is up
+                        // to date from its size, and a partial jar left here would otherwise be
+                        // re-checked against a remote size it can never match, or worse, match
+                        // by coincidence. Try-with-resources has closed the stream by now, so
+                        // the delete also succeeds on Windows.
+                        deleteFile(file);
+                        throw e;
+                    }
+                    // Outside the try-with-resources: the stream has to be closed before the
+                    // partial file can be deleted on Windows.
+                    if (expectedBytes > 0) {
+                        deleteFile(file);
+                        throw new RuntimeException("Incomplete download of " + resource.artefactName + " from " + urlStr
+                                + ": got " + downloadedBytes + " bytes, expected " + expectedBytes
+                                + ". The partial file was removed; run the installation again.");
                     }
                     succesfullyDownloaded = true;
                     break;
@@ -1427,7 +1581,8 @@ public class Setup extends ProxySelector implements X509TrustManager {
                 throw new RuntimeException("Failed to fetch " + resource.artefactName + " from " + triedUrls);
             }
         }  catch (IOException | InterruptedException e) {
-            System.out.println("Failed to download " + resource.artefactName + " from " + resource.urls);
+            System.out.println("Failed to download " + resource.artefactName + " from "
+                    + String.join(", ", resource.urls));
             throw e;
         }
         finally {

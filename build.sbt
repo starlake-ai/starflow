@@ -314,7 +314,7 @@ packageSetup := {
   // depend on compile so the jar never packages stale Setup.class files
   val _ = (Compile / compile).value
   import java.nio.file.Paths
-  def zipFile(from: List[java.nio.file.Path], to: java.nio.file.Path): Unit = {
+  def zipFile(from: List[java.nio.file.Path], to: java.nio.file.Path, base: java.nio.file.Path): Unit = {
     import java.util.jar.Manifest
     val manifest = new Manifest()
     manifest.getMainAttributes().putValue("Manifest-Version", "1.0")
@@ -322,18 +322,37 @@ packageSetup := {
     manifest.getMainAttributes().putValue("Implementation-Vendor", "starlake")
     manifest.getMainAttributes().putValue("Compiler-Version", javacCompilerVersion)
 
-    IO.jar(from.map(f => f.toFile -> f.toFile.getName()), to.toFile, manifest)
+    // relativize against the classes dir: `getName` alone flattens ai/starlake/setup/X.class
+    // to X.class, which the JVM then refuses to load as ai.starlake.setup.X
+    IO.jar(from.map(f => f.toFile -> base.relativize(f).toString.replace('\\', '/')), to.toFile, manifest)
 
   }
   val scalaMajorVersion = scalaVersion.value.split('.').take(2).mkString(".")
-  val setupClass = Paths.get(s"target/scala-$scalaMajorVersion/classes/Setup.class")
-  val setupAuthenticatorClass = Paths.get(s"target/scala-$scalaMajorVersion/classes/Setup$$UserPwdAuth.class")
-  val setupJarDependencyClass = Paths.get(s"target/scala-$scalaMajorVersion/classes/Setup$$ResourceDependency.class")
+  val classesDir = Paths.get(s"target/scala-$scalaMajorVersion/classes")
+  // Scan instead of naming class files one by one: nested classes (SyncPlan$Download, ...)
+  // are created by the compiler as the installer grows, and a hardcoded list silently omits
+  // them - setup.jar then fails at run time with NoClassDefFoundError. Paths are kept
+  // RELATIVE to classesDir so classes in a real package land under their package directory
+  // inside the jar.
+  val setupClasses: List[java.nio.file.Path] = {
+    val root = classesDir.resolve("Setup.class")
+    val nested = IO
+      .listFiles(classesDir.toFile)
+      .filter(f => f.getName.startsWith("Setup$") && f.getName.endsWith(".class"))
+      .map(_.toPath)
+      .toList
+    val packaged = {
+      val pkgDir = classesDir.resolve("ai/starlake/setup").toFile
+      if (pkgDir.isDirectory)
+        IO.listFiles(pkgDir).filter(_.getName.endsWith(".class")).map(_.toPath).toList
+      else Nil
+    }
+    (root :: nested ::: packaged).sorted
+  }
+  if (!setupClasses.exists(_.endsWith("Setup.class")))
+    sys.error(s"Setup.class not found under $classesDir - run `sbt compile` first")
   val to = Paths.get("distrib/setup.jar")
-  zipFile(
-    List(setupClass, setupAuthenticatorClass, setupJarDependencyClass),
-    to
-  )
+  zipFile(setupClasses, to, classesDir)
 }
 
 val syncPythonLibs = Def.taskKey[Unit](
