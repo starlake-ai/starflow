@@ -170,6 +170,73 @@ class DuckDbNativeRejectSpec extends TestHelper {
     }
   }
 
+  lazy val duckDbJinjaConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_jinja_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbJinjaConfiguration) {
+
+    // DuckDB embeds the offending value verbatim in its CSV error messages, so input data
+    // reaches the Jinja pass that AutoTask runs on the audit SELECT (parseSQL = true). The
+    // input line below carries {{ANUM}}, which that pass used to resolve as an unknown
+    // variable and replace with the empty string, silently rewriting the recorded error.
+    "Native DuckDB load of a DSV line containing Jinja delimiters" should
+    "record it in the audit rejected table without failing the load" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckjinja/dsvduckjinja.sl.yml",
+        datasetDomainName = "dsvduckjinja",
+        sourceDatasetPathName = "/sample/dsvduckjinja/XDSVJINJATBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckjinja",
+          "/sample/dsvduckjinja/account_dsvduckjinja.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+
+        val names = queryDuckDb("SELECT name FROM dsvduckjinja.account ORDER BY name") { rs =>
+          val buf = scala.collection.mutable.ListBuffer[String]()
+          while (rs.next()) buf += rs.getString("name")
+          buf.toList
+        }
+        names shouldBe List("alice", "carol")
+        result.get.counters.get.rejectedCount shouldBe 1
+
+        val jobid = result.get.counters.get.jobid.stripPrefix(",")
+        val errors = queryAudit(
+          s"SELECT error FROM audit.rejected WHERE domain = 'dsvduckjinja' AND jobid = '$jobid'"
+        ) { rs =>
+          val buf = scala.collection.mutable.ListBuffer[String]()
+          while (rs.next()) buf += rs.getString("error")
+          buf.toList
+        }
+
+        errors.size shouldBe 1
+        // the escaping strips the braces and turns the single quote into a dash, so the value
+        // the engine reported survives in a form the Jinja pass cannot act on. Without it the
+        // Jinja pass eats {{ANUM}} and the row reads NOTX-Y.
+        errors.head should include("NOTANUMX-Y")
+        errors.head should not include "{{"
+      }
+    }
+  }
+
   lazy val duckDbReplayConfiguration: Config = {
     val config = ConfigFactory.parseString(
       s"""

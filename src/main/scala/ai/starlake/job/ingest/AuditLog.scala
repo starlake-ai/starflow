@@ -105,8 +105,7 @@ case class AuditLog(
 
   def asSelect(engineName: Engine)(implicit settings: Settings): String = {
     import ai.starlake.utils.Formatter._
-    def replaceQuote(s: String): String =
-      s.replaceAll("'", "-").replaceAll("\n", " ").replaceAll("\\{\\{", "").replaceAll("}}", "")
+    def replaceQuote(s: String): String = AuditTaskBuilder.escapeLiteral(s)
     timestamp.setNanos(0)
     val template: String = AuditLog.selectTemplate(engineName)
     val selectStatement = template.richFormat(

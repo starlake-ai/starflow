@@ -1,8 +1,10 @@
 package ai.starlake.job.ingest.loaders
 
 import ai.starlake.config.Settings
-import ai.starlake.job.ingest.AuditTaskBuilder
+import ai.starlake.job.ingest.{AuditTaskBuilder, RejectedRecord}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
+import ai.starlake.schema.model.ConnectionType
+import ai.starlake.utils.GcpUtils
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 
@@ -14,12 +16,6 @@ import scala.util.{Failure, Success, Try}
   * sink a native load can target.
   */
 object NativeRejectedSink extends LazyLogging {
-
-  /** Values are inlined into the SQL, so quotes and newlines are neutralized the same way AuditLog
-    * does it.
-    */
-  private def literal(value: String): String =
-    value.replaceAll("'", "-").replaceAll("\n", " ")
 
   def sink(
     applicationId: String,
@@ -46,33 +42,59 @@ object NativeRejectedSink extends LazyLogging {
       val rejectedPathName = paths.map(_.toString).mkString(",")
       val auditTimestamp = new Timestamp(timestamp.getTime)
       auditTimestamp.setNanos(0)
-      val selectSql = limited
-        .map { line =>
-          val location = line.line.map(l => s"${line.file}:$l").getOrElse(line.file)
-          val error = literal(s"$location: ${line.error}")
-          s"""SELECT '${literal(applicationId)}' AS JOBID,
-             |  CAST('${auditTimestamp.toString}' AS TIMESTAMP) AS TIMESTAMP,
-             |  '${literal(domainName)}' AS DOMAIN,
-             |  '${literal(tableName)}' AS SCHEMA,
-             |  '$error' AS ERROR,
-             |  '${literal(rejectedPathName)}' AS PATH""".stripMargin
-        }
-        .mkString("\nUNION ALL\n")
+      val records = limited.map { line =>
+        val location = line.line.map(l => s"${line.file}:$l").getOrElse(line.file)
+        RejectedRecord(
+          jobid = applicationId,
+          timestamp = auditTimestamp,
+          domain = domainName,
+          schema = tableName,
+          error = s"$location: ${line.error}",
+          path = rejectedPathName
+        )
+      }
 
-      val task = AuditTaskBuilder.buildTask(
-        name = s"rejected-$applicationId-$domainName-$tableName",
-        auditTableName = "rejected",
-        selectSql = selectSql,
-        applicationId = applicationId,
-        scheduledDate = scheduledDate,
-        accessToken = accessToken
-      )
+      settings.appConfig.audit.getSink().getConnectionType() match {
+        case ConnectionType.GCPLOG =>
+          // Cloud Logging is not a SQL sink, so the rows are sent as log entries instead of
+          // being inlined into a SELECT. Same routing, log name and payload shape as
+          // IngestionUtil.sinkRejected, which is the Spark equivalent of this sink.
+          GcpUtils.sinkToGcpCloudLogging(
+            records.map(_.asMap()),
+            "rejected",
+            settings.appConfig.audit.getDomainRejected()
+          )
 
-      task.run() match {
-        case Success(_) => ()
-        case Failure(e) =>
-          logger.error("Failed to write the audit rejected rows", e)
-          throw e
+        case _ =>
+          // Values are inlined into the SQL, so they go through the same escaping as AuditLog.
+          // DuckDB embeds the offending value verbatim in its error messages, so arbitrary
+          // input data reaches the Jinja pass AutoTask runs on this statement.
+          val selectSql = records
+            .map { record =>
+              s"""SELECT '${AuditTaskBuilder.escapeLiteral(record.jobid)}' AS JOBID,
+                 |  CAST('${record.timestamp.toString}' AS TIMESTAMP) AS TIMESTAMP,
+                 |  '${AuditTaskBuilder.escapeLiteral(record.domain)}' AS DOMAIN,
+                 |  '${AuditTaskBuilder.escapeLiteral(record.schema)}' AS SCHEMA,
+                 |  '${AuditTaskBuilder.escapeLiteral(record.error)}' AS ERROR,
+                 |  '${AuditTaskBuilder.escapeLiteral(record.path)}' AS PATH""".stripMargin
+            }
+            .mkString("\nUNION ALL\n")
+
+          val task = AuditTaskBuilder.buildTask(
+            name = s"rejected-$applicationId-$domainName-$tableName",
+            auditTableName = "rejected",
+            selectSql = selectSql,
+            applicationId = applicationId,
+            scheduledDate = scheduledDate,
+            accessToken = accessToken
+          )
+
+          task.run() match {
+            case Success(_) => ()
+            case Failure(e) =>
+              logger.error("Failed to write the audit rejected rows", e)
+              throw e
+          }
       }
     }
   }

@@ -35,6 +35,18 @@ import ai.starlake.schema.model.{AutoTaskInfo, Engine}
   */
 object AuditTaskBuilder {
 
+  /** Neutralizes a value that is inlined into an audit SELECT. Quotes and newlines would break the
+    * literal, and `{{` or `}}` would be picked up by the Jinja pass that AutoTask runs on the SQL
+    * before executing it, since the task is built with `parseSQL = true`. Shared by every caller of
+    * `buildTask` so the two escapings cannot drift apart.
+    */
+  def escapeLiteral(value: String): String =
+    value
+      .replaceAll("'", "-")
+      .replaceAll("\\n", " ")
+      .replaceAll("\\{\\{", "")
+      .replaceAll("}}", "")
+
   /** @param name
     *   Name of the AutoTask, unique per caller.
     * @param auditTableName
