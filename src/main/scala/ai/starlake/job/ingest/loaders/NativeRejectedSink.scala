@@ -10,14 +10,14 @@ import org.apache.hadoop.fs.Path
 import java.sql.Timestamp
 import scala.util.{Failure, Success, Try}
 
-/** Writes rejected input lines into the audit `rejected` table without Spark, by running a
-  * literal SELECT ... UNION ALL through an AutoTask. Same approach as AuditLog, so it works
-  * for every audit sink a native load can target.
+/** Writes rejected input lines into the audit `rejected` table without Spark, by running a literal
+  * SELECT ... UNION ALL through an AutoTask. Same approach as AuditLog, so it works for every audit
+  * sink a native load can target.
   */
 object NativeRejectedSink extends LazyLogging {
 
-  /** Values are inlined into the SQL, so quotes and newlines are neutralized the same way
-    * AuditLog does it.
+  /** Values are inlined into the SQL, so quotes and newlines are neutralized the same way AuditLog
+    * does it.
     */
   private def literal(value: String): String =
     value.replaceAll("'", "-").replaceAll("\n", " ")
