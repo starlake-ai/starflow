@@ -42,8 +42,8 @@ Checked against the DuckDB CLI 1.5.4 (the project pins `duckdb_jdbc` 1.5.5.1 in
 * `reject_scans` maps `scan_id` and `file_id` to `file_path`.
 * `reject_scans` and `reject_errors` are session scoped temporary tables, so they must be
   queried on the same JDBC connection that ran the `read_csv`.
-* `ROLLBACK` also discards `reject_errors`. Rejects must be materialized into Scala values
-  before any rollback.
+* `ROLLBACK` also discards `reject_errors`. Rejects must be read off that connection, and
+  counted and spilled, before any rollback.
 * DDL (`CREATE SCHEMA`, `DROP TABLE`, `CREATE TABLE`), `INSTALL httpfs` / `LOAD httpfs`
   and the `read_csv` INSERT all coexist inside one transaction, and `ROLLBACK` correctly
   undoes the DDL.
@@ -95,7 +95,7 @@ remains a Spark mode guarantee.
 case class RejectedLine(file: String, line: Long, rawLine: String, error: String)
 ```
 
-`captureCsvRejects(conn: Connection): List[RejectedLine]` runs immediately after the
+`captureCsvRejects(conn: Connection): RejectCapture` runs immediately after the
 `read_csv` INSERT, on the same connection:
 
 ```sql
@@ -109,7 +109,14 @@ GROUP BY 1, 2, 3
 The `GROUP BY` collapses DuckDB's one row per bad column into one row per input line, so
 the resulting count is comparable to `acceptedCount`.
 
-`capturePositionRejects(conn, tempTable, schema, ddlTypes): List[RejectedLine]` builds a
+A load that reads a huge file with the wrong delimiter rejects every line of it, so nothing
+the capture keeps may grow with the number of rejects. `RejectCapture` holds an exact
+`count`, taken from a `SELECT count(*)` over the same query; a `sample` of at most
+`audit.maxErrors` `RejectedLine`s, which is all the audit rejected table can hold anyway;
+and the local temporary `spillFiles` every raw line was streamed into, one per line
+terminated by `\n`, which the replay writer transcodes straight to its output.
+
+`capturePositionRejects(conn, tempTable, schema, ddlTypes): RejectCapture` builds a
 boolean predicate from the attribute positions and DDL types:
 
 ```sql
@@ -158,7 +165,7 @@ DSV, single step (`singleStepLoad` writing directly to the target):
 
 ```
 BEGIN -> DDL -> INSERT ... read_csv(..., store_rejects = true) -> captureCsvRejects
-      -> threshold check -> COMMIT, or materialize rejects then ROLLBACK
+      -> threshold check -> COMMIT, or capture rejects then ROLLBACK
 ```
 
 DSV, two steps: `store_rejects` fires on each per path temp table load. Each call returns

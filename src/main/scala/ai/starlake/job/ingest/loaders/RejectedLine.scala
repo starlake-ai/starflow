@@ -15,8 +15,8 @@ package ai.starlake.job.ingest.loaders
 case class RejectedLine(file: String, line: Option[Long], rawLine: String, error: String)
 
 /** Thrown when the number of rejected lines breaches `rejectMaxRecords`, or when `rejectAllOnError`
-  * is set and there is at least one reject. It carries the rejected lines so the caller can still
-  * write the replay file and the audit rejected rows before failing the load.
+  * is set and there is at least one reject. It carries the capture so the caller can still write
+  * the replay file and the audit rejected rows before failing the load.
   */
-class RejectThresholdExceededException(val rejected: List[RejectedLine], message: String)
+class RejectThresholdExceededException(val rejected: RejectCapture, message: String)
     extends RuntimeException(message)

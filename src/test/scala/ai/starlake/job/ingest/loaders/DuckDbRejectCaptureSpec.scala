@@ -2,8 +2,13 @@ package ai.starlake.job.ingest.loaders
 
 import ai.starlake.TestHelper
 import ai.starlake.schema.model.{Position, SchemaInfo, TableAttribute}
+import com.typesafe.config.{Config, ConfigFactory}
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.sql.DriverManager
 import java.util.regex.Pattern
+import scala.util.Using
 
 class DuckDbRejectCaptureSpec extends TestHelper {
 
@@ -62,5 +67,65 @@ class DuckDbRejectCaptureSpec extends TestHelper {
     clauses.map(_._1) shouldBe List(
       "(TRIM(SUBSTR(value, 11, 5)) <> '' AND TRY_CAST(SUBSTR(value, 11, 5) AS BIGINT) IS NULL)"
     )
+  }
+
+  lazy val cappedSampleConfiguration: Config =
+    ConfigFactory
+      .parseString("audit.maxErrors: 2")
+      .withFallback(testConfiguration)
+
+  new WithSettings(cappedSampleConfiguration) {
+
+    // A load that reads a huge file with the wrong delimiter rejects every line of it. Nothing the
+    // capture keeps may grow with that: the count is exact because it comes from a COUNT over the
+    // same query, only audit.maxErrors lines are materialized because that is all the audit
+    // rejected table can hold, and every raw line goes to the spill file the replay writer streams
+    // from. The capture used to return one RejectedLine per rejected line, so the lines and their
+    // error texts were held in memory and then doubled by the single String the replay file was
+    // built as.
+    "captureCsvRejects" should
+    "count every rejected line, materialize at most audit.maxErrors of them and spill them all" in {
+      val csv = Files.createTempFile("duckdb-reject-capture-spec-", ".csv")
+      Files.write(
+        csv,
+        // 1 good line and 5 whose amount cannot be read as a BIGINT
+        ("id;name;amount\n" +
+        "1;alice;10\n" +
+        "2;bob;NOTANUM\n" +
+        "3;carol;NOTANUM\n" +
+        "4;dave;NOTANUM\n" +
+        "5;eve;NOTANUM\n" +
+        "6;frank;NOTANUM\n").getBytes(StandardCharsets.UTF_8)
+      )
+      try {
+        settings.appConfig.audit.maxErrors shouldBe 2
+
+        val captured =
+          Using.resource(DriverManager.getConnection("jdbc:duckdb:")) { conn =>
+            Using.resource(conn.createStatement()) { statement =>
+              statement.execute("CREATE TABLE account (id BIGINT, name VARCHAR, amount BIGINT)")
+              statement.execute(
+                s"""INSERT INTO account SELECT * FROM read_csv('${csv.toString}',
+                   | delim = ';', header = true, store_rejects = true,
+                   | columns = {'id': 'BIGINT', 'name': 'VARCHAR', 'amount': 'BIGINT'});""".stripMargin
+              )
+            }
+            DuckDbRejectCapture.captureCsvRejects(conn)
+          }
+
+        captured.count shouldBe 5
+        captured.sample.size shouldBe 2
+        captured.spillFiles.size shouldBe 1
+        new String(
+          Files.readAllBytes(captured.spillFiles.head),
+          StandardCharsets.UTF_8
+        ) shouldBe
+        "2;bob;NOTANUM\n3;carol;NOTANUM\n4;dave;NOTANUM\n5;eve;NOTANUM\n6;frank;NOTANUM\n"
+
+        captured.spillFiles.foreach(Files.deleteIfExists)
+      } finally {
+        Files.deleteIfExists(csv)
+      }
+    }
   }
 }

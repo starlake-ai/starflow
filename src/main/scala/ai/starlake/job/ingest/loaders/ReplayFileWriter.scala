@@ -5,13 +5,20 @@ import ai.starlake.schema.handlers.StorageHandler
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 
-import java.nio.charset.Charset
+import java.io.{BufferedOutputStream, OutputStreamWriter}
+import java.nio.charset.{Charset, StandardCharsets}
+import java.nio.file.Files
 import java.sql.Timestamp
 import java.text.SimpleDateFormat
+import scala.util.Using
 
 /** Writes rejected input lines to a replay file that can be dropped back into the landing area and
-  * ingested again. Engine neutral on purpose: it takes raw lines rather than a DataFrame, so native
+  * ingested again. Engine neutral on purpose: it takes a capture rather than a DataFrame, so native
   * loaders can use it without pulling in Spark.
+  *
+  * The rejected lines are streamed from the capture's spill files to the target, never assembled
+  * into one String: a load that rejects a multi gigabyte file has to produce its replay file
+  * without the heap growing with it.
   */
 object ReplayFileWriter extends LazyLogging {
 
@@ -41,13 +48,13 @@ object ReplayFileWriter extends LazyLogging {
   def write(
     domainName: String,
     tableName: String,
-    rejectedLines: List[RejectedLine],
+    rejected: RejectCapture,
     header: Option[String],
     encoding: String,
     timestamp: Timestamp,
     jobid: String
   )(implicit settings: Settings, storageHandler: StorageHandler): Option[Path] = {
-    if (rejectedLines.isEmpty) {
+    if (rejected.isEmpty) {
       None
     } else {
       val replayArea = DatasetArea.replay(domainName)
@@ -58,9 +65,27 @@ object ReplayFileWriter extends LazyLogging {
           replayArea,
           s"$domainName.$tableName.$formattedDate.${sanitizeForFileName(jobid)}.replay"
         )
-      val content = (header.toList ++ rejectedLines.map(_.rawLine)).mkString("", "\n", "\n")
-      storageHandler.write(content, targetPath)(Charset.forName(encoding))
-      logger.info(s"Wrote ${rejectedLines.size} rejected line(s) to $targetPath")
+      // Every spill file already holds its raw lines terminated by \n, in the order the input
+      // paths were read, which is exactly the replay file's content after the header. So the
+      // files are transcoded straight through, in fixed size chunks, rather than read as lines:
+      // a raw line carrying a lone carriage return would come back out as a line feed otherwise.
+      Using.resource(
+        new OutputStreamWriter(
+          new BufferedOutputStream(storageHandler.output(targetPath)),
+          Charset.forName(encoding)
+        )
+      ) { writer =>
+        header.foreach { headerLine =>
+          writer.write(headerLine)
+          writer.write('\n')
+        }
+        rejected.spillFiles.foreach { spillFile =>
+          Using.resource(Files.newBufferedReader(spillFile, StandardCharsets.UTF_8)) { reader =>
+            reader.transferTo(writer)
+          }
+        }
+      }
+      logger.info(s"Wrote ${rejected.count} rejected line(s) to $targetPath")
       Some(targetPath)
     }
   }

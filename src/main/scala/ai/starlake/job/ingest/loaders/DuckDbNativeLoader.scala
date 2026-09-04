@@ -16,7 +16,9 @@ import org.apache.spark.sql.types.{StringType, StructField, StructType}
 
 import java.io.BufferedReader
 import java.nio.charset.Charset
+import java.nio.file.Files
 import java.sql.Connection
+import scala.collection.mutable.ListBuffer
 import scala.util.control.NonFatal
 import scala.util.{Failure, Try, Using}
 
@@ -62,7 +64,18 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   lazy val schemaWithMergedMetadata = effectiveSchema.copy(metadata = Some(mergedMetadata))
   private lazy val twoSteps: Boolean = requireTwoSteps(effectiveSchema)
 
+  /** The local temporary files the reject captures spilled their raw lines into, deleted once the
+    * load is over whatever became of it. They are only ever read by the replay writer, which runs
+    * inside the load.
+    */
+  private val spillFiles = ListBuffer[java.nio.file.Path]()
+
   def run(): Try[List[IngestionCounters]] = {
+    try runLoad()
+    finally deleteSpillFiles()
+  }
+
+  private def runLoad(): Try[List[IngestionCounters]] = {
     Try {
       val initialRowCount =
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
@@ -95,7 +108,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               0
             }
         }
-      val rejected: List[RejectedLine] = if (twoSteps) {
+      val rejected: RejectCapture = if (twoSteps) {
         val tempTablesWithRejects =
           path.map { p =>
             logger.info(s"Loading $p to temporary table")
@@ -116,15 +129,16 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             (tempTable, rejects)
           }
         val tempTables = tempTablesWithRejects.map(_._1)
-        val rejectedLines = tempTablesWithRejects.flatMap(_._2)
+        val rejectedLines =
+          tempTablesWithRejects.map(_._2).foldLeft(RejectCapture.empty)(_ ++ _)
 
         try {
-          if (rejectThresholdBreached(rejectedLines.size)) {
+          if (rejectThresholdBreached(rejectedLines.count)) {
             // The target table has not been written yet at this point, so aborting here
             // leaves it untouched. The temp tables are dropped by the finally block below.
             throw new RejectThresholdExceededException(
               rejectedLines,
-              rejectThresholdMessage(rejectedLines.size)
+              rejectThresholdMessage(rejectedLines.count)
             )
           }
           // Rejects first, target rows second, the ordering SparkIngestionPipeline.ingest
@@ -274,7 +288,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count.
       val format = mergedMetadata.resolveFormat()
       val rejectsSupported = format == Format.DSV || format == Format.POSITION
-      val rejectedCount = if (rejectsSupported) rejected.size.toLong else -1L
+      val rejectedCount = if (rejectsSupported) rejected.count else -1L
       val inputCount = if (rejectsSupported) acceptedCount + rejectedCount else acceptedCount
       List(
         IngestionCounters(
@@ -341,12 +355,12 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     * @return
     *   the replay file this call wrote, so a caller that then fails can take it back out again
     */
-  private def reportRejects(rejected: List[RejectedLine]): Option[Path] = {
+  private def reportRejects(rejected: RejectCapture): Option[Path] = {
     val replayFilePath = if (rejected.nonEmpty && settings.appConfig.sinkReplayToFile) {
       ReplayFileWriter.write(
         domainName = domain.name,
         tableName = schema.name,
-        rejectedLines = rejected,
+        rejected = rejected,
         header = replayHeaderLine(),
         encoding = mergedMetadata.resolveEncoding(),
         timestamp = ingestionJob.now,
@@ -370,6 +384,23 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         .get
     }
     replayFilePath
+  }
+
+  /** Remembers the spill files a capture owns, so the load can delete them once the replay file has
+    * been written, whatever happened in between.
+    */
+  private def recordSpills(capture: RejectCapture): RejectCapture = {
+    spillFiles ++= capture.spillFiles
+    capture
+  }
+
+  private def deleteSpillFiles(): Unit = {
+    spillFiles.foreach { spillFile =>
+      Try(Files.deleteIfExists(spillFile)).failed.foreach { e =>
+        logger.warn(s"Failed to delete the temporary reject spill file $spillFile", e)
+      }
+    }
+    spillFiles.clear()
   }
 
   /** Takes back the reject artifacts of the attempt that just failed its second step.
@@ -442,13 +473,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   /** A load is aborted when it produces more rejects than allowed, or any reject at all when the
     * user asked for all or nothing.
     */
-  private def rejectThresholdBreached(rejectedCount: Int): Boolean =
+  private def rejectThresholdBreached(rejectedCount: Long): Boolean =
     rejectedCount > settings.appConfig.rejectMaxRecords ||
     (settings.appConfig.rejectAllOnError && rejectedCount > 0)
 
   /** Shared by the two step and the single step abort sites so the two messages cannot drift.
     */
-  private def rejectThresholdMessage(rejectedCount: Int): String =
+  private def rejectThresholdMessage(rejectedCount: Long): String =
     s"$rejectedCount rejected record(s) exceeds the allowed threshold"
 
   /** The read_csv options the reject capture owns. `store_rejects` is injected by the DSV load
@@ -572,7 +603,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     table: String,
     schema: SchemaInfo,
     path: List[Path]
-  ): List[RejectedLine] = {
+  ): RejectCapture = {
     val isTemporary = table.startsWith("zztmp_")
     // For POSITION format the first step loads each line as a single VARCHAR
     // column named `value`; the second step slices it via SUBSTR.
@@ -669,7 +700,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                 }
               }
               .mkString("['", "','", "']")
-          val rejected = mergedMetadata.resolveFormat() match {
+          // recorded before the threshold check below, which throws with the capture in hand:
+          // the spill file has to be deletable however this load ends
+          val rejected = recordSpills(mergedMetadata.resolveFormat() match {
             case Format.DSV =>
               val nullstr =
                 if (Option(mergedMetadata.resolveNullValue()).isEmpty)
@@ -758,17 +791,18 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                     JdbcDbUtils.execute(sql, conn)
                 }
               }
-              List.empty[RejectedLine]
-            case _ => List.empty[RejectedLine]
-          }
-          if (!isTemporary && rejectThresholdBreached(rejected.size)) {
-            // The rejects have already been captured into Scala values above, and the
-            // exception carries them, so the rollback performed by the catch block below
-            // cannot cost us the replay file even if it fails. That ordering matters
-            // because a ROLLBACK also discards the session scoped reject_errors table.
+              RejectCapture.empty
+            case _ => RejectCapture.empty
+          })
+          if (!isTemporary && rejectThresholdBreached(rejected.count)) {
+            // The rejects have already been read off the connection above, counted and
+            // spilled to a local file, and the exception carries that capture, so the
+            // rollback performed by the catch block below cannot cost us the replay file
+            // even if it fails. That ordering matters because a ROLLBACK also discards the
+            // session scoped reject_errors table.
             throw new RejectThresholdExceededException(
               rejected,
-              rejectThresholdMessage(rejected.size)
+              rejectThresholdMessage(rejected.count)
             )
           }
           // Known limitation: SparkUtils.updateJdbcTableSchema (called above for the APPEND

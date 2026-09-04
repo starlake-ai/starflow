@@ -21,7 +21,7 @@ object NativeRejectedSink extends LazyLogging {
     applicationId: String,
     domainName: String,
     tableName: String,
-    rejected: List[RejectedLine],
+    rejected: RejectCapture,
     paths: List[Path],
     timestamp: Timestamp,
     scheduledDate: Option[String],
@@ -32,10 +32,10 @@ object NativeRejectedSink extends LazyLogging {
     schemaHandler: SchemaHandler
   ): Try[Unit] = Try {
     if (rejected.nonEmpty && settings.appConfig.audit.isActive()) {
-      val limited = rejected.take(settings.appConfig.audit.maxErrors)
-      if (limited.size < rejected.size) {
+      val limited = rejected.sample.take(settings.appConfig.audit.maxErrors)
+      if (limited.size < rejected.count) {
         logger.warn(
-          s"Only ${limited.size} of ${rejected.size} rejected lines were written to the " +
+          s"Only ${limited.size} of ${rejected.count} rejected lines were written to the " +
           s"audit rejected table, capped by audit.maxErrors"
         )
       }

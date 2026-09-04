@@ -1,0 +1,12 @@
+---
+version: 1
+load:
+  name: "dsvduckmaxerrors"
+  metadata:
+    directory: "__SL_TEST_ROOT__/dsvduckmaxerrors"
+    format: "DSV"
+    separator: ";"
+    withHeader: true
+    loader: "native"
+    writeStrategy:
+      type: "APPEND"

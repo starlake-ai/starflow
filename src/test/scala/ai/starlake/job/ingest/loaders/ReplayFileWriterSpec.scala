@@ -4,7 +4,8 @@ import ai.starlake.TestHelper
 import ai.starlake.config.DatasetArea
 import ai.starlake.schema.handlers.StorageHandler
 
-import java.nio.charset.Charset
+import java.nio.charset.{Charset, StandardCharsets}
+import java.nio.file.Files
 import java.sql.Timestamp
 
 class ReplayFileWriterSpec extends TestHelper {
@@ -15,16 +16,25 @@ class ReplayFileWriterSpec extends TestHelper {
 
     private val timestamp = Timestamp.valueOf("2026-09-04 10:11:12")
 
-    private def rejected(rawLines: String*): List[RejectedLine] =
-      rawLines.toList.zipWithIndex.map { case (raw, idx) =>
+    // A capture as the DuckDB reject capture builds one: the raw lines spilled to a local file,
+    // terminated by \n, and only a sample of them materialized.
+    private def rejected(rawLines: String*): RejectCapture = {
+      val spillFile = Files.createTempFile("replay-file-writer-spec-", ".spill")
+      Files.write(
+        spillFile,
+        rawLines.map(_ + "\n").mkString.getBytes(StandardCharsets.UTF_8)
+      )
+      val sample = rawLines.toList.zipWithIndex.map { case (raw, idx) =>
         RejectedLine("file:///incoming/XTBL", Some(idx.toLong + 2), raw, "CAST: boom")
       }
+      RejectCapture(rawLines.size.toLong, sample, List(spillFile))
+    }
 
     "ReplayFileWriter" should "write the header then every raw line verbatim" in {
       val path = ReplayFileWriter.write(
         domainName = "sales",
         tableName = "orders",
-        rejectedLines = rejected("2;bob;NOTANUM", "badline;dave"),
+        rejected = rejected("2;bob;NOTANUM", "badline;dave"),
         header = Some("id;name;amount"),
         encoding = "UTF-8",
         timestamp = timestamp,
@@ -42,7 +52,7 @@ class ReplayFileWriterSpec extends TestHelper {
       val path = ReplayFileWriter.write(
         domainName = "sales",
         tableName = "positions",
-        rejectedLines = rejected("BadRow    abcde"),
+        rejected = rejected("BadRow    abcde"),
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
@@ -56,7 +66,7 @@ class ReplayFileWriterSpec extends TestHelper {
       val path = ReplayFileWriter.write(
         domainName = "sales",
         tableName = "empty",
-        rejectedLines = Nil,
+        rejected = RejectCapture.empty,
         header = Some("id;name"),
         encoding = "UTF-8",
         timestamp = timestamp,
@@ -75,7 +85,7 @@ class ReplayFileWriterSpec extends TestHelper {
       ReplayFileWriter.write(
         domainName = "sales_same_second",
         tableName = "orders",
-        rejectedLines = rejected("first load"),
+        rejected = rejected("first load"),
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
@@ -84,7 +94,7 @@ class ReplayFileWriterSpec extends TestHelper {
       ReplayFileWriter.write(
         domainName = "sales_same_second",
         tableName = "orders",
-        rejectedLines = rejected("second load"),
+        rejected = rejected("second load"),
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
@@ -104,7 +114,7 @@ class ReplayFileWriterSpec extends TestHelper {
       val path = ReplayFileWriter.write(
         domainName = "sales",
         tableName = "orders",
-        rejectedLines = rejected("2;bob;NOTANUM"),
+        rejected = rejected("2;bob;NOTANUM"),
         header = None,
         encoding = "UTF-8",
         timestamp = timestamp,
@@ -115,11 +125,48 @@ class ReplayFileWriterSpec extends TestHelper {
       Some("sales.orders.20260904101112.sales-orders-a-b-c-d-1757000000000.replay")
     }
 
+    // one capture per input path, merged in path order by the loader, and the replay file has to
+    // reproduce that order rather than whatever order the spill files were created in
+    it should "concatenate the spill files of a multi file load in path order" in {
+      val first = rejected("2;bob;NOTANUM")
+      val second = rejected("7;grace;NOTANUM", "badline;dave")
+
+      val path = ReplayFileWriter.write(
+        domainName = "sales",
+        tableName = "grouped",
+        rejected = first ++ second,
+        header = Some("id;name;amount"),
+        encoding = "UTF-8",
+        timestamp = timestamp,
+        jobid = "job-1"
+      )
+
+      storageHandler.read(path.get) shouldBe
+      "id;name;amount\n2;bob;NOTANUM\n7;grace;NOTANUM\nbadline;dave\n"
+    }
+
+    // a raw line is written to the replay file byte for byte, and a lone carriage return inside
+    // one is data, not a line break: reading the spill file back as lines would turn it into a
+    // line feed and split the line in two
+    it should "keep a raw line carrying a lone carriage return intact" in {
+      val path = ReplayFileWriter.write(
+        domainName = "sales",
+        tableName = "carriage",
+        rejected = rejected("2;bo\rb;NOTANUM"),
+        header = None,
+        encoding = "UTF-8",
+        timestamp = timestamp,
+        jobid = "job-1"
+      )
+
+      storageHandler.read(path.get) shouldBe "2;bo\rb;NOTANUM\n"
+    }
+
     it should "honor the requested encoding" in {
       val path = ReplayFileWriter.write(
         domainName = "sales",
         tableName = "latin",
-        rejectedLines = rejected("1;café"),
+        rejected = rejected("1;café"),
         header = None,
         encoding = "ISO-8859-1",
         timestamp = timestamp,

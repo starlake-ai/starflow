@@ -970,4 +970,72 @@ class DuckDbNativeRejectSpec extends TestHelper {
       }
     }
   }
+
+  lazy val duckDbMaxErrorsConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |sinkReplayToFile: true
+         |audit.maxErrors: 2
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_maxerrors_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbMaxErrorsConfiguration) {
+
+    // A load that reads a huge file with the wrong delimiter rejects every line of it, so the
+    // capture holds at most audit.maxErrors rejected lines in memory and spills the rest. What the
+    // user sees must not shrink with that cap: the reported count is the true one, the replay file
+    // carries every rejected line so the input can be fixed and loaded again, and only the audit
+    // rejected table is capped, as it always was.
+    "Native DuckDB load rejecting more lines than audit.maxErrors" should
+    "report the true count and replay every line while capping only the audit rows" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckmaxerrors/dsvduckmaxerrors.sl.yml",
+        datasetDomainName = "dsvduckmaxerrors",
+        sourceDatasetPathName = "/sample/dsvduckmaxerrors/XDSVMAXERRORSTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckmaxerrors",
+          "/sample/dsvduckmaxerrors/account_dsvduckmaxerrors.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // DatasetArea.replay survives cleanMetadata, as in the other replay blocks of this file
+        storageHandler.delete(DatasetArea.replay("dsvduckmaxerrors"))
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+
+        result.get.counters.get.acceptedCount shouldBe 2
+        result.get.counters.get.rejectedCount shouldBe 4
+        result.get.counters.get.inputCount shouldBe 6
+
+        val replayFiles = storageHandler
+          .list(DatasetArea.replay("dsvduckmaxerrors"), extension = ".replay", recursive = false)
+          .map(_.path)
+        replayFiles.size shouldBe 1
+        storageHandler.read(replayFiles.head) shouldBe
+        "id;name;amount\n2;bob;NOTANUM\n3;carol;NOTANUM\n4;dave;NOTANUM\n5;eve;NOTANUM\n"
+
+        val jobid = result.get.counters.get.jobid.stripPrefix(",")
+        queryAudit(
+          s"SELECT count(*) AS cnt FROM audit.rejected WHERE jobid = '$jobid'"
+        ) { rs =>
+          rs.next()
+          rs.getInt("cnt")
+        } shouldBe 2
+      }
+    }
+  }
 }
