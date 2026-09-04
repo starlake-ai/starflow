@@ -1,0 +1,11 @@
+---
+version: 1
+load:
+  name: "positionduckshort"
+  metadata:
+    directory: "__SL_TEST_ROOT__/positionduckshort"
+    format: "POSITION"
+    withHeader: false
+    loader: "native"
+    writeStrategy:
+      type: "APPEND"

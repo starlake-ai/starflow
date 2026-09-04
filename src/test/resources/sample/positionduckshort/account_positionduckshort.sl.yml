@@ -1,0 +1,18 @@
+---
+version: 1
+table:
+  name: "account"
+  pattern: "XPOSSHORT.*"
+  attributes:
+    - name: "name"
+      type: "string"
+      required: true
+      position:
+        first: 0
+        last: 9
+    - name: "amount"
+      type: "long"
+      required: false
+      position:
+        first: 10
+        last: 14

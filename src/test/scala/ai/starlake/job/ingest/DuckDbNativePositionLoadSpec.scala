@@ -35,7 +35,7 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
       }
     }
 
-    "Native DuckDB load of a POSITION file" should "slice lines with SUBSTR and NULL malformed cells via TRY_CAST" in {
+    "Native DuckDB load of a POSITION file" should "slice lines with SUBSTR and reject cells that cannot be cast" in {
       new SpecTrait(
         sourceDomainOrJobPathname = "/sample/positionduck/positionduck.sl.yml",
         datasetDomainName = "positionduck",
@@ -65,13 +65,15 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
           buf.toList
         }
 
-        rows.size shouldBe 3
+        rows.size shouldBe 2
         // fixed-width slices keep their trailing spaces, as on the BigQuery native path
-        rows.map(_._1) shouldBe List("BadRow    ", "Jane      ", "John      ")
-        // malformed numeric cell yields NULL instead of failing the load
-        rows.find(_._1.trim == "BadRow").flatMap(_._2) shouldBe None
+        rows.map(_._1) shouldBe List("Jane      ", "John      ")
+        // the BadRow line holds abcde where a number is declared, so it is rejected
+        // rather than loaded with a NULL amount
+        rows.find(_._1.trim == "BadRow") shouldBe None
         rows.find(_._1.trim == "John").flatMap(_._2) shouldBe Some(12345L)
         rows.find(_._1.trim == "Jane").flatMap(_._2) shouldBe Some(67890L)
+        result.get.counters.get.rejectedCount shouldBe 1
       }
     }
 
@@ -134,6 +136,37 @@ class DuckDbNativePositionLoadSpec extends TestHelper {
         }
 
         rows shouldBe List(("Hervé", 12345L), ("Jane", 67890L))
+      }
+    }
+
+    "Native DuckDB load of a POSITION file with a truncated line" should
+    "reject the short line" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/positionduckshort/positionduckshort.sl.yml",
+        datasetDomainName = "positionduckshort",
+        sourceDatasetPathName = "/sample/positionduckshort/XPOSSHORTTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "positionduckshort",
+          "/sample/positionduckshort/account_positionduckshort.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+
+        val names = queryDuckDb(
+          "SELECT name FROM positionduckshort.account ORDER BY name"
+        ) { rs =>
+          val buf = scala.collection.mutable.ListBuffer[String]()
+          while (rs.next()) buf += rs.getString("name")
+          buf.toList
+        }
+
+        names shouldBe List("Jane      ", "John      ")
+        result.get.counters.get.rejectedCount shouldBe 1
       }
     }
   }

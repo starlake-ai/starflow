@@ -226,7 +226,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         }
       val acceptedCount = (currentRowCount - initialRowCount).toLong
       // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count.
-      val rejectsSupported = mergedMetadata.resolveFormat() == Format.DSV
+      val format = mergedMetadata.resolveFormat()
+      val rejectsSupported = format == Format.DSV || format == Format.POSITION
       val rejectedCount = if (rejectsSupported) rejected.size.toLong else -1L
       val inputCount = if (rejectsSupported) acceptedCount + rejectedCount else acceptedCount
       List(
@@ -556,7 +557,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                | $encoding
                | columns = {'value': 'VARCHAR'});""".stripMargin
                 JdbcDbUtils.execute(sql, conn)
-                List.empty[RejectedLine]
+                DuckDbRejectCapture.capturePositionRejects(
+                  conn = conn,
+                  tableName = domainAndTableName,
+                  filePath = path.map(_.toString).mkString(","),
+                  schema = schema,
+                  ddlTypesByAttribute = attrsWithDDLTypes.toMap
+                )
 
               case Format.JSON_FLAT | Format.JSON =>
                 val format =
