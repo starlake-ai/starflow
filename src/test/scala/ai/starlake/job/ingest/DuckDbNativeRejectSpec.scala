@@ -4,6 +4,7 @@ import ai.starlake.TestHelper
 import ai.starlake.config.DatasetArea
 import ai.starlake.extract.JdbcDbUtils
 import com.typesafe.config.{Config, ConfigFactory}
+import org.apache.hadoop.fs.Path
 
 class DuckDbNativeRejectSpec extends TestHelper {
 
@@ -391,6 +392,72 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
         names shouldBe List("alice", "carol", "eve")
+      }
+    }
+  }
+
+  lazy val duckDbGroupedConfiguration: Config = {
+    val config = ConfigFactory.parseString(
+      s"""
+         |connectionRef: "test-duckdb"
+         |sinkReplayToFile: true
+         |grouped: true
+         |connections.test-duckdb {
+         |    type = "jdbc"
+         |    options {
+         |      "url": "jdbc:duckdb:${starlakeTestRoot}/test_grouped_native.db"
+         |      "driver": "org.duckdb.DuckDBDriver"
+         |    }
+         |}
+         |""".stripMargin
+    )
+    config.withFallback(super.testConfiguration)
+  }
+
+  new WithSettings(duckDbGroupedConfiguration) {
+
+    "Native DuckDB load of two files in one ingestion" should
+    "accumulate the rejected lines of every file into one replay file" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvduckreject/dsvduckreject.sl.yml",
+        datasetDomainName = "dsvduckreject",
+        sourceDatasetPathName = "/sample/dsvduckreject/XDSVREJECTTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvduckreject",
+          "/sample/dsvduckreject/account_dsvduckreject.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // DatasetArea.replay("dsvduckreject") is the same directory for every WithSettings
+        // block in this spec (starlakeTestRoot is shared, and cleanMetadata does not touch
+        // it), so start from a clean slate to keep this test independent of what other tests
+        // in this file left behind.
+        storageHandler.delete(DatasetArea.replay("dsvduckreject"))
+
+        // delivered before loadPending, which delivers the first file and then loads
+        // every staged file matching the table pattern in one ingestion
+        withSettings.deliverTestFile(
+          "/sample/dsvduckreject/XDSVREJECTTBL2",
+          new Path(DatasetArea.stage("dsvduckreject"), "XDSVREJECTTBL2")
+        )
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+
+        result.get.counters.get.rejectedCount shouldBe 3
+
+        val replayFiles = storageHandler
+          .list(DatasetArea.replay("dsvduckreject"), extension = ".replay", recursive = false)
+          .map(_.path)
+        replayFiles.size shouldBe 1
+        val content = storageHandler.read(replayFiles.head)
+        content.linesIterator.toList.size shouldBe 4
+        content.contains("2;bob;NOTANUM") shouldBe true
+        content.contains("badline;dave") shouldBe true
+        content.contains("7;grace;NOTANUM") shouldBe true
       }
     }
   }
