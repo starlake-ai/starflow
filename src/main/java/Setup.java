@@ -1089,7 +1089,6 @@ public class Setup extends ProxySelector implements X509TrustManager {
             }
 
             File slDir = new File(binDir, "sl");
-            deleteRecursively(slDir);
             // SL_CORE_JAR points at a locally built assembly (CI docker builds, local dev):
             // install then works even when the release/pre-release does not exist yet.
             String localCoreJar = getEnv("SL_CORE_JAR").orElse(null);
@@ -1103,7 +1102,17 @@ public class Setup extends ProxySelector implements X509TrustManager {
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 System.out.println("Using local starlake-core jar " + coreJar.getAbsolutePath());
             } else {
-                downloadAndDisplayProgress(new ResourceDependency[]{STARLAKE_RELEASE_JAR}, slDir, false);
+                // No deleteRecursively here: the assembly is the single biggest download of the
+                // whole install (215 MB for 1.8.3), and re-fetching an identical jar on every run
+                // is what made `upgrade` feel like a fresh install. The reconciler still
+                // guarantees exactly one assembly in bin/sl - any other starlake-core jar is
+                // classified superseded. A non-jar file in bin/sl matches no ownership prefix and
+                // is left alone, which is deliberately narrower than the wipe it replaces.
+                List<Artifact> core =
+                        toArtifacts("Starflow core", new ResourceDependency[]{STARLAKE_RELEASE_JAR}, true);
+                SyncPlan corePlan = DependencySync.reconcile(core, slDir, probeAll(core), false);
+                System.out.println(corePlan.render("Core jar plan for Starflow " + SL_VERSION + " (bin/sl)"));
+                apply(corePlan);
             }
 
             if (ENABLE_API) {
