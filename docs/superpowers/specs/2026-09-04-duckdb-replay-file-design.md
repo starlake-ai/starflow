@@ -54,8 +54,8 @@ Checked against the DuckDB CLI 1.5.4 (the project pins `duckdb_jdbc` 1.5.5.1 in
 | Error semantics | `read_csv` always runs with `store_rejects`. Bad rows are skipped and counted. The load fails when the reject count exceeds `rejectMaxRecords`, or when `rejectAllOnError` is set and there is at least one reject. This mirrors the BigQuery native loader, which already calls `setMaxBadRecords` (`BigQueryNativeJob.scala:220`). |
 | Format scope | DSV and POSITION. JSON keeps today's behavior and reports `rejectedCount = -1`. |
 | Audit `rejected` table | Populated, without Spark, using the literal `SELECT ... UNION ALL` AutoTask pattern from `AuditLog.createTask` (`AuditLog.scala:242`). |
-| POSITION reject rule | A line is rejected when `TRY_CAST` returns NULL on a non empty slice, or when `length(value)` is shorter than the last declared position. |
-| Replay file content | Original raw lines verbatim, with the source header line prepended when `mergedMetadata.resolveWithHeader()` is true, so the file can be re-ingested as is. POSITION gets raw lines with no header, matching `PositionIngestionJob.defineOutputAsOriginalFormat`. |
+| POSITION reject rule | A line is rejected when `TRY_CAST` returns NULL on a non empty slice, or when `length(value)` does not cover every required attribute's declared position. Optional trailing fields may be absent and load as NULL, matching the Spark POSITION path. |
+| Replay file content | Original raw lines verbatim, with the source header line prepended when `mergedMetadata.resolveWithHeader()` is true, so the file can be re-ingested as is. POSITION also gets the source header line when `withHeader` is true, since the loader emits `skip = 1` for it and a headerless replay file would lose its first line on re-ingest. |
 | Threshold breach | Materialize the rejects, then `ROLLBACK` so the target table is left untouched, then fail the job. |
 | Structure | Three small collaborators rather than inlining in `DuckDbNativeLoader` or generalizing across all native loaders. |
 
@@ -120,9 +120,11 @@ OR ...   -- one clause per non string attribute
 Positions are zero based and inclusive, consistent with `positionProjection` in
 `SchemaInfo.buildSecondStepSqlSelectOnLoad`, which emits
 `SUBSTR(value, pos.first + 1, pos.last - pos.first + 1)`. The short line clause therefore
-compares against `max(pos.last) + 1` over all attributes, which is the minimum line length
-a complete record must have. Attributes whose DDL type is string like are not cast, so
-they contribute no cast clause.
+compares against `max(pos.last) + 1` over the REQUIRED attributes only, which is the minimum
+line length a record must have to cover every mandatory field. A line that ends early on an
+optional trailing field is accepted and its absent slices load as NULL, matching the Spark
+POSITION path. When no positioned attribute is required, no short line clause is emitted.
+Attributes whose DDL type is string like are not cast, so they contribute no cast clause.
 
 It runs `SELECT value, ... FROM <tempTable> WHERE <predicate>` to collect the lines, then
 `DELETE FROM <tempTable> WHERE <predicate>` so the existing second step runs unchanged.
