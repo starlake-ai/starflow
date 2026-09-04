@@ -3,3 +3,4 @@ id;name;amount
 2;bob;NOT{{ANUM}}X'Y
 3;carol;7
 4;dan;NOT{%ANUM%}Z
+5;erin;NOT{}}%ANUM%#}}W

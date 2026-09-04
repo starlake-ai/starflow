@@ -110,7 +110,7 @@ case class AuditLog(
     val template: String = AuditLog.selectTemplate(engineName)
     val selectStatement = template.richFormat(
       Map(
-        "jobid"         -> jobid,
+        "jobid"         -> escapeLiteral(jobid),
         "paths"         -> paths.map(escapeLiteral).getOrElse("null"),
         "domain"        -> escapeLiteral(domain),
         "schema"        -> escapeLiteral(schema),
@@ -122,9 +122,9 @@ case class AuditLog(
         "duration"      -> duration,
         "message"       -> escapeLiteral(limitMessage),
         "step"          -> step,
-        "database"      -> database.getOrElse(""),
+        "database"      -> escapeLiteral(database.getOrElse("")),
         "tenant"        -> escapeLiteral(tenant),
-        "scheduledDate" -> scheduledDate.getOrElse(timestamp.toString)
+        "scheduledDate" -> escapeLiteral(scheduledDate.getOrElse(timestamp.toString))
       ),
       Map.empty
     )

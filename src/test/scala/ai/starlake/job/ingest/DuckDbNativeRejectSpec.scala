@@ -195,6 +195,11 @@ class DuckDbNativeRejectSpec extends TestHelper {
     // The next one carries {%ANUM%}: an unknown tag is a FATAL error whatever
     // failOnUnknownTokens says, and Jinjava.render throws on it, so an unescaped {% used to
     // abort the whole load instead of rejecting the single line that carried it.
+    // The last one carries {}}%ANUM%#}}, which holds no delimiter at all. It is here because
+    // stripping the six delimiters as pairs is not a fixpoint: the passes are non overlapping
+    // and left to right, so deleting }} and #} joined what was around them and the escaping
+    // handed the Jinja pass a {%ANUM%} it had synthesized itself, aborting the load over a
+    // line that never carried a tag. escapeLiteral now drops every brace instead.
     "Native DuckDB load of a DSV line containing Jinja delimiters" should
     "record it in the audit rejected table without failing the load" in {
       new SpecTrait(
@@ -219,7 +224,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
         names shouldBe List("alice", "carol")
-        result.get.counters.get.rejectedCount shouldBe 2
+        result.get.counters.get.rejectedCount shouldBe 3
 
         val jobid = result.get.counters.get.jobid.stripPrefix(",")
         val errors = queryAudit(
@@ -230,17 +235,21 @@ class DuckDbNativeRejectSpec extends TestHelper {
           buf.toList
         }
 
-        errors.size shouldBe 2
-        // the escaping strips the delimiters and turns the single quote into a dash, so the
-        // value the engine reported survives in a form the Jinja pass cannot act on. Without
-        // it the Jinja pass eats {{ANUM}} and the row reads NOTX-Y.
+        errors.size shouldBe 3
+        // the escaping drops every brace and turns the single quote into a dash, so the value
+        // the engine reported survives in a form the Jinja pass cannot act on. Without it the
+        // Jinja pass eats {{ANUM}} and the row reads NOTX-Y.
         errors.count(_.contains("NOTANUMX-Y")) shouldBe 1
         // and without it {%ANUM%} throws, so there would be no row here at all: the load
-        // would have failed on the assertion above.
-        errors.count(_.contains("NOTANUMZ")) shouldBe 1
+        // would have failed on the assertion above. Only the braces go, which is why the
+        // percent signs are still here and the value no longer reads NOTANUMZ.
+        errors.count(_.contains("NOT%ANUM%Z")) shouldBe 1
+        // the line that carried no delimiter of its own. Pairwise stripping built {%ANUM%}
+        // out of it and threw, so this row only exists because the braces now go wholesale.
+        errors.count(_.contains("NOT%ANUM%#W")) shouldBe 1
         errors.foreach { error =>
-          error should not include "{{"
-          error should not include "{%"
+          error should not include "{"
+          error should not include "}"
         }
       }
     }
