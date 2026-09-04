@@ -730,13 +730,12 @@ case class SchemaInfo(
           s"Attribute ${field.name} has POSITION format but no position set"
         )
       )
-      val length = pos.last - pos.first + 1
-      val raw = s"SUBSTR(value, ${pos.first + 1}, $length)"
+      val raw = SchemaInfo.positionSlice(pos)
       val finalName = s"$attributeQuote${field.getFinalName()}$attributeQuote"
-      ddlTypesByAttribute.get(field.name) match {
-        case Some(ddlType) if !SchemaInfo.isStringLikeDdlType(ddlType) =>
+      SchemaInfo.castableDdlType(ddlTypesByAttribute, field.name) match {
+        case Some(ddlType) =>
           s"$safeCastFunction($raw AS $ddlType) as $finalName"
-        case _ =>
+        case None =>
           s"$raw as $finalName"
       }
     }
@@ -860,6 +859,30 @@ object SchemaInfo {
     upper == "STRING" || upper.startsWith("VARCHAR") || upper.startsWith("CHAR") ||
     upper == "TEXT"
   }
+
+  /** The expression that pulls a fixed width attribute out of the single raw line column the first
+    * step loads. Positions are zero based and inclusive, so [first, last] is sliced as
+    * SUBSTR(value, first + 1, last - first + 1).
+    *
+    * Shared by buildSecondStepSqlSelectOnLoad, which projects the slice into the target column, and
+    * by the DuckDB POSITION reject predicate, which casts the very same slice to decide whether the
+    * line is loadable. The two have to agree character for character: a line rejected on a slice
+    * the projection never reads, or loaded on a slice the predicate never checked, is a silent data
+    * bug, so both sides call this rather than re-deriving the expression.
+    */
+  def positionSlice(position: Position): String =
+    s"SUBSTR(value, ${position.first + 1}, ${position.last - position.first + 1})"
+
+  /** The DDL type the slice of a positioned attribute has to be cast to, or None when no cast
+    * applies: either the attribute has no known DDL type, or that type is string like and the cast
+    * would be a no-op. Same reason as positionSlice above, the projection and the reject predicate
+    * must resolve cast eligibility the same way.
+    */
+  def castableDdlType(
+    ddlTypesByAttribute: Map[String, String],
+    attributeName: String
+  ): Option[String] =
+    ddlTypesByAttribute.get(attributeName).filterNot(isStringLikeDdlType)
 
   def mapping(
     domainName: String,

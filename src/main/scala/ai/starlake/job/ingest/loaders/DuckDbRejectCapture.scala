@@ -55,9 +55,10 @@ object DuckDbRejectCapture extends LazyLogging {
     rejected.toList
   }
 
-  /** Builds the (predicate, message) pairs that decide whether a fixed width line is rejected.
-    * Positions are zero based and inclusive, so an attribute at [first, last] is sliced as
-    * SUBSTR(value, first + 1, last - first + 1).
+  /** Builds the (predicate, message) pairs that decide whether a fixed width line is rejected. The
+    * slice expression and the cast eligibility rule come from `SchemaInfo.positionSlice` and
+    * `SchemaInfo.castableDdlType`, the same two helpers `buildSecondStepSqlSelectOnLoad` projects
+    * with, so this predicate cannot drift from what the second step actually reads.
     *
     * The line length is only checked against the REQUIRED positioned attributes: a line has to
     * reach the end of every required field, but a fixed width source that right trims blanks
@@ -90,14 +91,12 @@ object DuckDbRejectCapture extends LazyLogging {
       }
       val castClauses = positioned.flatMap { attr =>
         val position = attr.position.get
-        ddlTypesByAttribute.get(attr.name).filterNot(SchemaInfo.isStringLikeDdlType).map {
-          ddlType =>
-            val slice =
-              s"SUBSTR(value, ${position.first + 1}, ${position.last - position.first + 1})"
-            (
-              s"(TRIM($slice) <> '' AND TRY_CAST($slice AS $ddlType) IS NULL)",
-              s"${attr.name}: cannot cast to $ddlType"
-            )
+        SchemaInfo.castableDdlType(ddlTypesByAttribute, attr.name).map { ddlType =>
+          val slice = SchemaInfo.positionSlice(position)
+          (
+            s"(TRIM($slice) <> '' AND TRY_CAST($slice AS $ddlType) IS NULL)",
+            s"${attr.name}: cannot cast to $ddlType"
+          )
         }
       }
       shortLine.toList ::: castClauses
