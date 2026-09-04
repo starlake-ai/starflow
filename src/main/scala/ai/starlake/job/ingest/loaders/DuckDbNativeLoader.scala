@@ -2,7 +2,7 @@ package ai.starlake.job.ingest.loaders
 
 import ai.starlake.config.{CometColumns, Settings}
 import ai.starlake.extract.JdbcDbUtils
-import ai.starlake.job.ingest.IngestionJob
+import ai.starlake.job.ingest.{AuditTaskBuilder, IngestionJob}
 import ai.starlake.job.transform.TransformContext
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
@@ -131,7 +131,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           // uses. If the replay area cannot be written or the audit connection is down, this
           // throws before anything lands in the target, so the failed load leaves nothing
           // behind and the same input can be loaded again without double appending.
-          reportRejects(rejectedLines)
+          val replayFilePath = reportRejects(rejectedLines)
           val unionTempTables = tempTables
             .map(s"SELECT * FROM ${domain.finalName}." + _)
             .mkString("(", " UNION ALL ", ")")
@@ -205,7 +205,18 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           // transpileSql outside its per expectation Try, so a broken expectation template
           // throws once the rows are already committed. Under APPEND, retrying a load reported
           // as failed for that reason would duplicate the committed rows.
-          job.run().get
+          try {
+            job.run().get
+          } catch {
+            case NonFatal(e) =>
+              // The rejects were reported above, before the second step ran. Nothing about the
+              // input data is wrong with a load that fails here, so this attempt's replay file
+              // and audit rejected rows describe an attempt that never happened: leaving them
+              // would make the retry, once the broken SQL is fixed, count the same rejects
+              // twice and stack a second replay file next to the first.
+              cleanupRejectArtifacts(replayFilePath, rejectedLines.nonEmpty)
+              throw e
+          }
           rejectedLines
         } finally {
           tempTables.foreach { tempTable =>
@@ -326,17 +337,23 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     * replay file name. A table carrying a `rename` would otherwise leave audit.rejected rows that
     * no longer join audit.audit on (jobid, domain, schema), and a replay file under a different
     * domain area than the Spark loader writes to.
+    *
+    * @return
+    *   the replay file this call wrote, so a caller that then fails can take it back out again
     */
-  private def reportRejects(rejected: List[RejectedLine]): Unit = {
-    if (rejected.nonEmpty && settings.appConfig.sinkReplayToFile) {
+  private def reportRejects(rejected: List[RejectedLine]): Option[Path] = {
+    val replayFilePath = if (rejected.nonEmpty && settings.appConfig.sinkReplayToFile) {
       ReplayFileWriter.write(
         domainName = domain.name,
         tableName = schema.name,
         rejectedLines = rejected,
         header = replayHeaderLine(),
         encoding = mergedMetadata.resolveEncoding(),
-        timestamp = ingestionJob.now
+        timestamp = ingestionJob.now,
+        jobid = ingestionJob.applicationId()
       )(settings, storageHandler)
+    } else {
+      None
     }
     if (rejected.nonEmpty) {
       NativeRejectedSink
@@ -351,6 +368,74 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           accessToken = ingestionJob.accessToken
         )(settings, storageHandler, schemaHandler)
         .get
+    }
+    replayFilePath
+  }
+
+  /** Takes back the reject artifacts of the attempt that just failed its second step.
+    *
+    * Best effort on purpose: the caller is already on its way out with the real failure, and a
+    * cleanup that cannot run is a stale replay file and a few audit rows, not a reason to replace
+    * the error the user needs to read. Whatever happens here is logged and swallowed.
+    *
+    * Only the second step failure path calls this. A load aborted on the reject threshold keeps its
+    * artifacts: there the data is what is wrong and the replay file is the user's repair tool.
+    */
+  private def cleanupRejectArtifacts(replayFilePath: Option[Path], hadRejects: Boolean): Unit = {
+    Try {
+      replayFilePath.foreach { replayFile =>
+        logger.info(s"Deleting the replay file $replayFile of the load attempt that just failed")
+        storageHandler.delete(replayFile)
+      }
+      if (hadRejects) {
+        deleteAuditRejectedRows()
+      }
+    }.failed.foreach { e =>
+      logger.warn(
+        "Failed to clean up the reject artifacts of the load attempt that just failed. The " +
+        "replay file or the audit rejected rows it wrote may be counted twice when the load " +
+        "is retried.",
+        e
+      )
+    }
+  }
+
+  /** Deletes this attempt's rows from the audit rejected table.
+    *
+    * Matched on the same three declared values NativeRejectedSink wrote, escaped the same way since
+    * that sink inlines them into a literal SELECT. The job id alone would be too wide a net: when
+    * SL_JOB_ID is set every job of the run shares one application id (Job.scala), so a load of
+    * several tables would take the rejected rows of the tables that loaded fine down with the one
+    * that failed.
+    */
+  private def deleteAuditRejectedRows(): Unit = {
+    val audit = settings.appConfig.audit
+    if (audit.isActive()) {
+      val auditConnection = audit.getConnection()
+      if (audit.getSink().getConnectionType() == ConnectionType.GCPLOG) {
+        // Cloud Logging entries are immutable, so the rows of the failed attempt stay there and
+        // the retry adds its own next to them.
+        logger.warn(
+          "The audit sink is Cloud Logging, whose entries cannot be deleted: the rejected lines " +
+          "of the load attempt that just failed stay logged and the retry will log them again"
+        )
+      } else if (!auditConnection.isJdbcUrl()) {
+        logger.warn(
+          s"The audit sink connection ${audit.getConnectionRef()} is not a JDBC one, so the " +
+          "rejected rows of the load attempt that just failed cannot be deleted"
+        )
+      } else {
+        val jobid = AuditTaskBuilder.escapeLiteral(ingestionJob.applicationId())
+        val domainName = AuditTaskBuilder.escapeLiteral(domain.name)
+        val tableName = AuditTaskBuilder.escapeLiteral(schema.name)
+        val sql =
+          s"DELETE FROM ${audit.getDomain()}.rejected WHERE jobid = '$jobid' " +
+          s"AND domain = '$domainName' AND schema = '$tableName'"
+        JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), auditConnection.options) {
+          conn =>
+            JdbcDbUtils.execute(sql, conn)
+        }
+      }
     }
   }
 

@@ -837,6 +837,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
     val config = ConfigFactory.parseString(
       s"""
          |connectionRef: "test-duckdb"
+         |sinkReplayToFile: true
          |connections.test-duckdb {
          |    type = "jdbc"
          |    options {
@@ -879,6 +880,93 @@ class DuckDbNativeRejectSpec extends TestHelper {
           rs.next()
           rs.getInt("cnt")
         } shouldBe 0
+      }
+    }
+
+    // reportRejects runs before the second step task on purpose, so that a reject sink failure
+    // means nothing was committed. The cost is that a second step failing for a reason unrelated
+    // to the data, a broken postsql here, leaves that attempt's replay file and audit rejected
+    // rows behind. The retry once the SQL is fixed would then write them a second time, double
+    // counting the rejects and stacking replay files, so the second step failure path cleans up
+    // its own artifacts before rethrowing. The threshold breach path deliberately does not: there
+    // the data is the problem and the replay file is the user's repair tool.
+    "Native DuckDB load whose second step task fails" should
+    "clean up its replay file and its audit rejected rows so the retry does not double count" in {
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvducksecondstepfail/dsvducksecondstepfail.sl.yml",
+        datasetDomainName = "dsvducksecondstepfail",
+        sourceDatasetPathName = "/sample/dsvducksecondstepfail/XDSVSECONDSTEPFAILTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvducksecondstepfail",
+          "/sample/dsvducksecondstepfail/account_dsvducksecondstepfail.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        // DatasetArea.replay survives cleanMetadata, as in the other replay blocks of this file
+        storageHandler.delete(DatasetArea.replay("dsvducksecondstepfail"))
+
+        loadPending.isSuccess shouldBe false
+
+        // the input carries one malformed line, so the attempt did write a replay file before
+        // its second step failed. It has to be gone again.
+        storageHandler
+          .list(
+            DatasetArea.replay("dsvducksecondstepfail"),
+            extension = ".replay",
+            recursive = false
+          )
+          .map(_.path) shouldBe Nil
+      }
+
+      // the retry, with the postsql fixed, leaves exactly one set of artifacts rather than a
+      // second one stacked on what the failed attempt left behind
+      new SpecTrait(
+        sourceDomainOrJobPathname = "/sample/dsvducksecondstepfail/dsvducksecondstepfail.sl.yml",
+        datasetDomainName = "dsvducksecondstepfail",
+        sourceDatasetPathName = "/sample/dsvducksecondstepfail/XDSVSECONDSTEPFAILTBL"
+      ) {
+        cleanMetadata
+        deliverSourceDomain()
+        deliverSourceTable(
+          "dsvducksecondstepfail",
+          "/sample/dsvducksecondstepfail/account_dsvducksecondstepfixed.sl.yml",
+          Some("account.sl.yml")
+        )
+
+        val result = loadPending
+        result.isSuccess shouldBe true
+        result.get.counters.get.acceptedCount shouldBe 2
+        result.get.counters.get.rejectedCount shouldBe 1
+
+        val replayFiles = storageHandler
+          .list(
+            DatasetArea.replay("dsvducksecondstepfail"),
+            extension = ".replay",
+            recursive = false
+          )
+          .map(_.path)
+        replayFiles.size shouldBe 1
+        storageHandler.read(replayFiles.head) shouldBe "id;name;amount\n2;bob;NOTANUM\n"
+
+        // this domain is used by no other block of this suite, so every audit rejected row it
+        // carries was written by one of the two loads above. Only the retry's may remain.
+        val jobid = result.get.counters.get.jobid.stripPrefix(",")
+        queryAudit(
+          "SELECT count(*) AS cnt FROM audit.rejected WHERE domain = 'dsvducksecondstepfail'"
+        ) { rs =>
+          rs.next()
+          rs.getInt("cnt")
+        } shouldBe 1
+        queryAudit(
+          "SELECT count(*) AS cnt FROM audit.rejected " +
+          s"WHERE domain = 'dsvducksecondstepfail' AND jobid = '$jobid'"
+        ) { rs =>
+          rs.next()
+          rs.getInt("cnt")
+        } shouldBe 1
       }
     }
   }
