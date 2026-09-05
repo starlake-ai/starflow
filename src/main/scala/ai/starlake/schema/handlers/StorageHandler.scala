@@ -62,9 +62,25 @@ trait StorageHandler extends LazyLogging {
 
   def moveFromLocal(source: Path, dest: Path): Unit
 
-  def moveSparkPartFile(sparkFolder: Path, extension: String): Option[Path] = {
-    val files = list(sparkFolder, extension = extension, recursive = false).headOption.map(_.path)
-    files.map { f =>
+  def moveSparkPartFile(sparkFolder: Path, extension: String): Option[Path] =
+    collapseSparkFolder(
+      sparkFolder,
+      list(sparkFolder, extension = extension, recursive = false).headOption.map(_.path)
+    )
+
+  /** Spark names its single part file after the output format (.csv, .txt, sometimes no extension
+    * at all), so the part file is picked by its `part-` prefix rather than by extension.
+    */
+  def moveSparkPartFile(sparkFolder: Path): Option[Path] =
+    collapseSparkFolder(
+      sparkFolder,
+      list(sparkFolder, extension = "", recursive = false)
+        .map(_.path)
+        .find(_.getName.startsWith("part-"))
+    )
+
+  private def collapseSparkFolder(sparkFolder: Path, partFile: Option[Path]): Option[Path] = {
+    partFile.map { f =>
       val tmpFile = new Path(sparkFolder.getParent, sparkFolder.getName + ".tmp")
       move(f, tmpFile)
       delete(sparkFolder)

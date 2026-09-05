@@ -6,10 +6,10 @@ Date: 2026-09-04
 
 Replay files are produced only by the Spark ingestion path. `IngestionJob.saveRejected`
 (`src/main/scala/ai/starlake/job/ingest/IngestionJob.scala:227`), guarded by the
-`sinkReplayToFile` setting, writes `{domain}.{table}.{yyyyMMddHHmmss}.replay` into
-`DatasetArea.replay(domain)`. Its only call site is `SparkIngestionPipeline.scala:51`. That
-name is second resolution only; the native loader's `ReplayFileWriter` below appends the job
-id and the input file name to it, so the two loaders name their replay files differently. The
+`sinkReplayToFile` setting, writes into `DatasetArea.replay(domain)`. Its only call site is
+`SparkIngestionPipeline.scala:51`. Since 2026-09-05 it names the file through
+`ReplayFileWriter.fileName`, the same helper the native loaders use, so both paths write
+`{domain}.{table}.{yyyyMMddHHmmss}.{jobid}-{input file}.replay`. The
 input file name is needed as well as the job id, because `JobBase.appName` returns SL_JOB_ID
 verbatim when it is set and every job of a run then shares one application id.
 
