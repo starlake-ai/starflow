@@ -88,6 +88,16 @@ class BigQuerySparkJob(
       session.conf.set("spark.datasource.bigquery.location", location)
     }
 
+    // The spark-bigquery connector's indirect write stages data to GCS through the session's
+    // Hadoop configuration, which only carries the google.cloud.auth.* keys when the session
+    // itself was built from a BigQuery connection (SparkEnv.bigQueryConf). A session built for
+    // another connection that sinks to this one would otherwise fall back to gcs-connector's
+    // COMPUTE_ENGINE default and query the GCE metadata server, which only answers on Google
+    // infrastructure.
+    GcpCredentials.hadoopAuthConf(connectionOptions).foreach { case (key, value) =>
+      conf.set(key, value)
+    }
+
     // Authentication
     logger.info(s"Using ${connectionOptions("authType")} Credentials from GCS")
     cliConfig.accessToken match {
