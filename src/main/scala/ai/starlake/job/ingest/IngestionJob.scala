@@ -7,6 +7,7 @@ import ai.starlake.job.ingest.loaders.{
   BigQueryNativeLoader,
   DuckDbNativeLoader,
   NativeLoader,
+  ReplayFileWriter,
   SnowflakeNativeLoader
 }
 import ai.starlake.job.sink.bigquery.*
@@ -222,21 +223,29 @@ trait IngestionJob
     val schemaName = schema.name
 
     val start = Timestamp.from(Instant.now())
-    val formattedDate = new java.text.SimpleDateFormat("yyyyMMddHHmmss").format(start)
 
     if (settings.appConfig.sinkReplayToFile && !rejectedLinesDS.isEmpty) {
       val replayArea = DatasetArea.replay(domainName)
+      // named through the same helper as the native loaders: the timestamp only resolves to the
+      // second, so the jobid and input file discriminator is what keeps two same second loads of
+      // the same table from clobbering each other's replay file
       val targetPath =
-        new Path(replayArea, s"$domainName.$schemaName.$formattedDate.replay")
+        new Path(
+          replayArea,
+          ReplayFileWriter.fileName(
+            domainName,
+            schemaName,
+            start,
+            applicationId(),
+            path.headOption.map(_.getName)
+          )
+        )
       val formattedRejectedLinesDF: DataFrameWriter[Row] = defineOutputAsOriginalFormat(
         rejectedLinesDS.repartition(1)
       )
       formattedRejectedLinesDF
         .save(targetPath.toString)
-      storageHandler.moveSparkPartFile(
-        targetPath,
-        "0000" // When saving as text file, no extension is added.
-      )
+      storageHandler.moveSparkPartFile(targetPath)
     }
 
     IngestionUtil.sinkRejected(

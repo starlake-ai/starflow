@@ -30,6 +30,18 @@ class ReplayFileWriterSpec extends TestHelper {
       RejectCapture(rawLines.size.toLong, sample, List(spillFile))
     }
 
+    // both loaders build their replay file name through this helper, so a Spark load and a
+    // native load of the same table in the same second cannot clobber each other either
+    "ReplayFileWriter.fileName" should "carry the jobid and input file discriminator" in {
+      ReplayFileWriter.fileName(
+        domainName = "sales",
+        tableName = "orders",
+        timestamp = timestamp,
+        jobid = "sales-orders-XTBL-1757000000000",
+        inputFileName = Some("XTBL")
+      ) shouldBe "sales.orders.20260904101112.sales-orders-XTBL-1757000000000-XTBL.replay"
+    }
+
     "ReplayFileWriter" should "write the header then every raw line verbatim" in {
       val path = ReplayFileWriter.write(
         domainName = "sales",

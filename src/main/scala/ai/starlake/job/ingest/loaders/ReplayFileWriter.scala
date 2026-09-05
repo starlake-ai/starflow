@@ -45,8 +45,7 @@ object ReplayFileWriter extends LazyLogging {
     joined.replaceAll("[^A-Za-z0-9._-]", "-").takeRight(maxDiscriminatorLength)
   }
 
-  /** Writes the rejected lines to `{domain}.{table}.{yyyyMMddHHmmss}.{jobid}-{input file
-    * name}.replay`.
+  /** The replay file name: `{domain}.{table}.{yyyyMMddHHmmss}.{jobid}-{input file name}.replay`.
     *
     * The discriminator is part of the name because the timestamp only resolves to the second: two
     * loads of the same table inside one wall clock second, which autoload produces by triggering
@@ -54,10 +53,23 @@ object ReplayFileWriter extends LazyLogging {
     * silently overwrite the first one's rejected lines. See `nameDiscriminator` for why the job id
     * alone does not separate them.
     *
-    * The Spark loader (`IngestionJob.saveRejected`) still writes the shorter
-    * `{domain}.{table}.{yyyyMMddHHmmss}.replay`, so the two loaders name their replay files
-    * differently. Both land in the same domain replay area and both are ingestable again, only the
-    * name diverges.
+    * Shared by the native loaders (through `write`) and the Spark loader
+    * (`IngestionJob.saveRejected`), which writes the file itself but has to name it the same way.
+    */
+  def fileName(
+    domainName: String,
+    tableName: String,
+    timestamp: Timestamp,
+    jobid: String,
+    inputFileName: Option[String]
+  ): String = {
+    val formattedDate = new SimpleDateFormat("yyyyMMddHHmmss").format(timestamp)
+    s"$domainName.$tableName.$formattedDate.${nameDiscriminator(jobid, inputFileName)}.replay"
+  }
+
+  /** Writes the rejected lines to the path `fileName` resolves, under the domain's replay area. The
+    * Spark loader (`IngestionJob.saveRejected`) writes its own file but names it through the same
+    * `fileName`, so both loaders produce the same names.
     *
     * @return
     *   the path written, or None when there is nothing to replay
@@ -80,12 +92,8 @@ object ReplayFileWriter extends LazyLogging {
       val charset = Charset.forName(encoding)
       val replayArea = DatasetArea.replay(domainName)
       storageHandler.mkdirs(replayArea)
-      val formattedDate = new SimpleDateFormat("yyyyMMddHHmmss").format(timestamp)
       val targetPath =
-        new Path(
-          replayArea,
-          s"$domainName.$tableName.$formattedDate.${nameDiscriminator(jobid, inputFileName)}.replay"
-        )
+        new Path(replayArea, fileName(domainName, tableName, timestamp, jobid, inputFileName))
       // Every spill file already holds its raw lines terminated by \n, in the order the input
       // paths were read, which is exactly the replay file's content after the header. So the
       // files are transcoded straight through, in fixed size chunks, rather than read as lines:
