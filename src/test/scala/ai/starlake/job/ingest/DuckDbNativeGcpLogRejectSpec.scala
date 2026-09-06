@@ -11,8 +11,8 @@ import scala.jdk.CollectionConverters.*
   * audit sink is a Cloud Logging connection must send one log entry per rejected line, with the
   * same routing, log name and payload shape as the Spark path (IngestionUtil.sinkRejected).
   *
-  * Needs live GCP application-default credentials with logging read and write access on the
-  * default project, so it only runs under SL_REMOTE_TEST=true, like the BigQuery specs.
+  * Needs live GCP application-default credentials with logging read and write access on the default
+  * project, so it only runs under SL_REMOTE_TEST=true, like the BigQuery specs.
   */
 class DuckDbNativeGcpLogRejectSpec extends TestHelper {
 
