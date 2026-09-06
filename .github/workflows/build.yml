@@ -52,18 +52,9 @@ jobs:
       - name: Use gcloud CLI
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' }}
         run: gcloud info
-      - name: Run tests & Coverage Report On Push
+      - name: Run tests On Push
         if: ${{ github.event_name != 'pull_request' }}
-        run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g" SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET=SL_BQ_TEST_DS SL_ACCESS_POLICIES_PROJECT_ID=${{ env.GCP_PROJECT }} TEMPORARY_GCS_BUCKET=${{ env.TEMPORARY_GCS_BUCKET }} SL_REMOTE_TEST=true GITHUB_TOKEN=${{ env.GITHUB_TOKEN }} sbt ++2.13.14! coverage coverageReport
-
-      - name: Upload coverage to Codecov
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: codecov/codecov-action@v1
-        with:
-          file: target/scala-2.13/scoverage-report/scoverage.xml
-          flags: unittests
-          fail_ci_if_error: true
-          verbose: true
+        run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g" SL_SPARK_BIGQUERY_MATERIALIZATION_DATASET=SL_BQ_TEST_DS SL_ACCESS_POLICIES_PROJECT_ID=${{ env.GCP_PROJECT }} TEMPORARY_GCS_BUCKET=${{ env.TEMPORARY_GCS_BUCKET }} SL_REMOTE_TEST=true GITHUB_TOKEN=${{ env.GITHUB_TOKEN }} sbt ++2.13.14! test
   lint:
     runs-on: ubuntu-latest
     steps:
