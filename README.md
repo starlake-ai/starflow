@@ -144,10 +144,6 @@ Reference built-in templates for Airflow, Dagster, or Snowflake Tasks in your YA
 
 ## Supported platforms
 
-<p align="center">
-  <img src="docs/static/img/data-star.png" alt="Supported platforms"/>
-</p>
-
 | Category | Supported |
 |---|---|
 | **Warehouses** | BigQuery, Snowflake, Redshift, DuckDB, PostgreSQL, Spark/Hive |
