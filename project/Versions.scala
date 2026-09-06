@@ -25,23 +25,16 @@ object Versions {
   // incompatible with the Spark classpath). Never bump past the 2.x line.
   val jsonSchemaValidator = "2.0.7"
   val scopt = "4.1.0"
-  // Capped at 2.68.0, NOT the latest (2.69.0): 2.69.0 hangs TransformIntegration2Spec
-  // forever (forked test JVM never completes its handshake back to sbt; new "could not
-  // find method serverCertificateRequested" / "Unable to read from client" lines appear
-  // right before the hang). Bisected to exactly this one release (2.68.0 passes, 2.69.0
-  // hangs) with grpc-api/grpc-netty-shaded/conscrypt-openjdk-uber held at identical
-  // versions on both sides (1.82.2 / 2.6.0, pulled in either way via datacatalog 1.101.0),
-  // so the regression is inside the google-cloud-bigquery 2.69.0 artifact itself, not a
-  // transitive dependency clash. See .superpowers/sdd/recipeb-report.md for the full bisect.
-  val bigquery = "2.68.0"
+  // 2.69.0+ activates Conscrypt when present, and Conscrypt's JNI_OnLoad aborts the JVM on
+  // macOS arm64 ("could not find method serverCertificateRequested"), which surfaced as the
+  // TransformIntegration2Spec hang bisected to 2.69.0 (see .superpowers/sdd/recipeb-report.md
+  // and googleapis/google-cloud-java#14151). Resolved by excluding org.conscrypt in build.sbt:
+  // the SDK falls back to the default JSSE provider. Verified green on 2.71.0.
+  val bigquery = "2.71.0"
   val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
-  // Capped at 0.44.2-preview: 0.45.0 (the first 4.1 GA) hangs the forked test JVM on
-  // BigQueryBranchSpec/SparkParquetToBigQuerySpec, the same signature as the
-  // google-cloud-bigquery 2.69.0 hang above (bisected 2026-09-06 with protobuf 4.36.1 and
-  // datacatalog 1.102.0 held constant; see PR #1707). Artifact spark-4.1-bigquery, no scala suffix.
-  val sparkBigquery = "0.44.2-preview"
+  val sparkBigquery = "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
