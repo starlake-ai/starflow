@@ -8,6 +8,15 @@ on:
     branches:
       - master
       - branch-*
+    # Skip the ~90-minute test run for changes that cannot affect it: documentation,
+    # markdown anywhere, and the deployed setup.jar binary (rebuilt from sources that
+    # ARE covered). A PR touching any non-listed path still runs the full suite.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'CODE_OF_CONDUCT.md'
+      - 'distrib/setup.jar'
 
 jobs:
   snapshot:
