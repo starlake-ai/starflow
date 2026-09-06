@@ -229,9 +229,8 @@ object Dependencies {
 
   // com.manticore-projects.jsqlformatter
   def jSqlTranspiler(isSnapshot: Boolean) = {
-    // 1.8.0 deliberately ships against the pinned jsqltranspiler/jsqlparser versions verbatim,
-    // SNAPSHOT or not (user decision at release time); the old release-strip behavior demanded
-    // a released artifact that does not exist yet. Restore stripping once jsqltranspiler 1.11 ships.
+    // jsqltranspiler 1.11 and the jsqlparser it pins are plain releases now, so the pinned
+    // versions ship verbatim and the old release-strip behavior has nothing left to strip.
     val jSqlTranspilerVersion = Versions.jSqlTranspiler
     val starlakeJdbcVersion = Versions.starlakejdbc
     Seq(
