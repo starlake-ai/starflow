@@ -1,6 +1,6 @@
 object Versions {
   val spark4 = "4.1.3"
-  val deltaSpark = "4.3.1" // artifact id is delta-spark_4.1
+  val deltaSpark = "4.4.0" // artifact id is delta-spark_4.1
   val scalatest = "3.2.19"
   // scalacheck-1-18 has no 3.2.20.0 on Maven Central (3.2.19.0 is the last of its line),
   // so scalatest is held at 3.2.19 to move together with it.
@@ -34,18 +34,18 @@ object Versions {
   // so the regression is inside the google-cloud-bigquery 2.69.0 artifact itself, not a
   // transitive dependency clash. See .superpowers/sdd/recipeb-report.md for the full bisect.
   val bigquery = "2.68.0"
-  val gcsConnector = "4.0.4" // new versioning scheme, built against Hadoop 3.4.2
+  val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
-  val sparkBigquery = "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
+  val sparkBigquery = "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
-  val confluentVersion = "7.7.11"
-  val kafkaClients = "7.7.11-ce"
+  val confluentVersion = "7.9.3"
+  val kafkaClients = "7.9.3-ce"
   val testContainers = "0.44.1"
-  val gcpCloudLogging = "3.36.0"
-  val gcpDataCatalog = "1.101.0"
+  val gcpCloudLogging = "3.38.0"
+  val gcpDataCatalog = "1.102.0"
   val jinja = "2.7.4" // forces dependency override on guava
   val snowflakeJDBC = "4.3.4" // spark-snowflake 3.2.x requires >= 4.0.2
   val snowflakeSpark: String = "3.2.2-spark_4.1"

@@ -6,7 +6,7 @@ import better.files.File
 // gcs-connector's shaded jar vendors com.google.cloud.logging.* unrelocated (it wins classpath
 // precedence over the real google-cloud-logging artifact), but relocates its own MonitoredResource
 // dependency to this repackaged path; the two must match or LogEntry.Builder#setResource won't compile.
-import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.MonitoredResource
+import com.google.cloud.MonitoredResource
 import com.google.cloud.logging.Payload.JsonPayload
 import com.google.cloud.logging.{LogEntry, LoggingException, LoggingOptions}
 import com.google.common.base.VerifyException
