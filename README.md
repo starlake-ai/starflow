@@ -5,8 +5,8 @@
 <h3 align="center">Declarative Data Pipelines. Extract. Load. Transform. Orchestrate.</h3>
 
 <p align="center">
-  <a href="https://github.com/starlake-ai/starlake/workflows/Build/badge.svg"><img src="https://github.com/starlake-ai/starlake/workflows/Build/badge.svg" alt="Build Status"/></a>
-  <a href="https://github.com/starlake-ai/starlake/releases/latest"><img src="https://img.shields.io/github/v/release/starlake-ai/starlake" alt="GitHub Release"/></a>
+  <a href="https://github.com/starlake-ai/starflow/actions/workflows/test-only.yml"><img src="https://github.com/starlake-ai/starflow/actions/workflows/test-only.yml/badge.svg?event=pull_request" alt="Build Status"/></a>
+  <a href="https://github.com/starlake-ai/starflow/releases/latest"><img src="https://img.shields.io/github/v/release/starlake-ai/starflow" alt="GitHub Release"/></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"/></a>
 </p>
 
@@ -43,7 +43,7 @@ bash <(curl -sL https://starlake.ai/setup.sh)
 
 **Windows (PowerShell):**
 ```powershell
-Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/setup.ps1" -UseBasicParsing).Content
+Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/setup.ps1" -UseBasicParsing).Content
 ```
 
 **Docker:**
