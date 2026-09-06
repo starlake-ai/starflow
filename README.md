@@ -11,12 +11,15 @@
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"/></a>
   <a href="https://github.com/starlake-ai/starflow/stargazers"><img src="https://img.shields.io/github/stars/starlake-ai/starflow" alt="GitHub Stars"/></a>
   <a href="https://discord.com/invite/6tNa7yCNqw"><img src="https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=Starlake.starlake"><img src="https://img.shields.io/visual-studio-marketplace/v/Starlake.starlake?label=VS%20Code&logo=visualstudiocode" alt="VS Code Extension"/></a>
 </p>
 
 <p align="center">
   <a href="https://docs.starlake.ai/">Documentation</a> &bull;
   <a href="https://docs.starlake.ai/setup/starlake-core-setup">Installation</a> &bull;
   <a href="https://discord.com/invite/6tNa7yCNqw">Discord</a> &bull;
+  <a href="https://marketplace.visualstudio.com/items?itemName=Starlake.starlake">VS Code Extension</a> &bull;
+  <a href="https://github.com/starlake-ai/starlake-skills">Starlake Skills</a> &bull;
   <a href="https://github.com/starlake-ai/starlake-data-stack">Data Stacks</a> &bull;
   <a href="https://docs.starlake.ai/devguide/contribute">Contributing</a>
 </p>
