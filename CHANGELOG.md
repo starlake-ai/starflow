@@ -1,6 +1,11 @@
 
 # Release notes
 
+# 1.8.5:
+__Bug fix__:
+- **`starlake upgrade` installs the connector versions the release actually pins** (#1766): the installer keeps its own copies of the dependency versions, and the 1.8.4 dependency refresh updated only the build, so an upgrade to 1.8.4 kept provisioning the old artifacts (spark-4.1-bigquery 0.44.2-preview instead of 0.45.0, snowflake-jdbc 4.3.3, spark-snowflake 3.2.1, postgresql 42.7.11, and confluent 7.7.2, which had drifted even earlier). The installer pins are now synced, and a new test fails the build on any future mismatch between the build's versions and the installer's. Because the launcher fetches the installer from the release tag being installed, this fix reaches users through this release.
+- **No more spurious GitHub error during upgrades** (#1765): the installer looked up "the latest starlake-api release in the line" on every install, a leftover from when the api released on its own schedule. The api now releases in lockstep with core, so the lookup could never return anything different and only added a network call plus a harmless but alarming stderr line whenever the GitHub API hiccuped. Removed; the api version simply follows the core version (the `SL_API_VERSION` override is unchanged).
+
 # 1.8.4:
 __Improvement__:
 - **Dependency refresh** (#1756, #1759, #1760, #1762): among others, spark-4.1-bigquery moves to 0.45.0 (the first GA build for the Spark 4.1 line), google-cloud-bigquery to 2.71.0 (the 2.68.0 cap is retired, see the Conscrypt fix below), delta-spark to 4.4.0, kafka/confluent to 7.9.3, jsqltranspiler to the released 1.11 with its pinned jsqlparser 5.3.336 (no more SNAPSHOT coupling), gcs-connector to 4.0.5, protobuf-java to 4.36.1, google-cloud-datacatalog to 1.102.0 and google-cloud-logging to 3.38.0.
