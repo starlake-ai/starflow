@@ -372,7 +372,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
 
     // BIGQUERY
-    private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.44.2-preview");
+    private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.45.0");
 
     // deltalake
     private static final String DELTA_SPARK = getEnv("SPARK_DELTA").orElse("4.3.1");
@@ -401,11 +401,11 @@ public class Setup extends ProxySelector implements X509TrustManager {
     };
 
     // SNOWFLAKE
-    private static final String SNOWFLAKE_JDBC_VERSION = getEnv("SNOWFLAKE_JDBC_VERSION").orElse("4.3.3");
-    private static final String SPARK_SNOWFLAKE_VERSION = getEnv("SPARK_SNOWFLAKE_VERSION").orElse("3.2.1-spark_4.1");
+    private static final String SNOWFLAKE_JDBC_VERSION = getEnv("SNOWFLAKE_JDBC_VERSION").orElse("4.3.4");
+    private static final String SPARK_SNOWFLAKE_VERSION = getEnv("SPARK_SNOWFLAKE_VERSION").orElse("3.2.2-spark_4.1");
 
     // POSTGRESQL
-    private static final String POSTGRESQL_VERSION = getEnv("POSTGRESQL_VERSION").orElse("42.7.11");
+    private static final String POSTGRESQL_VERSION = getEnv("POSTGRESQL_VERSION").orElse("42.7.13");
 
     // MARIADB
     private static final String MARIADB_VERSION = getEnv("MARIADB_VERSION").orElse("3.5.4");
@@ -434,7 +434,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final String SPARK_REDSHIFT_VERSION = getEnv("SPARK_REDSHIFT_VERSION").orElse("7.0.0");
 
     // KAFKA CONFLUENT
-    private static final String CONFLUENT_VERSION = getEnv("CONFLUENT_VERSION").orElse("7.7.2");
+    private static final String CONFLUENT_VERSION = getEnv("CONFLUENT_VERSION").orElse("7.9.3");
     
     private static final String PYTHON_LIBS_URL = "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/python-libs/";
 
