@@ -150,7 +150,13 @@ assembly / assemblyMergeStrategy := {
 Test / fork := true
 
 excludeDependencies ++= Seq(
-  ExclusionRule("org.javassist", "javassist")
+  ExclusionRule("org.javassist", "javassist"),
+  // google-cloud-bigquery 2.69.0+ (also embedded in spark-4.1-bigquery 0.45.0+) probes Conscrypt
+  // and uses it when present; on macOS arm64 Conscrypt's JNI_OnLoad aborts the JVM outright
+  // ("could not find method serverCertificateRequested", the 2.6.0 ABI change; see
+  // googleapis/google-cloud-java#14151). The SDK falls back to the default JSSE provider when
+  // Conscrypt is absent, so the crash-proof state is to keep it off the classpath entirely.
+  ExclusionRule("org.conscrypt", "conscrypt-openjdk-uber")
 )
 
 assembly / assemblyExcludedJars := {
