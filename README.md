@@ -90,8 +90,6 @@ For pre-built production-ready data stacks, see [Starlake Pragmatic Data Stacks]
 
 ## How it works
 
-<img src="docs/static/img/intent.png" alt="Starflow pipeline flow"/>
-
 ### 1. Extract
 
 Pull data from any JDBC source with a few lines of YAML:
@@ -136,11 +134,7 @@ transform:
 
 ### 4. Orchestrate
 
-Starflow extracts the dependencies between your loads and transforms and generates the DAGs:
-
-<p align="center"><img src="docs/static/img/transform-viz.svg" alt="Dependency graph" width="500"/></p>
-
-Reference built-in templates for Airflow, Dagster, or Snowflake Tasks in your YAML. No custom DAG code required.
+Starflow extracts the dependencies between your loads and transforms and generates the DAGs. Reference built-in templates for Airflow, Dagster, or Snowflake Tasks in your YAML. No custom DAG code required.
 
 ## Supported platforms
 
