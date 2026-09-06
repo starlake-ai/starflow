@@ -2,26 +2,28 @@ object Versions {
   val spark4 = "4.1.3"
   val deltaSpark = "4.3.1" // artifact id is delta-spark_4.1
   val scalatest = "3.2.19"
+  // scalacheck-1-18 has no 3.2.20.0 on Maven Central (3.2.19.0 is the last of its line),
+  // so scalatest is held at 3.2.19 to move together with it.
   val scalacheckForScalatest = "3.2.19.0"
   // sparkXML / sparkXML2d0 DELETED: Spark 4 has a built-in xml data source
   val springBoot = "2.0.6.RELEASE"
-  val typesafeConfig = "1.4.6"
+  val typesafeConfig = "1.4.9"
   val scalaLogging = "3.9.6"
   val hive = "3.1.0"
   val log4s = "1.3.3"
-  val swaggerParser = "2.1.41"
+  val swaggerParser = "2.1.48"
   val betterFiles = "3.9.2"
   val jacksonForSpark4 = "2.21.2" // exactly what Spark 4.1.3 ships via jackson-bom
   // jackson-annotations dropped patch versioning at jackson-bom 2.20 (kept as "2.21", not "2.21.2");
   // see jackson-bom's own pom comment on <jackson.version.annotations>. No 2.21.2 artifact exists.
   val jacksonAnnotationsForSpark4 = "2.21"
-  val pureConfig = "0.17.9"
+  val pureConfig = "0.17.10"
   // elasticsearch-spark has no Spark 4 build yet (merged upstream 2026-07, not released).
   // Re-enable esSpark212 in build.sbt when elasticsearch-spark-41_2.13 ships.
-  val esSpark = "8.16.3"
+  val esSpark = "8.16.6"
   // json-schema-validator 2.0.4 is the last Jackson-2 line (3.x uses Jackson 3 = tools.jackson,
   // incompatible with the Spark classpath). Never bump past the 2.x line.
-  val jsonSchemaValidator = "2.0.4"
+  val jsonSchemaValidator = "2.0.7"
   val scopt = "4.1.0"
   // Capped at 2.68.0, NOT the latest (2.69.0): 2.69.0 hangs TransformIntegration2Spec
   // forever (forked test JVM never completes its handshake back to sbt; new "could not
@@ -37,16 +39,16 @@ object Versions {
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
   val sparkBigquery = "0.44.2-preview" // artifact spark-4.1-bigquery, no scala suffix, GA build not yet published for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
-  val h2 = "2.3.232" // Test only
+  val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
-  val confluentVersion = "7.7.5"
-  val kafkaClients = "7.7.5-ce"
-  val testContainers = "0.44.0"
+  val confluentVersion = "7.7.11"
+  val kafkaClients = "7.7.11-ce"
+  val testContainers = "0.44.1"
   val gcpCloudLogging = "3.36.0"
   val gcpDataCatalog = "1.101.0"
   val jinja = "2.7.4" // forces dependency override on guava
-  val snowflakeJDBC = "4.3.3" // spark-snowflake 3.2.x requires >= 4.0.2
-  val snowflakeSpark: String = "3.2.1-spark_4.1"
+  val snowflakeJDBC = "4.3.4" // spark-snowflake 3.2.x requires >= 4.0.2
+  val snowflakeSpark: String = "3.2.2-spark_4.1"
   val duckdb = "1.5.5.1"
   val bigQueue = "0.7.0"
   val redshiftJDBC = "2.2.8"
@@ -57,7 +59,7 @@ object Versions {
   val jSqlParser = "5.4.260-SNAPSHOT"
   val jSqlTranspiler = "1.11-SNAPSHOT"
   val starlakejdbc = "0.7"
-  val airflowTemplates = "0.6.14"
+  val airflowTemplates = "0.6.15"
   val jSqlFormatter = "5.4.1"
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
