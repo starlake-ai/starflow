@@ -320,7 +320,9 @@ public class Setup extends ProxySelector implements X509TrustManager {
     // itself: the API ships inside core releases (one release = one core jar + one API zip, same
     // tag) but is patched more often, so a user pinned to an older core patch should still get
     // that branch's newest API build rather than being stuck on the exact core patch's API.
-    private static final String SL_API_VERSION = getEnv("SL_API_VERSION").orElse(getLatestReleaseInBranch(SL_VERSION));
+    // starlake-api releases in lockstep with core (same tag, same version, see
+    // scripts/local-release.sh), so the api version is simply the core version unless overridden.
+    private static final String SL_API_VERSION = getEnv("SL_API_VERSION").orElse(SL_VERSION);
 
     /**
      * Fetch the latest released version of starlake from the GitHub Releases API.
@@ -358,64 +360,6 @@ public class Setup extends ProxySelector implements X509TrustManager {
         return null;
     }
 
-    /**
-     * Find the highest full release (vX.Y.Z, Z = max) whose tag shares baseVersion's major.minor
-     * (e.g. baseVersion "1.8.0" -> highest "1.8.*" release, which could be 1.8.0 itself or a later
-     * patch such as 1.8.1). Falls back to baseVersion unchanged if baseVersion isn't a parseable
-     * X.Y.Z... version, the branch has no matching release yet, or the GitHub fetch fails - so a
-     * failure here never blocks install/upgrade, it just falls back to today's exact-match behavior.
-     */
-    private static String getLatestReleaseInBranch(String baseVersion) {
-        if (baseVersion == null) {
-            return null;
-        }
-        java.util.regex.Matcher baseMatcher = java.util.regex.Pattern
-                .compile("^(\\d+)\\.(\\d+)\\.\\d+")
-                .matcher(baseVersion);
-        if (!baseMatcher.find()) {
-            return baseVersion;
-        }
-        String majorMinor = baseMatcher.group(1) + "." + baseMatcher.group(2);
-        try {
-            String releasesUrl = "https://api.github.com/repos/starlake-ai/starflow/releases?per_page=100";
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                    new java.net.URL(releasesUrl).openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                StringBuilder body = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    body.append(line);
-                }
-                java.util.regex.Matcher tagMatcher = java.util.regex.Pattern
-                        .compile("\"tag_name\"\\s*:\\s*\"v(" + java.util.regex.Pattern.quote(majorMinor) + "\\.(\\d+))\"")
-                        .matcher(body.toString());
-                String bestVersion = null;
-                int bestPatch = -1;
-                while (tagMatcher.find()) {
-                    int patch = Integer.parseInt(tagMatcher.group(2));
-                    if (patch > bestPatch) {
-                        bestPatch = patch;
-                        bestVersion = tagMatcher.group(1);
-                    }
-                }
-                if (bestVersion != null) {
-                    if (!bestVersion.equals(baseVersion)) {
-                        System.out.println("Latest starlake-api release in the " + majorMinor + ".x line: "
-                                + bestVersion + " (core pinned to " + baseVersion + ")");
-                    }
-                    return bestVersion;
-                }
-            } finally {
-                conn.disconnect();
-            }
-        } catch (Exception e) {
-            System.err.println("Could not fetch the latest " + majorMinor + ".x release from GitHub releases: "
-                    + e.getMessage());
-        }
-        return baseVersion;
-    }
 
     // SPARK
     private static final String SPARK_VERSION = getEnv("SPARK_VERSION").orElse("4.1.3");
