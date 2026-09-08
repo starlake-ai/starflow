@@ -1,6 +1,19 @@
 
 # Release notes
 
+# 1.8.6:
+__Improvement__:
+- **Airflow orchestration templates move to starlake-airflow 0.6.17**: the DAG REST client now authenticates on Google-managed Airflow (Cloud Composer), its knobs (endpoint, auth, timeouts) are exposed as DAG options declared in the dag templates, and Cloud Run jobs honour `cloud_run_async_poke_interval` on the operator path, not just the sensor path. The wheels shipped with the installer are updated accordingly.
+- **README restructured**: the front page now opens with a 30-second pipeline and surfaces the VS Code extension and the Starlake Skills.
+
+# 1.7.3 (maintenance):
+__Bug fix__:
+- **DuckDB extraction finds its tables again** (#1737): the 1.8.3 fix backported to the 1.7 line. duckdb_jdbc 1.5.3+ reports base tables with the JDBC standard type `TABLE` instead of `BASE TABLE`, which made `starlake extract-data` against DuckDB abort with `SL_LAST_EXPORT table not found` after finding 0 tables. Both spellings are now passed, which works on old and new drivers alike.
+
+__Improvement__:
+- **Airflow orchestration templates move to starlake-airflow 0.6.17**: same update as 1.8.6, from 0.6.14 on this line. The bundled dagster (0.5.9) and orchestration (0.5.6.1) wheels are resynced with the versions the build pins.
+- **Bootstrapped projects brief every assistant**: `starlake bootstrap` now ships AGENTS.md, GEMINI.md and copilot-instructions.md alongside CLAUDE.md, so Copilot, Gemini and any AGENTS.md-aware assistant get the same project context Claude does, and the sample project's README tells the StarBake story.
+
 # 1.8.5:
 __Bug fix__:
 - **`starlake upgrade` installs the connector versions the release actually pins** (#1766): the installer keeps its own copies of the dependency versions, and the 1.8.4 dependency refresh updated only the build, so an upgrade to 1.8.4 kept provisioning the old artifacts (spark-4.1-bigquery 0.44.2-preview instead of 0.45.0, snowflake-jdbc 4.3.3, spark-snowflake 3.2.1, postgresql 42.7.11, and confluent 7.7.2, which had drifted even earlier). The installer pins are now synced, and a new test fails the build on any future mismatch between the build's versions and the installer's. Because the launcher fetches the installer from the release tag being installed, this fix reaches users through this release.
