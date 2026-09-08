@@ -1,6 +1,14 @@
 
 # Release notes
 
+# 1.7.3:
+__Bug fix__:
+- **DuckDB extraction finds its tables again** (#1737): the 1.8.3 fix backported to the 1.7 line. duckdb_jdbc 1.5.3+ reports base tables with the JDBC standard type `TABLE` instead of `BASE TABLE`, which made `starlake extract-data` against DuckDB abort with `SL_LAST_EXPORT table not found` after finding 0 tables. Both spellings are now passed, which works on old and new drivers alike.
+
+__Improvement__:
+- **Airflow orchestration templates move to starlake-airflow 0.6.17** (from 0.6.14): the DAG REST client now authenticates on Google-managed Airflow (Cloud Composer), its knobs (endpoint, auth, timeouts) are exposed as DAG options declared in the dag templates, and Cloud Run jobs honour `cloud_run_async_poke_interval` on the operator path, not just the sensor path. The bundled dagster (0.5.9) and orchestration (0.5.6.1) wheels are resynced with the versions the build pins.
+- **Bootstrapped projects brief every assistant**: `starlake bootstrap` now ships AGENTS.md, GEMINI.md and copilot-instructions.md alongside CLAUDE.md, so Copilot, Gemini and any AGENTS.md-aware assistant get the same project context Claude does, and the sample project's README tells the StarBake story.
+
 # 1.7.2:
 __Bug fix__:
 - **OVERWRITE transforms insert by name, never by position** (#1722): overwriting an existing table used a positional `INSERT` on most engines, so a SELECT whose column order diverged from the table's could silently write every value into the wrong column, or fail with a confusing count/cast error. All engines now pass the explicit column list resolved from the SELECT: values land in the columns of the same name regardless of SELECT order, and a column the table does not have fails loudly with a clear message.
