@@ -56,7 +56,7 @@ object Versions {
   val jSqlParser = "5.3.336"
   val jSqlTranspiler = "1.11"
   val starlakejdbc = "0.7"
-  val airflowTemplates = "0.6.15"
+  val airflowTemplates = "0.6.17"
   val jSqlFormatter = "5.4.1"
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
