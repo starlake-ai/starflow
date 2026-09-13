@@ -12,8 +12,8 @@ class RunSchedulerSpec extends AnyFlatSpec with Matchers {
   private def node(id: String, typ: RunNodeType = RunNodeType.Task): RunNode =
     RunNode(id, id, typ)
 
-  /** dagOf("b" -> "a", "c" -> "b") builds a<-b<-c (b depends on a). Extra isolated
-    * nodes are listed in `alone`.
+  /** dagOf("b" -> "a", "c" -> "b") builds a<-b<-c (b depends on a). Extra isolated nodes are listed
+    * in `alone`.
     */
   private def dagOf(edges: (String, String)*)(alone: String*): RunDag = {
     val ids =
@@ -83,7 +83,7 @@ class RunSchedulerSpec extends AnyFlatSpec with Matchers {
     }
     val dag = dagOf()("n1", "n2", "n3", "n4", "n5", "n6")
     new RunScheduler(dag, 2, failFast = false, exec, _ => ()).run()
-    maxSeen.get() should be <= 2
+    maxSeen.get() shouldBe 2
   }
 
   it should "skip exactly the transitive downstream of a failure" in {
@@ -122,8 +122,8 @@ class RunSchedulerSpec extends AnyFlatSpec with Matchers {
     val boundary = node("ext.tbl", RunNodeType.Boundary)
     val task = node("t.job")
     val dag = RunDag(
-      Map(boundary.id -> boundary, task.id -> task),
-      Map(task.id -> Set(boundary.id), boundary.id -> Set.empty[String])
+      Map(boundary.id -> boundary, task.id             -> task),
+      Map(task.id     -> Set(boundary.id), boundary.id -> Set.empty[String])
     )
     val summary = new RunScheduler(dag, 2, failFast = false, exec, _ => ()).run()
     executed.toList shouldBe List("t.job")
@@ -140,5 +140,16 @@ class RunSchedulerSpec extends AnyFlatSpec with Matchers {
     val summary = new RunScheduler(dag, 1, failFast = false, exec, _ => ()).run()
     statusOf(summary, "x.a") shouldBe a[NodeStatus.Failed]
     statusOf(summary, "x.b") shouldBe NodeStatus.SkippedUpstreamFailed
+  }
+
+  it should "treat a fatal throwable from the executor as a failure rather than crashing run()" in {
+    val exec: RunNode => Try[Unit] = { n =>
+      if (n.id == "x.a") throw new NoClassDefFoundError("fake/Driver") else Success(())
+    }
+    val dag = dagOf("x.b" -> "x.a")()
+    val summary = new RunScheduler(dag, 1, failFast = false, exec, _ => ()).run()
+    statusOf(summary, "x.a") shouldBe a[NodeStatus.Failed]
+    statusOf(summary, "x.b") shouldBe NodeStatus.SkippedUpstreamFailed
+    summary.exitCode shouldBe 1
   }
 }

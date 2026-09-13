@@ -1,6 +1,6 @@
 package ai.starlake.job.run
 
-import java.util.concurrent.{Callable, ExecutorCompletionService, Executors}
+import java.util.concurrent.{Callable, ExecutorCompletionService, Executors, Future}
 import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 
@@ -31,9 +31,9 @@ final case class RunSummary(results: List[NodeResult]) {
   def exitCode: Int = if (failures.nonEmpty || skipped.nonEmpty) 1 else 0
 }
 
-/** Executes a RunDag on a fixed-size thread pool. A node is dispatched only once every
-  * parent reached Succeeded or Satisfied. The listener is always invoked from the thread
-  * that called run(), never from worker threads.
+/** Executes a RunDag on a fixed-size thread pool. A node is dispatched only once every parent
+  * reached Succeeded or Satisfied. The listener is always invoked from the thread that called
+  * run(), never from worker threads.
   */
 class RunScheduler(
   dag: RunDag,
@@ -48,8 +48,8 @@ class RunScheduler(
     val children = dag.children
     val pendingParents =
       mutable.Map[String, Int]() ++= dag.nodes.keys.map(id => id -> dag.parents(id).size)
-    val readyQueue = mutable.TreeSet[String]() ++= pendingParents.collect {
-      case (id, 0) => id
+    val readyQueue = mutable.TreeSet[String]() ++= pendingParents.collect { case (id, 0) =>
+      id
     }
     val terminal = mutable.Map[String, NodeResult]()
     val running = mutable.Set[String]()
@@ -58,6 +58,7 @@ class RunScheduler(
 
     val pool = Executors.newFixedThreadPool(parallelism)
     val completionService = new ExecutorCompletionService[NodeResult](pool)
+    val futureToNode = mutable.Map[Future[NodeResult], RunNode]()
 
     def record(result: NodeResult): Unit = {
       terminal(result.node.id) = result
@@ -72,8 +73,8 @@ class RunScheduler(
         if (remaining == 0 && !terminal.contains(child)) readyQueue += child
       }
 
-    /** Transitive downstream of a failed or skipped node. A running node can never be in
-      * this set: it only started because all its parents had already succeeded.
+    /** Transitive downstream of a failed or skipped node. A running node can never be in this set:
+      * it only started because all its parents had already succeeded.
       */
     def skipDownstream(roots: Set[String]): Unit = {
       val queue = mutable.Queue[String]() ++= roots
@@ -91,11 +92,13 @@ class RunScheduler(
       var progressed = true
       while (progressed) {
         progressed = false
-        readyQueue.find(id => dag.nodes(id).typ == RunNodeType.Boundary).foreach { id =>
-          readyQueue -= id
-          record(NodeResult(dag.nodes(id), NodeStatus.Satisfied, 0L))
-          unblockChildren(id)
-          progressed = true
+        if (!aborted) {
+          readyQueue.find(id => dag.nodes(id).typ == RunNodeType.Boundary).foreach { id =>
+            readyQueue -= id
+            record(NodeResult(dag.nodes(id), NodeStatus.Satisfied, 0L))
+            unblockChildren(id)
+            progressed = true
+          }
         }
         while (!aborted && running.size < parallelism && readyQueue.nonEmpty) {
           val id = readyQueue.head
@@ -108,17 +111,22 @@ class RunScheduler(
           } else {
             running += id
             listener(NodeStarted(node))
-            completionService.submit(new Callable[NodeResult] {
+            val future = completionService.submit(new Callable[NodeResult] {
               def call(): NodeResult = {
                 val start = System.nanoTime()
                 val status =
-                  Try(executor(node)).flatten match {
-                    case Success(_) => NodeStatus.Succeeded
-                    case Failure(e) => NodeStatus.Failed(e)
+                  try {
+                    Try(executor(node)).flatten match {
+                      case Success(_) => NodeStatus.Succeeded
+                      case Failure(e) => NodeStatus.Failed(e)
+                    }
+                  } catch {
+                    case t: Throwable => NodeStatus.Failed(t)
                   }
                 NodeResult(node, status, (System.nanoTime() - start) / 1000000L)
               }
             })
+            futureToNode(future) = node
           }
         }
       }
@@ -127,7 +135,13 @@ class RunScheduler(
     try {
       dispatch()
       while (running.nonEmpty) {
-        val result = completionService.take().get()
+        val future = completionService.take()
+        val result =
+          try future.get()
+          catch {
+            case t: Throwable => NodeResult(futureToNode(future), NodeStatus.Failed(t), 0L)
+          }
+        futureToNode -= future
         running -= result.node.id
         record(result)
         result.status match {
@@ -146,7 +160,7 @@ class RunScheduler(
       }
       RunSummary(completionOrder.toList)
     } finally {
-      pool.shutdown()
+      pool.shutdownNow()
     }
   }
 }
