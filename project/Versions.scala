@@ -13,7 +13,7 @@ object Versions {
   val log4s = "1.3.3"
   val swaggerParser = "2.1.48"
   val betterFiles = "3.9.2"
-  val jacksonForSpark4 = "2.21.2" // exactly what Spark 4.1.3 ships via jackson-bom
+  val jacksonForSpark4 = "2.21.6" // exactly what Spark 4.1.3 ships via jackson-bom
   // jackson-annotations dropped patch versioning at jackson-bom 2.20 (kept as "2.21", not "2.21.2");
   // see jackson-bom's own pom comment on <jackson.version.annotations>. No 2.21.2 artifact exists.
   val jacksonAnnotationsForSpark4 = "2.21"
@@ -34,7 +34,8 @@ object Versions {
   val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
-  val sparkBigquery = "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
+  val sparkBigquery =
+    "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
@@ -61,6 +62,8 @@ object Versions {
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
-  val starlakeStreaming = "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
-  val sparkRedshift = "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
+  val starlakeStreaming =
+    "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
+  val sparkRedshift =
+    "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }
