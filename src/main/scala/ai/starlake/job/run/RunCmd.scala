@@ -11,10 +11,10 @@ import ai.starlake.workflow.IngestionWorkflow
 import com.typesafe.scalalogging.LazyLogging
 import scopt.OParser
 
-import scala.util.{Success, Try}
+import scala.util.{Failure, Success, Try}
 
-/** In-process DAG runner: executes the project's tasks in dependency order, in parallel,
-  * inside this JVM. A runner, not an orchestrator: scheduling stays with the caller.
+/** In-process DAG runner: executes the project's tasks in dependency order, in parallel, inside
+  * this JVM. A runner, not an orchestrator: scheduling stays with the caller.
   */
 trait RunCmd extends Cmd[RunConfig] with LazyLogging {
 
@@ -68,15 +68,20 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
 
     val tasks = AutoTask.unauthenticatedTasks(reload = false)
     val deps = TaskViewDependency.dependencies(tasks)
-    val loadTables: Set[String] =
+    // Lineage names tables by their final name, but the load path filters on the declared name
+    // (IngestionWorkflow.predicate matches table.name). Keep both: the final name to recognize a
+    // node, the declared pair to execute it.
+    val loadTables: Map[String, (String, String)] =
       schemaHandler
         .domains()
         .flatMap { domain =>
-          domain.tables.map(table => s"${domain.finalName}.${table.finalName}".toLowerCase)
+          domain.tables.map { table =>
+            s"${domain.finalName}.${table.finalName}".toLowerCase -> (domain.name, table.name)
+          }
         }
-        .toSet
+        .toMap
 
-    DagBuilder.build(deps, loadTables) match {
+    DagBuilder.build(deps, loadTables.keySet) match {
       case Left(cycle) =>
         val message = s"Cycle detected in the task graph: ${cycle.mkString(" -> ")}"
         System.err.println(message)
@@ -89,19 +94,37 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
           dag = dag,
           parallelism = parallelism,
           failFast = config.failFast,
-          executor = executeNode(ingestionWorkflow, config, _),
+          executor = executeNode(ingestionWorkflow, config, loadTables, _),
           listener = event => System.err.println(TextRenderer.progressLine(event))
         )
-        val summary = scheduler.run()
+        // Ingestion prints a human-readable block to stdout (Utils.printOut) on every load node,
+        // which would interleave with the summary table below. Console.out is a DynamicVariable
+        // backed by an InheritableThreadLocal and RunScheduler allocates its thread pool inside
+        // run(), so worker threads inherit this redirection. Hoisting that pool out of run() would
+        // silently send node output back to stdout.
+        val summary = Console.withOut(System.err) { scheduler.run() }
         // Machine-consumable surface of --output text: the summary table on stdout
         println(TextRenderer.summaryTable(summary))
         RunJobResult(exitCode = summary.exitCode, summary = Some(summary), errorMessage = None)
     }
   }
 
+  /** Executes a single DAG node.
+    *
+    * Known limitation on load nodes: the `domains` filter below is currently ignored downstream.
+    * IngestionWorkflow.domainsToWatch forwards it to SchemaHandler.domains, which returns the
+    * cached, unfiltered domain list as soon as `_domains` is populated, and runProject populates it
+    * when it builds `loadTables`. A load node therefore scans every domain's stage area, filtered
+    * only by table name, so a table name shared by two domains is ingested by whichever node runs
+    * first. This is pre-existing platform behavior shared with LoadCmd; fixing it here alone would
+    * leave the two commands inconsistent, so it is deferred until both can be fixed together.
+    * RunCmdSpec pins the current behavior so that a later fix has to flip the assertion
+    * deliberately.
+    */
   private def executeNode(
     ingestionWorkflow: IngestionWorkflow,
     config: RunConfig,
+    loadTables: Map[String, (String, String)],
     node: RunNode
   ): Try[Unit] =
     node.typ match {
@@ -110,19 +133,33 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
           .autoJob(TransformConfig(name = node.displayName, options = config.options))
           .map(_ => ())
       case RunNodeType.LoadTable =>
-        val parts = node.displayName.split('.').takeRight(2)
-        ingestionWorkflow
-          .load(
-            LoadConfig(
-              domains = Seq(parts(0)),
-              tables = Seq(parts(1)),
-              options = config.options,
-              accessToken = None,
-              test = false,
-              scheduledDate = None
+        // Same normalization DagBuilder used to classify this node as a load table
+        val key = node.id.split('.').takeRight(2).mkString(".")
+        loadTables.get(key) match {
+          case Some((domainName, tableName)) =>
+            ingestionWorkflow
+              .load(
+                LoadConfig(
+                  domains = Seq(domainName),
+                  tables = Seq(tableName),
+                  options = config.options,
+                  accessToken = None,
+                  test = false,
+                  scheduledDate = None
+                )
+              )
+              .map(_ => ())
+          case None =>
+            // Unreachable by construction: a LoadTable node exists only because this key matched
+            // at build time. Fail loudly rather than ingest nothing and report success.
+            Failure(
+              new IllegalStateException(
+                s"Load node '${node.displayName}' (key '$key') has no declared table in the project" +
+                " metadata. The node was classified as a load table, so this is an inconsistency" +
+                " between DAG construction and execution."
+              )
             )
-          )
-          .map(_ => ())
+        }
       case RunNodeType.Boundary =>
         Success(())
     }
