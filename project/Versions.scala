@@ -23,7 +23,7 @@ object Versions {
   val esSpark = "8.16.6"
   // json-schema-validator 2.0.4 is the last Jackson-2 line (3.x uses Jackson 3 = tools.jackson,
   // incompatible with the Spark classpath). Never bump past the 2.x line.
-  val jsonSchemaValidator = "2.0.7"
+  val jsonSchemaValidator = "3.0.7"
   val scopt = "4.1.0"
   // 2.69.0+ activates Conscrypt when present, and Conscrypt's JNI_OnLoad aborts the JVM on
   // macOS arm64 ("could not find method serverCertificateRequested"), which surfaced as the
@@ -34,7 +34,8 @@ object Versions {
   val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
-  val sparkBigquery = "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
+  val sparkBigquery =
+    "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
@@ -61,6 +62,8 @@ object Versions {
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
-  val starlakeStreaming = "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
-  val sparkRedshift = "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
+  val starlakeStreaming =
+    "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
+  val sparkRedshift =
+    "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }
