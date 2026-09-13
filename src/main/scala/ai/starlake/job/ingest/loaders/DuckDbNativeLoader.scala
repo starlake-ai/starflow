@@ -109,30 +109,35 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             }
         }
       val rejected: RejectCapture = if (twoSteps) {
-        val tempTablesWithRejects =
-          path.map { p =>
-            logger.info(s"Loading $p to temporary table")
-            val tempTable = SQLUtils.temporaryTableName(effectiveSchema.finalName)
-            val rejects =
-              singleStepLoad(domain.finalName, tempTable, schemaWithMergedMetadata, List(p))
-            val escapedPath = p.toString.replace("'", "''")
-            val filenameSQL =
-              s"ALTER TABLE ${domain.finalName}.$tempTable ADD COLUMN ${CometColumns.cometInputFileNameColumn} STRING DEFAULT '$escapedPath';"
-
-            JdbcDbUtils.withJDBCConnection(
-              this.schemaHandler.dataBranch(),
-              sinkConnection.options
-            ) { conn =>
-              JdbcDbUtils.execute(filenameSQL, conn)
-
-            }
-            (tempTable, rejects)
-          }
-        val tempTables = tempTablesWithRejects.map(_._1)
-        val rejectedLines =
-          tempTablesWithRejects.map(_._2).foldLeft(RejectCapture.empty)(_ ++ _)
-
+        // Registered before each CREATE so a first-step failure (create ok but insert
+        // failed, or a later file's load failed) still drops every zztmp table already
+        // left behind; dropTable is IF EXISTS, so a name whose CREATE never ran is a no-op.
+        val createdTempTables = scala.collection.mutable.ListBuffer[String]()
         try {
+          val tempTablesWithRejects =
+            path.map { p =>
+              logger.info(s"Loading $p to temporary table")
+              val tempTable = SQLUtils.temporaryTableName(effectiveSchema.finalName)
+              createdTempTables += tempTable
+              val rejects =
+                singleStepLoad(domain.finalName, tempTable, schemaWithMergedMetadata, List(p))
+              val escapedPath = p.toString.replace("'", "''")
+              val filenameSQL =
+                s"ALTER TABLE ${domain.finalName}.$tempTable ADD COLUMN ${CometColumns.cometInputFileNameColumn} STRING DEFAULT '$escapedPath';"
+
+              JdbcDbUtils.withJDBCConnection(
+                this.schemaHandler.dataBranch(),
+                sinkConnection.options
+              ) { conn =>
+                JdbcDbUtils.execute(filenameSQL, conn)
+
+              }
+              (tempTable, rejects)
+            }
+          val tempTables = tempTablesWithRejects.map(_._1)
+          val rejectedLines =
+            tempTablesWithRejects.map(_._2).foldLeft(RejectCapture.empty)(_ ++ _)
+
           if (rejectThresholdBreached(rejectedLines.count)) {
             // The target table has not been written yet at this point, so aborting here
             // leaves it untouched. The temp tables are dropped by the finally block below.
@@ -233,7 +238,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           }
           rejectedLines
         } finally {
-          tempTables.foreach { tempTable =>
+          createdTempTables.foreach { tempTable =>
             Try {
               JdbcDbUtils.withJDBCConnection(
                 this.schemaHandler.dataBranch(),
