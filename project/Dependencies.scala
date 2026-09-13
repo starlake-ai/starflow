@@ -131,7 +131,7 @@ object Dependencies {
 
   val scalaTest = Seq(
     "org.scalatest" %% "scalatest" % Versions.scalatest % Test excludeAll (jacksonExclusions: _*),
-    "org.scalatestplus" %% "scalacheck-1-18" % Versions.scalacheckForScalatest % Test excludeAll (jacksonExclusions: _*)
+    "org.scalatestplus" %% "scalacheck-1-19" % Versions.scalacheckForScalatest % Test excludeAll (jacksonExclusions: _*)
   )
 
   val h2 = Seq(
