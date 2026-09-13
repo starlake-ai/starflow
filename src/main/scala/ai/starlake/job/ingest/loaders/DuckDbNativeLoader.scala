@@ -789,8 +789,11 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                       s"""INSERT INTO $domainAndTableName SELECT * FROM read_json_objects($paths, format = '$format');"""
                     JdbcDbUtils.execute(sql, conn)
                   case _ =>
+                    // BY NAME: read_json's auto-detected columns come back in file order while
+                    // the target table follows the inferred schema's (alphabetical) order, so a
+                    // positional SELECT * would map fields to the wrong columns.
                     val sql =
-                      s"""INSERT INTO $domainAndTableName SELECT * FROM read_json($paths, auto_detect = true, format = '$format');"""
+                      s"""INSERT INTO $domainAndTableName BY NAME SELECT * FROM read_json($paths, auto_detect = true, format = '$format');"""
                     JdbcDbUtils.execute(sql, conn)
                 }
               }
