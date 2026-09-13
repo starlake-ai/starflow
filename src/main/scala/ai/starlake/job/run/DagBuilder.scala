@@ -9,8 +9,8 @@ object DagBuilder {
   /** Builds an executable DAG from the raw lineage edge list.
     *
     * @param deps
-    *   raw entries from TaskViewDependency.dependencies: one per node occurrence, carrying
-    *   at most one parent edge each
+    *   raw entries from TaskViewDependency.dependencies: one per node occurrence, carrying at most
+    *   one parent edge each
     * @param loadTables
     *   lowercase "domain.table" names defined in the project's load metadata
     * @return
@@ -47,7 +47,7 @@ object DagBuilder {
       val candidate = RunNode(id, name, typeOf(name, typ))
       nodes.get(id) match {
         case Some(existing) if rank(existing.typ) >= rank(candidate.typ) => ()
-        case _                                                          => nodes(id) = candidate
+        case _                                                           => nodes(id) = candidate
       }
       id
     }
@@ -69,8 +69,8 @@ object DagBuilder {
     }
   }
 
-  /** Kahn's algorithm; if nodes remain, every one of them sits on or downstream of a cycle,
-    * and walking parent links from any of them must revisit a node.
+  /** Kahn's algorithm; if nodes remain, every one of them sits on or downstream of a cycle, and
+    * walking parent links from any of them must revisit a node.
     */
   private def findCycle(
     ids: Set[String],

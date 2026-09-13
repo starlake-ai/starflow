@@ -12,8 +12,8 @@ object RunNodeType {
   /** A table defined in the project's load metadata, executed via the load path */
   case object LoadTable extends RunNodeType
 
-  /** External table, view or CTE: not executable, satisfied immediately, kept only to
-    * preserve transitive ordering through the graph
+  /** External table, view or CTE: not executable, satisfied immediately, kept only to preserve
+    * transitive ordering through the graph
     */
   case object Boundary extends RunNodeType
 }
