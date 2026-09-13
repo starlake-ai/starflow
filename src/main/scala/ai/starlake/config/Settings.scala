@@ -1158,6 +1158,8 @@ object Settings extends LazyLogging {
     val pathAsString = StorageHandler.localFile(duckdbPath).pathAsString.replace('\\', '/')
     val duckDBConnection = ConnectionInfo(
       `type` = ConnectionType.JDBC,
+      // DuckDB loads natively supported formats without requiring a Spark session
+      loader = Some("native"),
       sparkFormat = None,
       options = Map(
         "url"    -> s"jdbc:duckdb:$pathAsString",

@@ -101,6 +101,17 @@ class LoadEngineSpec extends TestHelper {
       IngestionJob.selectLoader(metadata) shouldBe "spark"
     }
 
+    "a DSV load under duckDBMode settings" should "use the duckdb loader" in {
+      // duckDBMode rewrites every connection to DuckDB with loader native,
+      // so a table whose original sink resolves to spark no longer needs a Spark session.
+      val duckDbSettings = ai.starlake.config.Settings.duckDBMode(settings)
+      val metadata = Metadata(
+        format = Some(Format.DSV),
+        sink = Some(AllSinks(connectionRef = Some("duckdb_noloader")))
+      )
+      IngestionJob.selectLoader(metadata)(duckDbSettings) shouldBe "duckdb"
+    }
+
     "loadRequiresSpark" should "merge domain and table metadata before deciding" in {
       val domain = DomainInfo(
         name = "sales",

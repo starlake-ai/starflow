@@ -12,6 +12,7 @@ application:
       type: "fs" # Connection to local file system (delta files)
     duckdb:
       type: "jdbc" # Connection to DuckDB
+      loader: "native" # Load natively supported formats without a Spark session
       options:
         url: "jdbc:duckdb:{{SL_ROOT}}/datasets/duckdb.db" # Location of the DuckDB database
         driver: "org.duckdb.DuckDBDriver"
