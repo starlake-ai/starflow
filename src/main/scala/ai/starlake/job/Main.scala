@@ -56,6 +56,23 @@ object Main extends LazyLogging {
 
   final val shell: String = "starlake"
 
+  /** Process exit code for a finished command. `run` returns the command's own result, so this is
+    * the single place where a result becomes the Int handed to System.exit.
+    *
+    * FailedJobResult and an empty PreLoadJobResult are soft failures: the command did not throw but
+    * did not succeed either, so they must not report 0. A RunJobResult carries a code of its own (2
+    * for a cyclic graph, 1 for a failed or skipped node) and that code must win over the generic
+    * success arm below it.
+    */
+  def exitCodeOf(result: Try[Any]): Int =
+    result match {
+      case Success(runResult: RunJobResult)        => runResult.exitCode
+      case Success(r: PreLoadJobResult) if r.empty => 1
+      case Success(FailedJobResult)                => 1
+      case Success(_)                              => 0
+      case Failure(_)                              => 1
+    }
+
   /** @param args
     *   depends on the action required to run a job:
     *   - call "starlake transform jobname" where jobname is the name of the job as defined in one
@@ -283,15 +300,7 @@ class Main extends LazyLogging {
             Runtime.getRuntime.halt(0)
           }
       }
-      // FailedJobResult and empty PreLoadJobResult are considered as a soft failure
-      // so we remove them from success possibility
-      result match {
-        case Success(runResult: RunJobResult)        => runResult.exitCode
-        case Success(r: PreLoadJobResult) if r.empty => 1
-        case Success(FailedJobResult)                => 1
-        case Success(_)                              => 0
-        case Failure(_)                              => 1
-      }
+      Main.exitCodeOf(result)
     }
 
   }

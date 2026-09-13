@@ -41,4 +41,51 @@ class TextRendererSpec extends AnyFlatSpec with Matchers {
     table should include("SKIPPED_UPSTREAM_FAILED")
     (table should not).include("ext.tbl")
   }
+
+  it should "keep a multi-line error message on a single row" in {
+    // A JDBC driver typically reports the position of the syntax error on a second line. The
+    // formatter pads every cell to the widest raw cell, so an unprocessed newline would both break
+    // the borders and stretch the Cause column to the longest line.
+    val jdbcMessage =
+      "ERROR: relation \"orders\" does not exist\n  Position: 15\n  Hint: check the schema"
+    val summary = RunSummary(
+      List(
+        NodeResult(taskNode, NodeStatus.Succeeded, 42L),
+        NodeResult(
+          RunNode("sales.failed", "sales.failed", RunNodeType.Task),
+          NodeStatus.Failed(new RuntimeException(jdbcMessage)),
+          7L
+        )
+      )
+    )
+    val table = TextRenderer.summaryTable(summary)
+
+    // header plus two rows plus the three separators: no stray newline from the message
+    table.linesIterator.size shouldBe 6
+    table should include("relation \"orders\" does not exist Position: 15")
+    // the separators bound the column, so a stable width proves the padding did not blow up
+    val widths = table.linesIterator.map(_.length).toList.distinct
+    widths.size shouldBe 1
+    widths.head should be < 200
+  }
+
+  it should "truncate an overlong error message" in {
+    val long = "x" * 500
+    val summary = RunSummary(
+      List(
+        NodeResult(taskNode, NodeStatus.Failed(new RuntimeException(long)), 1L)
+      )
+    )
+    val table = TextRenderer.summaryTable(summary)
+    table.linesIterator.map(_.length).max should be < 200
+    (table should not).include(long)
+    table should include("x" * 120)
+  }
+
+  it should "fall back to the exception class when the message is null" in {
+    val summary = RunSummary(
+      List(NodeResult(taskNode, NodeStatus.Failed(new RuntimeException()), 1L))
+    )
+    TextRenderer.summaryTable(summary) should include("RuntimeException")
+  }
 }

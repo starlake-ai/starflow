@@ -109,8 +109,10 @@ class RunScheduler(
             unblockChildren(id)
             progressed = true
           } else {
-            running += id
             listener(NodeStarted(node))
+            // Record the id as running only once it is actually submitted: a listener or a
+            // rejected submit would otherwise leave an id in `running` that no take() can ever
+            // complete, and the drain loop below would block forever.
             val future = completionService.submit(new Callable[NodeResult] {
               def call(): NodeResult = {
                 val start = System.nanoTime()
@@ -127,6 +129,7 @@ class RunScheduler(
               }
             })
             futureToNode(future) = node
+            running += id
           }
         }
       }
