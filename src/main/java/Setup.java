@@ -467,7 +467,25 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final ResourceDependency HADOOP_AZURE_JAR = new ResourceDependency("hadoop-azure", "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/" + HADOOP_AZURE_VERSION + "/hadoop-azure-" + HADOOP_AZURE_VERSION + ".jar");
     private static final ResourceDependency AZURE_STORAGE_JAR = new ResourceDependency("azure-storage", "https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/" + AZURE_STORAGE_VERSION + "/azure-storage-" + AZURE_STORAGE_VERSION + ".jar");
     private static final ResourceDependency JETTY_SERVER_JAR = new ResourceDependency("jetty-server", "https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-server/" + JETTY_VERSION + "/jetty-server-" + JETTY_VERSION + ".jar");
-    private static final ResourceDependency SNOWFLAKE_JDBC_JAR = new ResourceDependency("snowflake-jdbc", "https://repo1.maven.org/maven2/net/snowflake/snowflake-jdbc/" + SNOWFLAKE_JDBC_VERSION + "/snowflake-jdbc-" + SNOWFLAKE_JDBC_VERSION + ".jar");
+    // snowflake-jdbc stopped relocating its bundled Conscrypt in 4.0.1: up to 4.0.0 those ~296
+    // classes lived under net/snowflake/client/jdbc/internal/org/conscrypt/ like every other bundled
+    // dependency, and from 4.0.1 they sit at the real org.conscrypt package. google-api-gax then
+    // finds that private 2.5.2 copy, takes it for an installed Conscrypt, and calls setNamedGroups()
+    // -- added in 2.6.x -- so every BigQuery call in the JVM dies with NoSuchMethodError. A stale
+    // Conscrypt is worse than none: when absent, gax falls back to JDK TLS. Anyone enabling both
+    // Snowflake and BigQuery hits this, and only on platforms where the bundled native library loads
+    // (linux-x86_64 yes, osx-aarch64 no), which makes it easy to miss on Apple silicon.
+    //
+    // Upstream removed the unused Conscrypt on 2026-09-08 (snowflakedb/snowflake-jdbc#2756) but no
+    // release carries it yet -- 4.3.4 shipped five days earlier. Until one does, serve a repackaged
+    // 4.3.4 with those entries stripped, published as a GitHub release asset. Only the pinned default
+    // version is substituted, so overriding SNOWFLAKE_JDBC_VERSION goes to Maven Central as before and
+    // this reverts by itself once the pin moves to a fixed release.
+    private static final String SNOWFLAKE_JDBC_CONSCRYPT_AFFECTED_VERSION = "4.3.4";
+    private static final ResourceDependency SNOWFLAKE_JDBC_JAR = new ResourceDependency("snowflake-jdbc",
+            SNOWFLAKE_JDBC_VERSION.equals(SNOWFLAKE_JDBC_CONSCRYPT_AFFECTED_VERSION)
+                    ? SL_RELEASE_BASE_URL + "/deps-snowflake-jdbc-4.3.4-noconscrypt/snowflake-jdbc-4.3.4-noconscrypt.jar"
+                    : "https://repo1.maven.org/maven2/net/snowflake/snowflake-jdbc/" + SNOWFLAKE_JDBC_VERSION + "/snowflake-jdbc-" + SNOWFLAKE_JDBC_VERSION + ".jar");
     private static final ResourceDependency SPARK_SNOWFLAKE_JAR = new ResourceDependency("spark-snowflake", "https://repo1.maven.org/maven2/net/snowflake/spark-snowflake_" + SCALA_VERSION +
             "/" + SPARK_SNOWFLAKE_VERSION + "/spark-snowflake_" + SCALA_VERSION + "-" + SPARK_SNOWFLAKE_VERSION + ".jar");
     private static final ResourceDependency POSTGRESQL_JAR = new ResourceDependency("postgresql", "https://repo1.maven.org/maven2/org/postgresql/postgresql/" + POSTGRESQL_VERSION + "/postgresql-" + POSTGRESQL_VERSION + ".jar");
