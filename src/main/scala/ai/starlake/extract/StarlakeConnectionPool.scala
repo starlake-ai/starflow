@@ -126,16 +126,25 @@ object StarlakeConnectionPool extends LazyLogging {
 
   def getConnection(
     dataBranch: Option[String],
-    connectionOptions: Map[String, String]
+    connectionOptionsIn: Map[String, String]
   ): java.sql.Connection = {
     require(
-      connectionOptions.contains("driver"),
-      s"driver class not found in JDBC connection options $connectionOptions"
+      connectionOptionsIn.contains("driver"),
+      s"driver class not found in JDBC connection options $connectionOptionsIn"
     )
     // Flight SQL connections are pure remote clients: any ducklake/quack attach
     // happens server-side, never on this JVM (see docs/quack.md isolation model)
     val isFlightSql =
-      connectionOptions.get("url").exists(ConnectionInfo.isFlightSqlUrl)
+      connectionOptionsIn.get("url").exists(ConnectionInfo.isFlightSqlUrl)
+    // A CLI spawned by starlake-api has no session to inject the QoD credential, so
+    // the parent hands it over through SL_QOD_TOKEN. Fills the gap only: an explicit
+    // token option always wins.
+    val connectionOptions =
+      if (isFlightSql && !connectionOptionsIn.contains("token"))
+        sys.env
+          .get("SL_QOD_TOKEN")
+          .fold(connectionOptionsIn)(t => connectionOptionsIn.updated("token", t))
+      else connectionOptionsIn
     val isAttachBacked =
       !isFlightSql &&
       connectionOptions
