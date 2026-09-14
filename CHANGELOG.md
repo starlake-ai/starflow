@@ -1,6 +1,14 @@
 
 # Release notes
 
+# 1.8.8:
+__New feature__:
+- **`starlake run` gains task selection and `--dry-run`**: `--select` and `--exclude` restrict the graph to a subset of tasks before it runs, sharing one selector grammar: `domain.table` for one task, `domain.*` for every task in a domain, `tag:<value>` for every task carrying a tag, and `+expr`, `expr+`, `+expr+` to pull in transitive upstreams, downstreams, or both. Selectors are unioned, repeatable, comma-separable and matched case-insensitively; `--exclude` is subtracted after `--select` and always wins. A run executes exactly the selected set and nothing else: an unselected upstream is not run implicitly, so a selected task with a missing input fails normally instead of dragging its dependencies along. A selection that matches no task exits `3` rather than reporting a vacuous success. `--dry-run` resolves the plan and prints it to stdout without executing anything, so a selector can be checked before it is trusted with a real run.
+
+__Behavior change__:
+- **`starlake run` exit code `2` now covers any graph-construction failure, not only a cycle**: an ambiguous project (two declared tables resolving to the same final name) or an unresolvable lineage reference used to escape as exit `1` with a raw stack trace; a malformed `--select`/`--exclude` expression now exits `2` through the same path. All of them go through the same graph-error path as cycle detection and exit `2` with a clean message instead. A selector that is well formed but names something the project does not contain is not a graph failure: it resolves to an empty set and exits `3`.
+- **`starlake run` with no executable task now exits `3`, not `0`**: this covers a project with no transform task at all, not only a `--select`/`--exclude` combination that resolves to nothing. The rule is the same either way: never silently succeed on a run that does nothing.
+
 # 1.8.7:
 __New feature__:
 - **`starlake run`, an in-process DAG runner**: resolves the project's task graph from the lineage Starlake already computes, detects cycles before executing anything, and runs the tasks in dependency order inside a single JVM, printing a summary table and returning `0` (all succeeded), `1` (a task failed or was skipped behind a failure) or `2` (the graph has a cycle). It is a runner, not an orchestrator: Airflow, Dagster and the cloud schedulers keep scheduling and can simply shell into it. A whole project now runs end to end with one command and no external service beyond the target warehouse. Progress goes to stderr and the summary to stdout, so the output can be piped. Execution is serial by default, following the `maxParTask` setting; `--parallelism` raises it explicitly.

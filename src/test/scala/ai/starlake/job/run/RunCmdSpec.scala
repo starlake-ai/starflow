@@ -24,7 +24,12 @@ class RunCmdSpec extends TestHelper {
   }
 
   /** Writes a one-table load domain whose files are picked up from the stage area. */
-  private def writeLoadTable(domain: String, table: String, rename: Option[String] = None)(implicit
+  private def writeLoadTable(
+    domain: String,
+    table: String,
+    rename: Option[String] = None,
+    tags: Set[String] = Set.empty
+  )(implicit
     withSettings: WithSettings
   ): Unit = {
     val domainYaml =
@@ -40,11 +45,14 @@ class RunCmdSpec extends TestHelper {
          |""".stripMargin
     // triple-quoted strings do not process escapes, hence the explicit newline concatenation
     val renameLine = rename.map("  rename: \"" + _ + "\"\n").getOrElse("")
+    val tagsLine =
+      if (tags.isEmpty) ""
+      else "  tags: [" + tags.map("\"" + _ + "\"").mkString(", ") + "]\n"
     val tableYaml =
       s"""version: 1
          |table:
          |  name: "$table"
-         |$renameLine  pattern: "$table-.*.csv"
+         |$renameLine$tagsLine  pattern: "$table-.*.csv"
          |  attributes:
          |    - name: "id"
          |      type: "string"
@@ -83,7 +91,12 @@ class RunCmdSpec extends TestHelper {
       }
     }
 
-  private def writeTask(domain: String, table: String, sql: String)(implicit
+  private def writeTask(
+    domain: String,
+    table: String,
+    sql: String,
+    tags: Set[String] = Set.empty
+  )(implicit
     settings: Settings,
     withSettings: WithSettings
   ): Unit = {
@@ -95,7 +108,8 @@ class RunCmdSpec extends TestHelper {
       table = table,
       sink = Some(JdbcSink(connectionRef = Some("test-pg")).toAllSinks()),
       python = None,
-      writeStrategy = Some(WriteStrategy.Overwrite)
+      writeStrategy = Some(WriteStrategy.Overwrite),
+      tags = tags
     )
     val yamlPath = new Path(starlakeMetadataPath + s"/transform/$domain/$table.sl.yml")
     val sqlPath = new Path(starlakeMetadataPath + s"/transform/$domain/$table.sql")
@@ -107,6 +121,10 @@ class RunCmdSpec extends TestHelper {
     withSettings.storageHandler.write(taskInfo.getSql(), sqlPath)
   }
 
+  // Every test below shares one metadata directory, and runProject validates every domain on disk
+  // before it builds the graph, so a fixture that leaves behind a cycle, a missing reference, or a
+  // duplicate final name will fail every later test in this block, not just the one that wrote it.
+  // Each test therefore removes its own fixture in a `finally`.
   new WithSettings(pgConfiguration) {
     "starlake run" should "execute a two-task chain in dependency order" in {
       val session = sparkSession
@@ -258,15 +276,257 @@ class RunCmdSpec extends TestHelper {
       rowCount("dom3.renamed") shouldBe Success(1)
     }
 
-    it should "exit with code 2 on a cyclic graph" in {
-      writeTask("cyclic", "alpha", "select * from cyclic.beta")
-      writeTask("cyclic", "beta", "select * from cyclic.alpha")
+    it should "execute only the selected task and its upstreams" in {
+      // Domain "pick", not "sel": jsqlparser reads a leading SEL as Teradata's SELECT abbreviation,
+      // so "from sel.first" fails to parse and the task would fail for a reason unrelated to
+      // selection.
+      writeTask("pick", "first", "select 1 as n")
+      writeTask("pick", "second", "select n from pick.first")
+      writeTask("pick", "third", "select n from pick.second")
+      writeTask("pick", "unrelated", "select 2 as n")
 
       val schemaHandler = settings.schemaHandler(reload = true)
-      val result = RunCmd.runProject(RunConfig(), schemaHandler)
+      val result =
+        RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("+pick.second")),
+          schemaHandler
+        )
+
+      result.exitCode shouldBe 0
+      val executed = result.summary
+        .getOrElse(fail("expected a summary"))
+        .results
+        .filter(_.node.typ == RunNodeType.Task)
+        .map(_.node.id)
+        .toSet
+      executed shouldBe Set("pick.first", "pick.second")
+    }
+
+    it should "agree with the dry-run plan for the same selector" in {
+      // Spec section 13, acceptance criterion 2: --select +some.table executes exactly that task
+      // and its upstreams, verified against --dry-run output.
+      writeTask("acc", "first", "select 1 as n")
+      writeTask("acc", "second", "select n from acc.first")
+      writeTask("acc", "other", "select 3 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val config = RunConfig(parallelism = Some(1), select = Seq("+acc.second"))
+
+      val planned = new ByteArrayOutputStream()
+      val dryResult =
+        Console.withOut(planned) {
+          RunCmd.runProject(config.copy(dryRun = true), schemaHandler)
+        }
+      val plan = planned.toString("UTF-8")
+
+      dryResult.exitCode shouldBe 0
+      dryResult.summary shouldBe None
+      plan should include("acc.first")
+      plan should include("acc.second")
+      (plan should not).include("acc.other")
+
+      val runResult = RunCmd.runProject(config, schemaHandler)
+      val executed = runResult.summary
+        .getOrElse(fail("expected a summary"))
+        .results
+        .filter(_.node.typ == RunNodeType.Task)
+        .map(_.node.displayName)
+        .toSet
+      executed shouldBe Set("acc.first", "acc.second")
+      executed.foreach(name => plan should include(name))
+    }
+
+    it should "not execute an excluded task" in {
+      // Independent tasks on purpose. The ordering property of exclusion -- that excluding an
+      // interior node keeps its neighbours ordered -- is asserted as a DAG edge in RunDagSpec,
+      // which is the only place it can fail for the right reason: with the scheduler's
+      // alphabetical tie-break, an execution-order assertion here would pass either way.
+      writeTask("exc", "a", "select 1 as n")
+      writeTask("exc", "b", "select 2 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("exc.*"), exclude = Seq("exc.a")),
+          schemaHandler
+        )
+
+      result.exitCode shouldBe 0
+      val executed = result.summary
+        .getOrElse(fail("expected a summary"))
+        .results
+        .filter(_.node.typ == RunNodeType.Task)
+        .map(_.node.id)
+      executed should contain("exc.b")
+      executed should not contain "exc.a"
+    }
+
+    it should "exit with code 3 when the selection matches nothing" in {
+      writeTask("empty", "task", "select 1 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(RunConfig(select = Seq("nope.nothing")), schemaHandler)
+
+      result.exitCode shouldBe 3
+      result.summary shouldBe None
+      result.errorMessage.getOrElse("") should include("nope.nothing")
+    }
+
+    it should "exit with code 2 on a malformed selector" in {
+      writeTask("bad", "task", "select 1 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(RunConfig(select = Seq("a.b.c")), schemaHandler)
 
       result.exitCode shouldBe 2
-      result.errorMessage.getOrElse("") should include("Cycle detected")
+      result.errorMessage.getOrElse("") should include("a.b.c")
+    }
+
+    it should "execute nothing under --dry-run" in {
+      writeLoadTable("dry", "things")
+      stageFile("dry", "things-1.csv", "id,name\n1,one\n")
+      writeTask("dry", "fromthings", "select id, name from dry.things")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        Console.withOut(new ByteArrayOutputStream()) {
+          RunCmd.runProject(RunConfig(parallelism = Some(1), dryRun = true), schemaHandler)
+        }
+
+      result.exitCode shouldBe 0
+      // The staged file is still waiting: no load node ran.
+      fileNamesIn(DatasetArea.stage("dry")) shouldBe List("things-1.csv")
+    }
+
+    it should "exit with code 2 on a cyclic graph" in {
+      try {
+        writeTask("cyclic", "alpha", "select * from cyclic.beta")
+        writeTask("cyclic", "beta", "select * from cyclic.alpha")
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val result = RunCmd.runProject(RunConfig(), schemaHandler)
+
+        result.exitCode shouldBe 2
+        result.errorMessage.getOrElse("") should include("Cycle detected")
+      } finally {
+        // DagBuilder.build walks every transform on disk, so a cycle left behind would make every
+        // later test in this block exit 2 with "Cycle detected" no matter what it was asserting.
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/cyclic"))
+      }
+    }
+
+    it should "exit with code 2 when the project itself cannot build a graph" in {
+      // Pins the boundary between the two failure modes the run command reports: a throw raised
+      // while building the graph (here, checkNoFinalNameCollision's IllegalStateException) must
+      // stay mapped to exit code 2, not fall through to the scheduler's exit code 1. Two declared
+      // tables resolving to the same final name is the cheapest way to trigger that throw.
+      try {
+        writeLoadTable("collide", "a")
+        writeLoadTable("collide", "b", rename = Some("a"))
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val result = RunCmd.runProject(RunConfig(parallelism = Some(1)), schemaHandler)
+
+        result.exitCode shouldBe 2
+        result.summary shouldBe None
+        result.errorMessage.getOrElse("") should include("Ambiguous load tables")
+      } finally {
+        // checkNoFinalNameCollision runs over every domain on disk, so leaving this one behind
+        // would poison every later test in this block regardless of where this test sits.
+        withSettings.storageHandler.delete(new Path(starlakeLoadPath + "/collide"))
+      }
+    }
+
+    it should "exit with code 1 when a task fails at run time" in {
+      // Pins two properties of runProject's failure path, as the counterpart to the graph-error
+      // test above: it forwards summary.exitCode rather than reinterpreting it, and a failed run
+      // returns a populated summary where a graph error returns summary = None. It does not pin
+      // where runProject's try/catch closes: a failing task never escapes execution as a Throwable
+      // in the first place, because RunScheduler catches it per node (RunScheduler.scala:126,
+      // `case t: Throwable => NodeStatus.Failed(t)` around the executor callable, and again at
+      // line 145 around `future.get()`), so no restructuring of that catch block can turn this
+      // into an exit 2. This remains the only end-to-end coverage of runProject's failure path.
+      try {
+        writeTask("boom", "bad", "select * from boom.does_not_exist_xyz")
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        // Select only this task: the block's earlier tests leave their own transforms on disk and
+        // a whole-project run would report their outcomes too.
+        val result = RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("boom.bad")),
+          schemaHandler
+        )
+
+        result.exitCode shouldBe 1
+        val summary = result.summary.getOrElse(fail("expected a summary"))
+        summary.byId("boom.bad").status shouldBe a[NodeStatus.Failed]
+      } finally {
+        // The task references a table that does not exist, so leaving it on disk would fail every
+        // later whole-project run in this block.
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/boom"))
+      }
+    }
+
+    it should "execute only the tasks carrying the selected tag" in {
+      // End-to-end coverage of `tag:`, the only selector form whose matching depends on data the
+      // graph does not carry: it is resolved against RunCmd.tagIndex, built from the project
+      // metadata. The tag is declared capitalised and selected in lower case, so this also
+      // exercises the case fold on both sides.
+      try {
+        writeTask("tagged", "reported", "select 1 as n", tags = Set("Daily"))
+        writeTask("tagged", "untagged", "select 2 as n")
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val result = RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("tag:daily")),
+          schemaHandler
+        )
+
+        result.exitCode shouldBe 0
+        val executed = result.summary
+          .getOrElse(fail("expected a summary"))
+          .results
+          .filter(_.node.typ == RunNodeType.Task)
+          .map(_.node.id)
+          .toSet
+        executed shouldBe Set("tagged.reported")
+      } finally {
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/tagged"))
+      }
+    }
+
+    it should "let a tagless transform shadow a load table's tags" in {
+      // Direct test of the merge rule in RunCmd.tagIndex, called here rather than through a run
+      // because the rule is about a map, not about execution.
+      //
+      // A transform and a load table sharing a domain.table name collapse to a single Task node
+      // (DagBuilderSpec pins that), so the transform decides the node's tags -- including when it
+      // has none. That works only because `.filter(tags.nonEmpty)` runs AFTER the merge: filtering
+      // each side first would drop the transform's empty entry and leave the load table's tags
+      // standing on a node that is a transform, so `--select tag:fromload` would run a task that
+      // does not carry the tag. Swapping those two steps is a silent regression, and this is the
+      // only thing that would catch it.
+      try {
+        writeLoadTable("shadow", "thing", tags = Set("fromload"))
+        writeTask("shadow", "thing", "select 1 as n")
+        writeTask("shadow", "tagged", "select 2 as n", tags = Set("fromtask"))
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val tasks = AutoTask.unauthenticatedTasks(reload = false)(
+          settings,
+          settings.storageHandler(),
+          schemaHandler
+        )
+        val tags = RunCmd.tagIndex(tasks, schemaHandler)
+
+        tags.get("shadow.thing") shouldBe None
+        tags("shadow.tagged") shouldBe Set("fromtask")
+      } finally {
+        withSettings.storageHandler.delete(new Path(starlakeLoadPath + "/shadow"))
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/shadow"))
+      }
     }
   }
 }

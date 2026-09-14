@@ -113,4 +113,27 @@ class DagBuilderSpec extends AnyFlatSpec with Matchers {
     val dag = buildOrFail(deps, loadTables = Set("x.out"))
     dag.nodes("x.out").typ shouldBe RunNodeType.Task
   }
+
+  it should "resolve a transform/load name collision to the transform, in either order" in {
+    // Defensively pins `register`'s ranking rule in isolation: Task outranks LoadTable, so two
+    // declarations for the same id collapse to a single Task node, in both registration orders.
+    // This is a unit invariant, not a reproduction of real lineage: TaskViewDependency resolves a
+    // two-part parent reference against schemaHandler.tasks() by fullName() or by the
+    // (domain, table) pair and emits TASK_TYPE on a hit, so when a transform named dual.thing
+    // exists, lineage never emits a TABLE_TYPE dependency for dual.thing in the first place - the
+    // load table never becomes a node here to be outranked. Pinning the ranking rule anyway guards
+    // against it becoming order-dependent, which would be a latent nondeterminism.
+    val taskFirst = List(
+      dep("dual.thing", "task"),
+      dep("reader.a", "task", "dual.thing", "table")
+    )
+    val tableFirst = List(
+      dep("reader.a", "task", "dual.thing", "table"),
+      dep("dual.thing", "task")
+    )
+    buildOrFail(taskFirst, loadTables = Set("dual.thing")).nodes("dual.thing").typ shouldBe
+    RunNodeType.Task
+    buildOrFail(tableFirst, loadTables = Set("dual.thing")).nodes("dual.thing").typ shouldBe
+    RunNodeType.Task
+  }
 }
