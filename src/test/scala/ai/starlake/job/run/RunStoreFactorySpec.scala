@@ -27,13 +27,31 @@ class RunStoreFactorySpec extends AnyFlatSpec with Matchers {
     resolved.notice shouldBe None
   }
 
+  it should "treat file:/, file:// and file://localhost roots as the same local path" in {
+    val expected = Paths.get("/projects/sales/.starlake/runs")
+    // Paths.get(URI) rejects an authority outright, so "file://localhost/..." must not fall through
+    // to the remote branch: that would misreport a local path as not local.
+    RunStore.fileLogRoot("file:/projects/sales", Map.empty).path shouldBe expected
+    RunStore.fileLogRoot("file:///projects/sales", Map.empty).path shouldBe expected
+    RunStore.fileLogRoot("file://localhost/projects/sales", Map.empty).path shouldBe expected
+  }
+
   it should "fall back to a temp directory when the root is an object store" in {
     val resolved = RunStore.fileLogRoot("gs://bucket/sales", Map.empty)
-    resolved.path.toString should endWith("starlake-runs")
+    resolved.path.getParent.getFileName.toString shouldBe "starlake-runs"
     // A remote root must not mean a silently missing log, and must not fail the run either.
     val notice = resolved.notice.getOrElse(fail("expected a notice"))
     notice should include("gs://bucket/sales")
     notice should include(RunStore.LogDirEnv)
+  }
+
+  it should "namespace the fallback by the remote root, so two projects don't collide" in {
+    val fallbackA = RunStore.fileLogRoot("gs://bucket-a/sales", Map.empty).path
+    val fallbackB = RunStore.fileLogRoot("gs://bucket-b/sales", Map.empty).path
+    fallbackA should not be fallbackB
+
+    val fallbackAAgain = RunStore.fileLogRoot("gs://bucket-a/sales", Map.empty).path
+    fallbackAAgain shouldBe fallbackA
   }
 
   it should "prefer SL_RUN_LOG_DIR over the fallback for a remote root" in {
@@ -68,5 +86,24 @@ class RunStoreFactorySpec extends AnyFlatSpec with Matchers {
       _ => ()
     )
     thrown.getMessage should include("jdbc:nosuchdriver")
+  }
+
+  it should "treat blank JDBC user and password as absent, not as an empty login" in {
+    // starlake-api exports all five env vars and may leave the credentials blank. Blank must reach
+    // JdbcRunStore.open as None, the same as the var being absent altogether, rather than as
+    // Some(""), which would attempt a login with an empty password instead of connecting without
+    // credentials.
+    val url = "jdbc:nosuchdriver://localhost/db"
+    val withBlankCredentials = the[RunStoreException] thrownBy RunStore.forRun(
+      "/projects/sales",
+      Map(RunStore.UrlEnv -> url, RunStore.UserEnv -> "", RunStore.PasswordEnv -> ""),
+      _ => ()
+    )
+    val withNoCredentials = the[RunStoreException] thrownBy RunStore.forRun(
+      "/projects/sales",
+      Map(RunStore.UrlEnv -> url),
+      _ => ()
+    )
+    withBlankCredentials.getMessage shouldBe withNoCredentials.getMessage
   }
 }

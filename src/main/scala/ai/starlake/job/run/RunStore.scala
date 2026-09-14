@@ -98,7 +98,13 @@ object RunStore {
             FileLogRoot(local.resolve(".starlake").resolve("runs"), None)
           case None =>
             val fallback =
-              java.nio.file.Paths.get(System.getProperty("java.io.tmpdir")).resolve("starlake-runs")
+              java.nio.file.Paths
+                .get(System.getProperty("java.io.tmpdir"))
+                .resolve("starlake-runs")
+                // Namespaced by the root it stands in for: two projects on one host, both rooted
+                // remotely and neither setting SL_RUN_LOG_DIR, would otherwise share a directory
+                // and a resume could pick up the other project's runs.
+                .resolve(sha1Of(root))
             FileLogRoot(
               fallback,
               Some(
@@ -111,9 +117,26 @@ object RunStore {
 
   private def localPathOf(root: String): Option[java.nio.file.Path] =
     if (root.startsWith("file:"))
-      scala.util.Try(java.nio.file.Paths.get(java.net.URI.create(root))).toOption
+      // Paths.get(URI) rejects an authority, so "file://localhost/projects/sales" would otherwise
+      // be misread as remote and the log would go to a temp directory with a notice claiming a
+      // local path is not local. Take the path component and keep an unexpected authority remote.
+      scala.util.Try {
+        val uri = java.net.URI.create(root)
+        val authority = Option(uri.getAuthority).getOrElse("")
+        if (authority.nonEmpty && authority != "localhost")
+          throw new IllegalArgumentException(s"remote file authority '$authority'")
+        java.nio.file.Paths.get(uri.getPath)
+      }.toOption
     else if (root.matches(RemoteUri)) None
     else Some(java.nio.file.Paths.get(root))
+
+  private def sha1Of(value: String): String =
+    java.security.MessageDigest
+      .getInstance("SHA-1")
+      .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+      .take(8)
+      .map(byte => f"$byte%02x")
+      .mkString
 
   /** The store this invocation reads and writes. Whether writing is enabled is a separate decision,
     * made by RunCmd: `--dry-run` and `--no-run-log` still need to *read* the store to resume.
@@ -125,7 +148,16 @@ object RunStore {
   ): RunStore =
     env.get(UrlEnv).filter(_.trim.nonEmpty) match {
       case Some(url) =>
-        JdbcRunStore.open(url.trim, env.get(UserEnv), env.get(PasswordEnv), env.get(CorrelationEnv))
+        // Blank is absent, for every one of these and not just the two that happened to be
+        // filtered: an api that always exports the variables but leaves the credentials empty
+        // would otherwise attempt a login with an empty password instead of connecting without one.
+        def nonBlank(name: String): Option[String] = env.get(name).map(_.trim).filter(_.nonEmpty)
+        JdbcRunStore.open(
+          url.trim,
+          nonBlank(UserEnv),
+          nonBlank(PasswordEnv),
+          nonBlank(CorrelationEnv)
+        )
       case None =>
         val resolved = fileLogRoot(root, env)
         resolved.notice.foreach(notify)
