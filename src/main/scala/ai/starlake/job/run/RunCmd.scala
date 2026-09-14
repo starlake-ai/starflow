@@ -35,7 +35,7 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
         "Execute the project's tasks in dependency order, in parallel, inside this JVM." +
         " The graph is built from transform lineage, so a load table is executed only when some" +
         " transform reads it: tables no transform references are never ingested by this command." +
-        " When a transform writes to the same domain.table name as a declared load table, the two" +
+        " When a transform and a declared load table share a domain.table name, the two" +
         " collapse to a single node and the transform is what runs, never the load." +
         "\n\nSelector syntax, shared by --select and --exclude:" +
         "\n\n    domain.table    exactly that task" +

@@ -121,6 +121,10 @@ class RunCmdSpec extends TestHelper {
     withSettings.storageHandler.write(taskInfo.getSql(), sqlPath)
   }
 
+  // Every test below shares one metadata directory, and runProject validates every domain on disk
+  // before it builds the graph, so a fixture that leaves behind a cycle, a missing reference, or a
+  // duplicate final name will fail every later test in this block, not just the one that wrote it.
+  // Each test therefore removes its own fixture in a `finally`.
   new WithSettings(pgConfiguration) {
     "starlake run" should "execute a two-task chain in dependency order" in {
       val session = sparkSession
@@ -436,12 +440,14 @@ class RunCmdSpec extends TestHelper {
     }
 
     it should "exit with code 1 when a task fails at run time" in {
-      // The other half of the exit-code seam pinned by the test above. runProject reports 2 for a
-      // graph it could not build and 1 for a graph it built and then ran unsuccessfully, and the
-      // only thing separating them is where runProject's try/catch closes. Moving that closing
-      // brace down to wrap the `resolved match` block would turn every failed run into a 2, and
-      // without this test the whole suite would still pass. A failed run also still produces a
-      // summary; a graph error never does, which is the other half of the distinction.
+      // Pins two properties of runProject's failure path, as the counterpart to the graph-error
+      // test above: it forwards summary.exitCode rather than reinterpreting it, and a failed run
+      // returns a populated summary where a graph error returns summary = None. It does not pin
+      // where runProject's try/catch closes: a failing task never escapes execution as a Throwable
+      // in the first place, because RunScheduler catches it per node (RunScheduler.scala:126,
+      // `case t: Throwable => NodeStatus.Failed(t)` around the executor callable, and again at
+      // line 145 around `future.get()`), so no restructuring of that catch block can turn this
+      // into an exit 2. This remains the only end-to-end coverage of runProject's failure path.
       try {
         writeTask("boom", "bad", "select * from boom.does_not_exist_xyz")
 
