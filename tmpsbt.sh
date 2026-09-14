@@ -10,11 +10,11 @@ echo "Building starlake-core $LOCAL_STARLAKE_VERSION"
 
 sbt ++2.13 clean package assembly
 
-rm $HOME/starlake/bin/sl/starlake-core_2.13-*-assembly.jar
+rm $HOME/starlake/bin/sl/starlake-core_2.13-*-assembly.jar || true
 #cp $HOME/git/public/starlake/target/scala-2.13/starlake-core_2.13-${LOCAL_STARLAKE_VERSION}-assembly.jar $HOME/starlake-app/bin/sl/
-rm $HOME/git/starlake-api/lib/starlake-core_2.13-*-assembly.jar
-rm $HOME/git/starlake-api/tmpbuild/starlake/bin/sl/starlake-core_2.13-*-assembly.jar
-rm $HOME/starlake/bin/api/lib/starlake-core_2.13-*-assembly.jar
+rm $HOME/git/starlake-api/lib/starlake-core_2.13-*-assembly.jar || true
+rm $HOME/git/starlake-api/tmpbuild/starlake/bin/sl/starlake-core_2.13-*-assembly.jar || true
+rm $HOME/starlake/bin/api/lib/starlake-core_2.13-*-assembly.jar || true
 
 cp $HOME/git/public/starlake/target/scala-2.13/starlake-core_2.13-${LOCAL_STARLAKE_VERSION}-assembly.jar $HOME/starlake/bin/sl/
 #cp $HOME/git/public/starlake/target/scala-2.13/starlake-core_2.13-${LOCAL_STARLAKE_VERSION}-assembly.jar $HOME/starlake-app/bin/sl/
