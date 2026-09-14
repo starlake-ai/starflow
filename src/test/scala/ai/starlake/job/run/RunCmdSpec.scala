@@ -24,7 +24,12 @@ class RunCmdSpec extends TestHelper {
   }
 
   /** Writes a one-table load domain whose files are picked up from the stage area. */
-  private def writeLoadTable(domain: String, table: String, rename: Option[String] = None)(implicit
+  private def writeLoadTable(
+    domain: String,
+    table: String,
+    rename: Option[String] = None,
+    tags: Set[String] = Set.empty
+  )(implicit
     withSettings: WithSettings
   ): Unit = {
     val domainYaml =
@@ -40,11 +45,14 @@ class RunCmdSpec extends TestHelper {
          |""".stripMargin
     // triple-quoted strings do not process escapes, hence the explicit newline concatenation
     val renameLine = rename.map("  rename: \"" + _ + "\"\n").getOrElse("")
+    val tagsLine =
+      if (tags.isEmpty) ""
+      else "  tags: [" + tags.map("\"" + _ + "\"").mkString(", ") + "]\n"
     val tableYaml =
       s"""version: 1
          |table:
          |  name: "$table"
-         |$renameLine  pattern: "$table-.*.csv"
+         |$renameLine$tagsLine  pattern: "$table-.*.csv"
          |  attributes:
          |    - name: "id"
          |      type: "string"
@@ -83,7 +91,12 @@ class RunCmdSpec extends TestHelper {
       }
     }
 
-  private def writeTask(domain: String, table: String, sql: String)(implicit
+  private def writeTask(
+    domain: String,
+    table: String,
+    sql: String,
+    tags: Set[String] = Set.empty
+  )(implicit
     settings: Settings,
     withSettings: WithSettings
   ): Unit = {
@@ -95,7 +108,8 @@ class RunCmdSpec extends TestHelper {
       table = table,
       sink = Some(JdbcSink(connectionRef = Some("test-pg")).toAllSinks()),
       python = None,
-      writeStrategy = Some(WriteStrategy.Overwrite)
+      writeStrategy = Some(WriteStrategy.Overwrite),
+      tags = tags
     )
     val yamlPath = new Path(starlakeMetadataPath + s"/transform/$domain/$table.sl.yml")
     val sqlPath = new Path(starlakeMetadataPath + s"/transform/$domain/$table.sql")
@@ -383,14 +397,20 @@ class RunCmdSpec extends TestHelper {
     }
 
     it should "exit with code 2 on a cyclic graph" in {
-      writeTask("cyclic", "alpha", "select * from cyclic.beta")
-      writeTask("cyclic", "beta", "select * from cyclic.alpha")
+      try {
+        writeTask("cyclic", "alpha", "select * from cyclic.beta")
+        writeTask("cyclic", "beta", "select * from cyclic.alpha")
 
-      val schemaHandler = settings.schemaHandler(reload = true)
-      val result = RunCmd.runProject(RunConfig(), schemaHandler)
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val result = RunCmd.runProject(RunConfig(), schemaHandler)
 
-      result.exitCode shouldBe 2
-      result.errorMessage.getOrElse("") should include("Cycle detected")
+        result.exitCode shouldBe 2
+        result.errorMessage.getOrElse("") should include("Cycle detected")
+      } finally {
+        // DagBuilder.build walks every transform on disk, so a cycle left behind would make every
+        // later test in this block exit 2 with "Cycle detected" no matter what it was asserting.
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/cyclic"))
+      }
     }
 
     it should "exit with code 2 when the project itself cannot build a graph" in {
@@ -412,6 +432,94 @@ class RunCmdSpec extends TestHelper {
         // checkNoFinalNameCollision runs over every domain on disk, so leaving this one behind
         // would poison every later test in this block regardless of where this test sits.
         withSettings.storageHandler.delete(new Path(starlakeLoadPath + "/collide"))
+      }
+    }
+
+    it should "exit with code 1 when a task fails at run time" in {
+      // The other half of the exit-code seam pinned by the test above. runProject reports 2 for a
+      // graph it could not build and 1 for a graph it built and then ran unsuccessfully, and the
+      // only thing separating them is where runProject's try/catch closes. Moving that closing
+      // brace down to wrap the `resolved match` block would turn every failed run into a 2, and
+      // without this test the whole suite would still pass. A failed run also still produces a
+      // summary; a graph error never does, which is the other half of the distinction.
+      try {
+        writeTask("boom", "bad", "select * from boom.does_not_exist_xyz")
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        // Select only this task: the block's earlier tests leave their own transforms on disk and
+        // a whole-project run would report their outcomes too.
+        val result = RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("boom.bad")),
+          schemaHandler
+        )
+
+        result.exitCode shouldBe 1
+        val summary = result.summary.getOrElse(fail("expected a summary"))
+        summary.byId("boom.bad").status shouldBe a[NodeStatus.Failed]
+      } finally {
+        // The task references a table that does not exist, so leaving it on disk would fail every
+        // later whole-project run in this block.
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/boom"))
+      }
+    }
+
+    it should "execute only the tasks carrying the selected tag" in {
+      // End-to-end coverage of `tag:`, the only selector form whose matching depends on data the
+      // graph does not carry: it is resolved against RunCmd.tagIndex, built from the project
+      // metadata. The tag is declared capitalised and selected in lower case, so this also
+      // exercises the case fold on both sides.
+      try {
+        writeTask("tagged", "reported", "select 1 as n", tags = Set("Daily"))
+        writeTask("tagged", "untagged", "select 2 as n")
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val result = RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("tag:daily")),
+          schemaHandler
+        )
+
+        result.exitCode shouldBe 0
+        val executed = result.summary
+          .getOrElse(fail("expected a summary"))
+          .results
+          .filter(_.node.typ == RunNodeType.Task)
+          .map(_.node.id)
+          .toSet
+        executed shouldBe Set("tagged.reported")
+      } finally {
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/tagged"))
+      }
+    }
+
+    it should "let a tagless transform shadow a load table's tags" in {
+      // Direct test of the merge rule in RunCmd.tagIndex, called here rather than through a run
+      // because the rule is about a map, not about execution.
+      //
+      // A transform and a load table sharing a domain.table name collapse to a single Task node
+      // (DagBuilderSpec pins that), so the transform decides the node's tags -- including when it
+      // has none. That works only because `.filter(tags.nonEmpty)` runs AFTER the merge: filtering
+      // each side first would drop the transform's empty entry and leave the load table's tags
+      // standing on a node that is a transform, so `--select tag:fromload` would run a task that
+      // does not carry the tag. Swapping those two steps is a silent regression, and this is the
+      // only thing that would catch it.
+      try {
+        writeLoadTable("shadow", "thing", tags = Set("fromload"))
+        writeTask("shadow", "thing", "select 1 as n")
+        writeTask("shadow", "tagged", "select 2 as n", tags = Set("fromtask"))
+
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val tasks = AutoTask.unauthenticatedTasks(reload = false)(
+          settings,
+          settings.storageHandler(),
+          schemaHandler
+        )
+        val tags = RunCmd.tagIndex(tasks, schemaHandler)
+
+        tags.get("shadow.thing") shouldBe None
+        tags("shadow.tagged") shouldBe Set("fromtask")
+      } finally {
+        withSettings.storageHandler.delete(new Path(starlakeLoadPath + "/shadow"))
+        withSettings.storageHandler.delete(new Path(starlakeMetadataPath + "/transform/shadow"))
       }
     }
   }

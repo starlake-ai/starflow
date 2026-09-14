@@ -27,17 +27,24 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
+        // This note is the user documentation: CliConfig.markdown copies it verbatim into the
+        // generated Docusaurus page, so it must be valid Markdown as well as readable in a
+        // terminal. No angle brackets (MDX parses them as JSX), and the grammar lines are indented
+        // four spaces, surrounded by blank lines, so Markdown renders them as a code block instead
+        // of joining them into one paragraph.
         "Execute the project's tasks in dependency order, in parallel, inside this JVM." +
         " The graph is built from transform lineage, so a load table is executed only when some" +
         " transform reads it: tables no transform references are never ingested by this command." +
+        " When a transform writes to the same domain.table name as a declared load table, the two" +
+        " collapse to a single node and the transform is what runs, never the load." +
         "\n\nSelector syntax, shared by --select and --exclude:" +
-        "\n  domain.table    exactly that task" +
-        "\n  domain.*        every task in the domain" +
-        "\n  tag:<value>     every task carrying the tag" +
-        "\n  +expr           the matched tasks and all their transitive upstreams" +
-        "\n  expr+           the matched tasks and all their transitive downstreams" +
-        "\n  +expr+          both directions" +
-        "\nMatching is case-insensitive. A run executes the selected set and nothing else:" +
+        "\n\n    domain.table    exactly that task" +
+        "\n    domain.*        every task in the domain" +
+        "\n    tag:VALUE       every task carrying the tag" +
+        "\n    +expr           the matched tasks and all their transitive upstreams" +
+        "\n    expr+           the matched tasks and all their transitive downstreams" +
+        "\n    +expr+          both directions" +
+        "\n\nMatching is case-insensitive. A run executes the selected set and nothing else:" +
         " unselected upstreams are not run implicitly, so a task whose input is missing fails" +
         " normally. A selection that matches no task exits with code 3."
       ),

@@ -113,4 +113,25 @@ class DagBuilderSpec extends AnyFlatSpec with Matchers {
     val dag = buildOrFail(deps, loadTables = Set("x.out"))
     dag.nodes("x.out").typ shouldBe RunNodeType.Task
   }
+
+  it should "resolve a transform/load name collision to the transform, in either order" in {
+    // The run spec leaves open what happens when a transform writes to the same domain.table
+    // name as a declared load table. This is the answer: `register` ranks Task above LoadTable,
+    // so the two declarations collapse to a single Task node and the transform is what executes,
+    // never the load. Ranking makes that independent of the order lineage happens to emit them
+    // in, so pin both orders: an order-dependent rule would be a latent nondeterminism.
+    // Stated for users in RunCmd's builder.note.
+    val taskFirst = List(
+      dep("dual.thing", "task"),
+      dep("reader.a", "task", "dual.thing", "table")
+    )
+    val tableFirst = List(
+      dep("reader.a", "task", "dual.thing", "table"),
+      dep("dual.thing", "task")
+    )
+    buildOrFail(taskFirst, loadTables = Set("dual.thing")).nodes("dual.thing").typ shouldBe
+    RunNodeType.Task
+    buildOrFail(tableFirst, loadTables = Set("dual.thing")).nodes("dual.thing").typ shouldBe
+    RunNodeType.Task
+  }
 }
