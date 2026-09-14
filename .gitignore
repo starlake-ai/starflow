@@ -188,3 +188,11 @@ samples/starbake/datasets
 # scripts/announce-release-discord.sh).
 .env
 .env.local
+
+# Local-only documentation (untracked), except docs/static/img which holds the
+# images embedded in README.md. Re-including a path requires un-excluding each
+# parent directory, hence the stepwise pattern below.
+/docs/*
+!/docs/static/
+/docs/static/*
+!/docs/static/img/
