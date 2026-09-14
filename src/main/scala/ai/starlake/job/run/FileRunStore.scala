@@ -20,13 +20,25 @@ import scala.util.control.NonFatal
   *
   * Writes go through java.nio rather than StorageHandler on purpose: the point of this file is a
   * real append with a flush per event, which object-store semantics cannot give, and
-  * StorageHandler.output creates rather than appends. `flush()` hands the bytes to the OS, which
-  * is what makes them survive the process being killed; no fsync, since a machine that loses
-  * power is not a case resume can help with anyway.
+  * StorageHandler.output creates rather than appends. `flush()` hands the bytes to the OS, which is
+  * what makes them survive the process being killed; no fsync, since a machine that loses power is
+  * not a case resume can help with anyway.
   */
 class FileRunStore(rootDir: Path) extends RunStore {
 
   private var writer: Option[BufferedWriter] = None
+
+  /** Every filesystem call in this store goes through here, so a failure reaches the user as a
+    * RunStoreException with a message naming the store, rather than as a bare IOException from
+    * whichever nio call happened to fail.
+    */
+  private def guard[T](what: String)(body: => T): T =
+    try body
+    catch {
+      case e: RunStoreException => throw e
+      case NonFatal(e) =>
+        throw new RunStoreException(s"$what under $rootDir: ${e.getMessage}", e)
+    }
 
   private def runDir(runId: String): Path = rootDir.resolve(runId)
 
@@ -40,7 +52,7 @@ class FileRunStore(rootDir: Path) extends RunStore {
       case _                                => None
     }
 
-  private def attemptsOf(runId: String): List[Int] = {
+  private def attemptsOf(runId: String): List[Int] = guard("Cannot list the run log") {
     val dir = runDir(runId)
     if (!Files.isDirectory(dir)) Nil
     else {
@@ -54,15 +66,17 @@ class FileRunStore(rootDir: Path) extends RunStore {
 
   private def openFor(runId: String, attempt: Int): Unit = {
     close()
-    Files.createDirectories(runDir(runId))
-    writer = Some(
-      Files.newBufferedWriter(
-        attemptFile(runId, attempt),
-        StandardCharsets.UTF_8,
-        StandardOpenOption.CREATE,
-        StandardOpenOption.APPEND
+    guard("Cannot open the run log") {
+      Files.createDirectories(runDir(runId))
+      writer = Some(
+        Files.newBufferedWriter(
+          attemptFile(runId, attempt),
+          StandardCharsets.UTF_8,
+          StandardOpenOption.CREATE,
+          StandardOpenOption.APPEND
+        )
       )
-    )
+    }
   }
 
   def start(header: RunLogEvent): Int = {
@@ -90,6 +104,8 @@ class FileRunStore(rootDir: Path) extends RunStore {
       out.flush()
     } catch {
       case NonFatal(e) =>
+        // No attempt is open any more: a writer that failed mid-line is not one to retry against.
+        writer = None
         throw new RunStoreException(s"Cannot write the run log under $rootDir: ${e.getMessage}", e)
     }
   }
@@ -103,8 +119,8 @@ class FileRunStore(rootDir: Path) extends RunStore {
   def latest(): Option[RunHistory] = {
     if (!Files.isDirectory(rootDir)) None
     else {
-      val stream = Files.list(rootDir)
-      val runIds =
+      val runIds = guard("Cannot list the run log") {
+        val stream = Files.list(rootDir)
         try
           stream
             .iterator()
@@ -115,24 +131,32 @@ class FileRunStore(rootDir: Path) extends RunStore {
             .sorted
             .reverse
         finally stream.close()
+      }
       // Run ids start with yyyyMMdd-HHmmss, so reverse name order is most-recent-first.
       runIds.view.flatMap(read).headOption
     }
   }
 
-  def close(): Unit = {
-    writer.foreach(_.close())
-    writer = None
-  }
+  def close(): Unit =
+    guard("Cannot close the run log") {
+      writer.foreach(_.close())
+      writer = None
+    }
 
   private def eventsIn(file: Path): List[RunLogEvent] = {
-    val lines =
+    val lines = guard("Cannot read the run log") {
       Files.readAllLines(file, StandardCharsets.UTF_8).asScala.toList.filter(_.trim.nonEmpty)
+    }
     lines.zipWithIndex.flatMap { case (line, index) =>
       RunLog.fromJson(line) match {
         case Right(event) => Some(event)
         // A torn last line is the signature of a killed process: drop it. Anywhere else it is
         // corruption we did not cause, and skipping it would silently drop a recorded success.
+        //
+        // The leniency is per file and stays that way even once later attempts exist. A tear is
+        // not repaired by resuming: attempt 1's half-written line is still there after attempt 2
+        // is written, so restricting this to the highest-numbered attempt would make every run
+        // that was ever killed unreadable from its second resume onwards.
         case Left(_) if index == lines.size - 1 => None
         case Left(error) =>
           throw new RunStoreException(s"Corrupt run log $file at line ${index + 1}: $error")

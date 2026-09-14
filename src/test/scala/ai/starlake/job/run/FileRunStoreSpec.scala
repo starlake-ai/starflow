@@ -30,17 +30,17 @@ class FileRunStoreSpec extends RunStoreContractSpec {
     Files.readAllLines(file, StandardCharsets.UTF_8).asScala.toList
 
   "FileRunStore" should "name attempt 1 events.jsonl and later attempts events.N.jsonl" in
-    withTempRoot { root =>
-      val store = new FileRunStore(root)
-      try {
-        store.start(header("r1"))
-        store.reopen("r1")
-        store.append(header("r1").copy(attempt = 2))
-      } finally store.close()
+  withTempRoot { root =>
+    val store = new FileRunStore(root)
+    try {
+      store.start(header("r1"))
+      store.reopen("r1")
+      store.append(header("r1").copy(attempt = 2))
+    } finally store.close()
 
-      Files.exists(root.resolve("r1").resolve("events.jsonl")) shouldBe true
-      Files.exists(root.resolve("r1").resolve("events.2.jsonl")) shouldBe true
-    }
+    Files.exists(root.resolve("r1").resolve("events.jsonl")) shouldBe true
+    Files.exists(root.resolve("r1").resolve("events.2.jsonl")) shouldBe true
+  }
 
   it should "order attempts numerically, not lexically" in withTempRoot { root =>
     val store = new FileRunStore(root)
@@ -71,7 +71,10 @@ class FileRunStoreSpec extends RunStoreContractSpec {
     val file = root.resolve("r1").resolve("events.jsonl")
     // Simulate the kill: a half-written last line, exactly what a flush interrupted mid-write
     // leaves behind.
-    Files.write(file, (linesOf(file).mkString("\n") + "\n{\"runId\":\"r1\",\"att").getBytes(StandardCharsets.UTF_8))
+    Files.write(
+      file,
+      (linesOf(file).mkString("\n") + "\n{\"runId\":\"r1\",\"att").getBytes(StandardCharsets.UTF_8)
+    )
 
     val history = new FileRunStore(root).read("r1").getOrElse(fail("expected a history"))
     history.succeeded shouldBe Set("a")
@@ -94,12 +97,52 @@ class FileRunStoreSpec extends RunStoreContractSpec {
     a[RunStoreException] should be thrownBy new FileRunStore(root).read("r1")
   }
 
-  it should "survive an abrupt close, leaving every flushed event readable" in withTempRoot { root =>
-    val store = new FileRunStore(root)
-    store.start(header("r1"))
-    store.append(event("r1", 1, 2, RunLogEventType.TaskSucceeded, Some("a")))
-    // no close(): every append flushed, so the bytes are with the OS already
-    new FileRunStore(root).read("r1").map(_.succeeded) shouldBe Some(Set("a"))
+  it should "stay readable when an older attempt keeps the tear that killed it" in withTempRoot {
+    root =>
+      // The tear is permanent: resuming does not rewrite attempt 1. If the torn-last-line rule
+      // applied only to the highest-numbered attempt, this run would become unreadable the moment
+      // attempt 2 existed, which is to say every killed run would break on its second resume.
+      val store = new FileRunStore(root)
+      try {
+        store.start(header("r1"))
+        store.append(event("r1", 1, 2, RunLogEventType.TaskSucceeded, Some("a")))
+      } finally store.close()
+
+      val attempt1 = root.resolve("r1").resolve("events.jsonl")
+      Files.write(
+        attempt1,
+        (linesOf(attempt1).mkString("\n") + "\n{\"runId\":\"r1\",\"att")
+          .getBytes(StandardCharsets.UTF_8)
+      )
+
+      val resumed = new FileRunStore(root)
+      try {
+        resumed.reopen("r1") shouldBe 2
+        resumed.append(header("r1").copy(attempt = 2))
+        resumed.append(event("r1", 2, 2, RunLogEventType.TaskSucceeded, Some("b")))
+      } finally resumed.close()
+
+      val history = new FileRunStore(root).read("r1").getOrElse(fail("expected a history"))
+      history.succeeded shouldBe Set("a", "b")
+      history.attempts shouldBe 2
+  }
+
+  it should "fail with RunStoreException, not a raw IOException, when the store root is unreadable" in {
+    // A temp file, not a directory, so Files.createDirectories(runDir) fails underneath start().
+    val badRoot = Files.createTempFile("run-store-spec-unreadable", ".tmp")
+    try {
+      val store = new FileRunStore(badRoot)
+      a[RunStoreException] should be thrownBy store.start(header("r1"))
+    } finally Files.deleteIfExists(badRoot)
+  }
+
+  it should "survive an abrupt close, leaving every flushed event readable" in withTempRoot {
+    root =>
+      val store = new FileRunStore(root)
+      store.start(header("r1"))
+      store.append(event("r1", 1, 2, RunLogEventType.TaskSucceeded, Some("a")))
+      // no close(): every append flushed, so the bytes are with the OS already
+      new FileRunStore(root).read("r1").map(_.succeeded) shouldBe Some(Set("a"))
   }
 
   it should "ignore a directory that holds no run log" in withTempRoot { root =>
