@@ -12,8 +12,8 @@ import scala.collection.mutable
 final case class SelectorMatch(expr: String, matched: Int)
 
 /** @param ids
-  *   every selected node id, boundaries included: they cost nothing to carry and keep a run with
-  *   no selectors identical to P1
+  *   every selected node id, boundaries included: they cost nothing to carry and keep a run with no
+  *   selectors identical to P1
   */
 final case class Selection(
   ids: Set[String],
