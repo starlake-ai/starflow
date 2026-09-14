@@ -398,18 +398,21 @@ class RunCmdSpec extends TestHelper {
       // while building the graph (here, checkNoFinalNameCollision's IllegalStateException) must
       // stay mapped to exit code 2, not fall through to the scheduler's exit code 1. Two declared
       // tables resolving to the same final name is the cheapest way to trigger that throw.
-      // Placed last in this block: schemaHandler.domains() accumulates every domain written by
-      // earlier tests in this WithSettings block, and the collision check runs over all of them,
-      // so leaving an ambiguous domain on disk would poison every test that reloads afterwards.
-      writeLoadTable("collide", "a")
-      writeLoadTable("collide", "b", rename = Some("a"))
+      try {
+        writeLoadTable("collide", "a")
+        writeLoadTable("collide", "b", rename = Some("a"))
 
-      val schemaHandler = settings.schemaHandler(reload = true)
-      val result = RunCmd.runProject(RunConfig(parallelism = Some(1)), schemaHandler)
+        val schemaHandler = settings.schemaHandler(reload = true)
+        val result = RunCmd.runProject(RunConfig(parallelism = Some(1)), schemaHandler)
 
-      result.exitCode shouldBe 2
-      result.summary shouldBe None
-      result.errorMessage.getOrElse("") should include("Ambiguous load tables")
+        result.exitCode shouldBe 2
+        result.summary shouldBe None
+        result.errorMessage.getOrElse("") should include("Ambiguous load tables")
+      } finally {
+        // checkNoFinalNameCollision runs over every domain on disk, so leaving this one behind
+        // would poison every later test in this block regardless of where this test sits.
+        withSettings.storageHandler.delete(new Path(starlakeLoadPath + "/collide"))
+      }
     }
   }
 }
