@@ -1,6 +1,6 @@
 -- Canonical schema for the starlake run store held in starlake-api's PostgreSQL.
 -- starlake-api owns these tables and their migrations: the CLI never issues DDL against them.
--- The typed columns are for the api to query. `payload` is the event exactly as the CLI wrote it
+-- The typed columns are for the api to query; `payload` is the event exactly as the CLI wrote it
 -- and is what the CLI reads back, so the two can never disagree about what happened.
 CREATE TABLE IF NOT EXISTS sl_run (
   run_id         VARCHAR(64) PRIMARY KEY,

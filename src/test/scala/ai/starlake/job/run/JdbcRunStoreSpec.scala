@@ -16,8 +16,20 @@ class JdbcRunStoreSpec extends RunStoreContractSpec with PgContainerHelper {
       statement.execute("DROP TABLE IF EXISTS sl_run_event")
       statement.execute("DROP TABLE IF EXISTS sl_run")
       // The api owns this schema in production; the test creates it from the same resource the
-      // api is told to implement, so the two cannot drift.
-      JdbcRunStore.schemaDdl().split(";").map(_.trim).filter(_.nonEmpty).foreach(statement.execute)
+      // api is told to implement, so the two cannot drift. Strip `--` comments before splitting on
+      // ';': the resource is free to use a semicolon inside a comment, as prose does.
+      val statements = JdbcRunStore
+        .schemaDdl()
+        .linesIterator
+        .map { line =>
+          val commentStart = line.indexOf("--")
+          if (commentStart >= 0) line.substring(0, commentStart) else line
+        }
+        .mkString("\n")
+        .split(";")
+        .map(_.trim)
+        .filter(_.nonEmpty)
+      statements.foreach(statement.execute)
     } finally connection.close()
   }
 
@@ -34,14 +46,17 @@ class JdbcRunStoreSpec extends RunStoreContractSpec with PgContainerHelper {
 
   "JdbcRunStore" should "expose the run row the api reads, without folding events" in {
     resetSchema()
-    val store = JdbcRunStore.open(pgContainer.jdbcUrl, Some("test"), Some("test"), Some("airflow-42"))
+    val store =
+      JdbcRunStore.open(pgContainer.jdbcUrl, Some("test"), Some("test"), Some("airflow-42"))
     try {
       store.start(header("r1"))
       val connection = connect()
       try {
         val rs = connection
           .createStatement()
-          .executeQuery("SELECT status, fingerprint, correlation_id FROM sl_run WHERE run_id = 'r1'")
+          .executeQuery(
+            "SELECT status, fingerprint, correlation_id FROM sl_run WHERE run_id = 'r1'"
+          )
         rs.next() shouldBe true
         rs.getString("status") shouldBe "RUNNING"
         rs.getString("fingerprint") shouldBe "fp1"
@@ -61,6 +76,31 @@ class JdbcRunStoreSpec extends RunStoreContractSpec with PgContainerHelper {
         rs.getInt("exit_code") shouldBe 0
         rs.getTimestamp("finished_at") should not be null
       } finally connection2.close()
+    } finally store.close()
+  }
+
+  it should "skip a run row with no events when finding the latest run" in {
+    resetSchema()
+    val store = JdbcRunStore.open(pgContainer.jdbcUrl, Some("test"), Some("test"), None)
+    try {
+      // The complete, older run.
+      store.start(header("r1"))
+      store.append(event("r1", 1, 2, RunLogEventType.RunFinished).copy(exitCode = Some(0)))
+
+      // A crash between sl_run's insert and sl_run_event's insert of start() leaves exactly this: a
+      // newer sl_run row with no sl_run_event rows at all. latest() must not fold that orphan to
+      // nothing and report no run to resume.
+      val connection = connect()
+      try
+        connection
+          .createStatement()
+          .execute(
+            "INSERT INTO sl_run(run_id, created_at, schema_version, fingerprint, status)" +
+            " VALUES ('r2', now() + interval '1 minute', 1, 'fp2', 'RUNNING')"
+          )
+      finally connection.close()
+
+      store.latest().map(_.runId) shouldBe Some("r1")
     } finally store.close()
   }
 

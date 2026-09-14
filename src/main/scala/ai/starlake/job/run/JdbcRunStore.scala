@@ -29,8 +29,14 @@ class JdbcRunStore(connection: Connection, correlationId: Option[String]) extend
       statement.setTimestamp(2, timestampOf(header.ts))
       statement.setInt(3, header.schemaVersion)
       statement.setString(4, header.fingerprint.getOrElse(""))
-      statement.setString(5, jsonArray(header.selection.getOrElse(Nil)))
-      statement.setString(6, jsonObject(header.options.getOrElse(Map.empty)))
+      header.selection match {
+        case Some(values) => statement.setString(5, jsonArray(values))
+        case None         => statement.setNull(5, java.sql.Types.VARCHAR)
+      }
+      header.options match {
+        case Some(values) => statement.setString(6, jsonObject(values))
+        case None         => statement.setNull(6, java.sql.Types.VARCHAR)
+      }
       statement.setString(7, header.env.orNull)
       statement.setString(8, correlationId.orNull)
       statement.executeUpdate()
@@ -87,12 +93,21 @@ class JdbcRunStore(connection: Connection, correlationId: Option[String]) extend
       statement.executeUpdate()
     }
     if (event.`type` == RunLogEventType.RunFinished) {
+      // Guarded on the attempt: a replayed RunFinished from an older attempt must not mark the run
+      // finished while a newer attempt (already recorded in sl_run_event) is running. sl_run.status
+      // is what the api trusts, so it can only move forward with the highest attempt seen so far.
       withStatement(
-        "UPDATE sl_run SET status = 'FINISHED', exit_code = ?, finished_at = ? WHERE run_id = ?"
+        "UPDATE sl_run SET status = 'FINISHED', exit_code = ?, finished_at = ? WHERE run_id = ?" +
+        " AND ? = (SELECT max(attempt) FROM sl_run_event WHERE run_id = ?)"
       ) { statement =>
-        statement.setInt(1, event.exitCode.getOrElse(0))
+        event.exitCode match {
+          case Some(code) => statement.setInt(1, code)
+          case None       => statement.setNull(1, java.sql.Types.INTEGER)
+        }
         statement.setTimestamp(2, timestampOf(event.ts))
         statement.setString(3, event.runId)
+        statement.setInt(4, event.attempt)
+        statement.setString(5, event.runId)
         statement.executeUpdate()
       }
     }
@@ -118,8 +133,13 @@ class JdbcRunStore(connection: Connection, correlationId: Option[String]) extend
   }
 
   def latest(): Option[RunHistory] = {
+    // A crash between sl_run's insert and sl_run_event's insert of start() leaves a run row with
+    // no events. Taking the newest sl_run row unconditionally would fold that orphan to nothing
+    // and report no run to resume, even though an older, complete run is sitting right behind it.
     val runId = withStatement(
-      "SELECT run_id FROM sl_run ORDER BY created_at DESC, run_id DESC LIMIT 1"
+      "SELECT r.run_id FROM sl_run r" +
+      " WHERE EXISTS (SELECT 1 FROM sl_run_event e WHERE e.run_id = r.run_id)" +
+      " ORDER BY r.created_at DESC, r.run_id DESC LIMIT 1"
     ) { statement =>
       val rs = statement.executeQuery()
       if (rs.next()) Some(rs.getString("run_id")) else None
@@ -129,7 +149,10 @@ class JdbcRunStore(connection: Connection, correlationId: Option[String]) extend
 
   def close(): Unit =
     try connection.close()
-    catch { case NonFatal(_) => () }
+    catch {
+      case NonFatal(e) =>
+        throw new RunStoreException(s"Cannot close the run store: ${e.getMessage}", e)
+    }
 
   private[run] def checkSchema(): Unit =
     try withStatement("SELECT run_id FROM sl_run LIMIT 1")(_.executeQuery())
@@ -152,7 +175,12 @@ class JdbcRunStore(connection: Connection, correlationId: Option[String]) extend
     } finally statement.close()
   }
 
-  private def timestampOf(ts: String): Timestamp = Timestamp.from(Instant.parse(ts))
+  private def timestampOf(ts: String): Timestamp =
+    try Timestamp.from(Instant.parse(ts))
+    catch {
+      case NonFatal(e) =>
+        throw new RunStoreException(s"Invalid run log timestamp '$ts': ${e.getMessage}", e)
+    }
 
   private def jsonArray(values: List[String]): String = RunLog.toJsonValue(values)
 
@@ -195,7 +223,16 @@ object JdbcRunStore {
       }
     connection.setAutoCommit(true)
     val store = new JdbcRunStore(connection, correlationId)
-    store.checkSchema()
-    store
+    // The missing-schema path is reached whenever the api has not run its migration yet, which is
+    // routine, not exceptional: leaking the connection there is how a pool runs dry.
+    try {
+      store.checkSchema()
+      store
+    } catch {
+      case NonFatal(e) =>
+        try connection.close()
+        catch { case NonFatal(_) => () }
+        throw e
+    }
   }
 }
