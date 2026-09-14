@@ -23,7 +23,7 @@ object Versions {
   val esSpark = "8.16.6"
   // json-schema-validator 2.0.4 is the last Jackson-2 line (3.x uses Jackson 3 = tools.jackson,
   // incompatible with the Spark classpath). Never bump past the 2.x line.
-  val jsonSchemaValidator = "2.0.7"
+  val jsonSchemaValidator = "3.0.7"
   val scopt = "4.1.0"
   // 2.69.0+ activates Conscrypt when present, and Conscrypt's JNI_OnLoad aborts the JVM on
   // macOS arm64 ("could not find method serverCertificateRequested"), which surfaced as the
