@@ -1,6 +1,18 @@
 
 # Release notes
 
+# 1.8.7:
+__New feature__:
+- **`starlake run`, an in-process DAG runner**: resolves the project's task graph from the lineage Starlake already computes, detects cycles before executing anything, and runs the tasks in dependency order inside a single JVM, printing a summary table and returning `0` (all succeeded), `1` (a task failed or was skipped behind a failure) or `2` (the graph has a cycle). It is a runner, not an orchestrator: Airflow, Dagster and the cloud schedulers keep scheduling and can simply shell into it. A whole project now runs end to end with one command and no external service beyond the target warehouse. Progress goes to stderr and the summary to stdout, so the output can be piped. Execution is serial by default, following the `maxParTask` setting; `--parallelism` raises it explicitly.
+
+__Improvement__:
+- **DuckDB connections default to the native loader**, instead of going through Spark.
+
+__Bug Fix__:
+- **BigQuery no longer breaks when Snowflake is enabled**: from 4.0.1 `snowflake-jdbc` stopped relocating its bundled Conscrypt, leaving ~296 classes at the real `org.conscrypt` package. The BigQuery SDK finds that private, outdated copy, takes it for an installed Conscrypt and calls a method it does not have, so every BigQuery call in the JVM fails with `NoSuchMethodError` — on Linux only, since the bundled native library has no Apple-silicon build. The installer now fetches a repackaged `snowflake-jdbc` 4.3.4 with those unused entries removed. Temporary: upstream removed them too ([snowflakedb/snowflake-jdbc#2756](https://github.com/snowflakedb/snowflake-jdbc/issues/2756)), and this reverts once that ships.
+- **A failed two-step DuckDB load no longer leaks temporary tables**: each `zztmp` table is now registered before it is created, so a failure partway through still drops the ones already made.
+- **FlightSQL connections accept a token from `SL_QOD_TOKEN`** when none is supplied in the options, for a CLI spawned by starlake-api with no session to inject it. An explicit `token` option still wins.
+
 # 1.8.6:
 __Improvement__:
 - **Airflow orchestration templates move to starlake-airflow 0.6.17**: the DAG REST client now authenticates on Google-managed Airflow (Cloud Composer), its knobs (endpoint, auth, timeouts) are exposed as DAG options declared in the dag templates, and Cloud Run jobs honour `cloud_run_async_poke_interval` on the operator path, not just the sensor path. The wheels shipped with the installer are updated accordingly.
