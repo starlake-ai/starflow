@@ -52,7 +52,8 @@ class RunLogSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "ignore a field it does not know" in {
-    val json = """{"runId":"r1","attempt":1,"seq":1,"ts":"t","type":"RunStarted","schemaVersion":1,"futureField":42}"""
+    val json =
+      """{"runId":"r1","attempt":1,"seq":1,"ts":"t","type":"RunStarted","schemaVersion":1,"futureField":42}"""
     RunLog.fromJson(json).map(_.runId) shouldBe Right("r1")
   }
 
@@ -79,7 +80,8 @@ class RunLogSpec extends AnyFlatSpec with Matchers {
       header("r1"),
       taskEvent("r1", 1, 2, RunLogEventType.TaskSucceeded, "a"),
       header("r1", attempt = 2).copy(seq = 1),
-      taskEvent("r1", 2, 2, RunLogEventType.TaskSkipped, "a").copy(reason = Some(SkipReason.AlreadySucceeded)),
+      taskEvent("r1", 2, 2, RunLogEventType.TaskSkipped, "a")
+        .copy(reason = Some(SkipReason.AlreadySucceeded)),
       taskEvent("r1", 2, 3, RunLogEventType.TaskSucceeded, "b")
     )
     val history = RunHistory.fold(events).getOrElse(fail("expected a history"))
@@ -92,10 +94,40 @@ class RunLogSpec extends AnyFlatSpec with Matchers {
     RunHistory.fold(events).map(_.header.fingerprint) shouldBe Some(Some("abc123"))
   }
 
+  it should "sort out-of-order events before picking the header, regardless of list order" in {
+    val events = List(
+      taskEvent("r1", 2, 3, RunLogEventType.TaskSucceeded, "b"),
+      header("r1", attempt = 2).copy(seq = 1, fingerprint = Some("changed")),
+      taskEvent("r1", 1, 2, RunLogEventType.TaskSucceeded, "a"),
+      header("r1")
+    )
+    val history = RunHistory.fold(events).getOrElse(fail("expected a history"))
+    history.header.attempt shouldBe 1
+    history.header.fingerprint shouldBe Some("abc123")
+    history.succeeded shouldBe Set("a", "b")
+    history.attempts shouldBe 2
+  }
+
+  it should "scope to the header's runId and ignore events from other runs" in {
+    val events = List(
+      header("r1"),
+      taskEvent("r1", 1, 2, RunLogEventType.TaskSucceeded, "a"),
+      header("r2", attempt = 5),
+      taskEvent("r2", 5, 2, RunLogEventType.TaskSucceeded, "z"),
+      taskEvent("r2", 9, 3, RunLogEventType.TaskSucceeded, "y")
+    )
+    val history = RunHistory.fold(events).getOrElse(fail("expected a history"))
+    history.runId shouldBe "r1"
+    history.succeeded shouldBe Set("a")
+    history.attempts shouldBe 1
+    history.events.map(_.runId).toSet shouldBe Set("r1")
+  }
+
   it should "report finished only when the last attempt has a RunFinished" in {
     val attempt1Finished = List(
       header("r1"),
-      taskEvent("r1", 1, 2, RunLogEventType.RunFinished, "a").copy(taskId = None, exitCode = Some(0))
+      taskEvent("r1", 1, 2, RunLogEventType.RunFinished, "a")
+        .copy(taskId = None, exitCode = Some(0))
     )
     RunHistory.fold(attempt1Finished).map(_.finished) shouldBe Some(true)
 

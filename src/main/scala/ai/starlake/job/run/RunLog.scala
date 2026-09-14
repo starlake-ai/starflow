@@ -25,9 +25,9 @@ object SkipReason {
 /** One line of the run log.
   *
   * Deliberately flat, with a `type` discriminator, rather than a sealed hierarchy: Jackson then
-  * needs no polymorphic configuration and every consumer (starlake-api, `jq`, a future
-  * `--output jsonl`) can read a line without knowing our class graph. Fields that do not apply to
-  * an event type are None and are omitted on write.
+  * needs no polymorphic configuration and every consumer (starlake-api, `jq`, a future `--output
+  * jsonl`) can read a line without knowing our class graph. Fields that do not apply to an event
+  * type are None and are omitted on write.
   */
 final case class RunLogEvent(
   runId: String,
@@ -83,11 +83,15 @@ object RunLog {
     */
   def toJsonValue(value: Any): String = mapper.writeValueAsString(value)
 
+  /** Informational only: `ISO_INSTANT` omits fractional seconds when they are exactly zero, so
+    * these strings are not reliably sortable lexically. `(attempt, seq)` is the ordering key: do
+    * not sort on this timestamp.
+    */
   def nowTs(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
 }
 
-/** The state a run log folds down to. The only place events become state: both stores call this,
-  * so neither can drift into its own notion of what "succeeded" means.
+/** The state a run log folds down to. The only place events become state: both stores call this, so
+  * neither can drift into its own notion of what "succeeded" means.
   *
   * @param succeeded
   *   task ids that reached TaskSucceeded in any attempt. Never retracted: a task that succeeded in
@@ -104,17 +108,35 @@ final case class RunHistory(
 
 object RunHistory {
 
-  def fold(events: List[RunLogEvent]): Option[RunHistory] =
-    events.find(_.`type` == RunLogEventType.RunStarted).map { header =>
-      val attempts = events.map(_.attempt).maxOption.getOrElse(1)
-      val succeeded = events.collect {
-        case e if e.`type` == RunLogEventType.TaskSucceeded => e.taskId
-      }.flatten.toSet
-      val finished = events.exists(e =>
-        e.`type` == RunLogEventType.RunFinished && e.attempt == attempts
-      )
-      RunHistory(header.runId, header, attempts, succeeded, finished, events)
+  /** Folds a store's raw events into a [[RunHistory]].
+    *
+    * Defensive against two assumptions a caller (JDBC store, JSONL file store) might otherwise
+    * silently make on our behalf:
+    *   - Ordering: `events` need not arrive sorted. We sort by `(attempt, seq)` before picking the
+    *     header, so an out-of-order read (e.g. a dropped `ORDER BY`) cannot make a later attempt's
+    *     `RunStarted` look like the canonical header.
+    *   - Scope: `events` need not belong to a single run. Once the header is chosen, we restrict to
+    *     events sharing its `runId` before computing attempts/succeeded/finished, so events from an
+    *     unrelated run never leak into this run's state.
+    */
+  def fold(events: List[RunLogEvent]): Option[RunHistory] = {
+    val sorted = events.sortBy(e => (e.attempt, e.seq))
+    sorted.find(_.`type` == RunLogEventType.RunStarted).map { header =>
+      val runEvents = sorted.filter(_.runId == header.runId)
+      val attempts = runEvents.map(_.attempt).maxOption.getOrElse(1)
+      val succeeded = runEvents
+        .collect {
+          // A TaskSucceeded event with no taskId is malformed; we tolerate and drop it rather than
+          // fail the whole fold.
+          case e if e.`type` == RunLogEventType.TaskSucceeded => e.taskId
+        }
+        .flatten
+        .toSet
+      val finished =
+        runEvents.exists(e => e.`type` == RunLogEventType.RunFinished && e.attempt == attempts)
+      RunHistory(header.runId, header, attempts, succeeded, finished, runEvents)
     }
+  }
 }
 
 object RunId {
@@ -122,9 +144,8 @@ object RunId {
   private val formatter =
     DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC)
 
-  /** `yyyyMMdd-HHmmss-<6 hex>`: sortable by start time, which is what makes "the latest run" a
-    * name comparison in FileRunStore, with a random suffix so two runs in the same second stay
-    * distinct.
+  /** `yyyyMMdd-HHmmss-<6 hex>`: sortable by start time, which is what makes "the latest run" a name
+    * comparison in FileRunStore, with a random suffix so two runs in the same second stay distinct.
     */
   def generate(now: Instant = Instant.now(), random: Random = new Random()): String = {
     val suffix = f"${random.nextInt(1 << 24)}%06x"
