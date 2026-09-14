@@ -22,6 +22,13 @@ class MainExitCodeSpec extends AnyFlatSpec with Matchers {
     Main.exitCodeOf(Success(runResult(2))) shouldBe 2
   }
 
+  it should "pass through the empty-selection exit code" in {
+    // P2 adds code 3. It needs no new arm in exitCodeOf because RunJobResult carries its own code,
+    // which is exactly the property worth pinning: a refactor that starts interpreting the result
+    // instead of forwarding it would break this.
+    Main.exitCodeOf(Success(runResult(3))) shouldBe 3
+  }
+
   it should "never collapse a failed run onto the generic success code" in {
     // The RunJobResult arm must stay above the catch-all `case Success(_) => 0`. If it were
     // removed or reordered below it, every failed run would silently exit 0.

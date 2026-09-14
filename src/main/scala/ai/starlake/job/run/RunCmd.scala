@@ -11,6 +11,7 @@ import ai.starlake.workflow.IngestionWorkflow
 import com.typesafe.scalalogging.LazyLogging
 import scopt.OParser
 
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 /** In-process DAG runner: executes the project's tasks in dependency order, in parallel, inside
@@ -107,6 +108,12 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
     * Parallelism defaults to the `maxParTask` setting (1 unless the project raises it). `run` does
     * not widen that contract on its own: `--parallelism N` is an explicit opt-in, because several
     * engines share process-wide state across concurrently executing tasks.
+    *
+    * `--select` and `--exclude` restrict the graph before execution. A run executes the selected
+    * set and nothing else: unselected upstreams are not run implicitly, so a task whose input is
+    * missing fails normally. Excluding a node in the middle of a chain does not lose ordering,
+    * because RunDag.restrictTo rewires through it. A selection with no executable task exits 3
+    * rather than reporting a vacuous success.
     */
   def runProject(config: RunConfig, schemaHandler: SchemaHandler)(implicit
     settings: Settings
@@ -115,59 +122,124 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
       settings.storageHandler()
     implicit val sh: SchemaHandler = schemaHandler
 
-    val tasks = AutoTask.unauthenticatedTasks(reload = false)
-    val deps = TaskViewDependency.dependencies(tasks)
-    // Lineage names tables by their final name, but the load path filters on the declared name
-    // (IngestionWorkflow.predicate matches table.name). Keep both: the final name to recognize a
-    // node, the declared pair to execute it.
-    // Two declared tables can share a final name (a `rename:` resolving onto another table, or two
-    // case variants). The value here selects what a node executes, so silently keeping the
-    // last-written pair would make a node ingest a different table than the one it names.
-    val declaredByFinalName: List[(String, (String, String))] =
-      schemaHandler
-        .domains()
-        .flatMap { domain =>
-          domain.tables.map { table =>
-            s"${domain.finalName}.${table.finalName}".toLowerCase -> (domain.name, table.name)
-          }
-        }
-    val loadTables: Map[String, (String, String)] =
-      checkNoFinalNameCollision(declaredByFinalName)
-
-    DagBuilder.build(deps, loadTables.keySet) match {
-      case Left(cycle) =>
-        val message = s"Cycle detected in the task graph: ${cycle.mkString(" -> ")}"
-        System.err.println(message)
-        RunJobResult(exitCode = 2, summary = None, errorMessage = Some(message))
-      case Right(dag) =>
-        val ingestionWorkflow = workflow(schemaHandler)
-        // Same contract as `transform --recursive`: serial unless the project opted into
-        // parallelism. Several engines keep process-wide state per task, so concurrency is a
-        // deliberate choice, not a default.
-        // max(1) because maxParTask is free-form config while the scheduler requires >= 1
-        val parallelism = config.parallelism.getOrElse(math.max(1, settings.appConfig.maxParTask))
-        val scheduler = new RunScheduler(
-          dag = dag,
-          parallelism = parallelism,
-          failFast = config.failFast,
-          executor = executeNode(ingestionWorkflow, config, loadTables, _),
-          listener = event => System.err.println(TextRenderer.progressLine(event))
-        )
-        // Ingestion prints a human-readable block to stdout (Utils.printOut) on every load node,
-        // which would interleave with the summary table below. Console.out is a DynamicVariable
-        // backed by an InheritableThreadLocal and RunScheduler allocates its thread pool inside
-        // run(), so worker threads inherit this redirection. Hoisting that pool out of run() would
-        // silently send node output back to stdout.
-        // The inheritance happens at thread creation, so this covers the runner's own threads and
-        // any ParUtils pool a node spawns, but not threads that already existed: Spark's driver and
-        // executor threads keep writing to the real stdout.
-        val summary = Console.withOut(System.err) { scheduler.run() }
-        // The summary table is this command's machine-consumable output and always goes to stdout.
-        // RunConfig.reportFormat is parsed for CLI consistency but deliberately not read here, as
-        // elsewhere in the codebase.
-        println(TextRenderer.summaryTable(summary))
-        RunJobResult(exitCode = summary.exitCode, summary = Some(summary), errorMessage = None)
+    def graphError(message: String): RunJobResult = {
+      System.err.println(message)
+      RunJobResult(exitCode = 2, summary = None, errorMessage = Some(message))
     }
+
+    // Graph construction only. Execution failures must keep reporting 1, so the catch below must
+    // never widen to cover the scheduler.
+    val resolved: Either[RunJobResult, (RunDag, Selection, Map[String, (String, String)])] =
+      try {
+        val tasks = AutoTask.unauthenticatedTasks(reload = false)
+        val deps = TaskViewDependency.dependencies(tasks)
+        // Lineage names tables by their final name, but the load path filters on the declared name
+        // (IngestionWorkflow.predicate matches table.name). Keep both: the final name to recognize
+        // a node, the declared pair to execute it.
+        // Two declared tables can share a final name (a `rename:` resolving onto another table, or
+        // two case variants). The value here selects what a node executes, so silently keeping the
+        // last-written pair would make a node ingest a different table than the one it names.
+        val declaredByFinalName: List[(String, (String, String))] =
+          schemaHandler
+            .domains()
+            .flatMap { domain =>
+              domain.tables.map { table =>
+                s"${domain.finalName}.${table.finalName}".toLowerCase -> (domain.name, table.name)
+              }
+            }
+        val loadTables: Map[String, (String, String)] =
+          checkNoFinalNameCollision(declaredByFinalName)
+        val tags = tagIndex(tasks, schemaHandler)
+
+        DagBuilder.build(deps, loadTables.keySet) match {
+          case Left(cycle) =>
+            Left(graphError(s"Cycle detected in the task graph: ${cycle.mkString(" -> ")}"))
+          case Right(dag) =>
+            Selection.resolve(dag, tags, config.select, config.exclude) match {
+              case Left(message)    => Left(graphError(message))
+              case Right(selection) => Right((dag, selection, loadTables))
+            }
+        }
+      } catch {
+        // Before P2 this escaped runProject and Main mapped it to 1 with a stack trace. A bad
+        // project is a configuration error, which the spec's exit table calls 2.
+        case NonFatal(e) =>
+          val detail = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+          Left(graphError(s"Failed to build the task graph: $detail"))
+      }
+
+    resolved match {
+      case Left(failure) => failure
+      case Right((dag, selection, loadTables)) =>
+        val selected = dag.restrictTo(selection.ids)
+        val executableIds = selected.nodes.collect {
+          case (id, node) if node.typ != RunNodeType.Boundary => id
+        }.toSet
+
+        if (executableIds.isEmpty) {
+          // Spec section 4: never silently succeed on an empty run.
+          val message = TextRenderer.emptySelectionMessage(selection)
+          System.err.println(message)
+          RunJobResult(exitCode = 3, summary = None, errorMessage = Some(message))
+        } else if (config.dryRun) {
+          // Boundaries are collapsed out of the plan by restricting again to the executable nodes;
+          // restrictTo rewires through them, so the levels shown are the ones that will be run.
+          println(TextRenderer.planTable(selected.restrictTo(executableIds), selection))
+          RunJobResult(exitCode = 0, summary = None, errorMessage = None)
+        } else {
+          val ingestionWorkflow = workflow(schemaHandler)
+          // Same contract as `transform --recursive`: serial unless the project opted into
+          // parallelism. Several engines keep process-wide state per task, so concurrency is a
+          // deliberate choice, not a default.
+          // max(1) because maxParTask is free-form config while the scheduler requires >= 1
+          val parallelism =
+            config.parallelism.getOrElse(math.max(1, settings.appConfig.maxParTask))
+          val scheduler = new RunScheduler(
+            dag = selected,
+            parallelism = parallelism,
+            failFast = config.failFast,
+            executor = executeNode(ingestionWorkflow, config, loadTables, _),
+            listener = event => System.err.println(TextRenderer.progressLine(event))
+          )
+          // Ingestion prints a human-readable block to stdout (Utils.printOut) on every load node,
+          // which would interleave with the summary table below. Console.out is a DynamicVariable
+          // backed by an InheritableThreadLocal and RunScheduler allocates its thread pool inside
+          // run(), so worker threads inherit this redirection. Hoisting that pool out of run()
+          // would silently send node output back to stdout.
+          // The inheritance happens at thread creation, so this covers the runner's own threads
+          // and any ParUtils pool a node spawns, but not threads that already existed: Spark's
+          // driver and executor threads keep writing to the real stdout.
+          val summary = Console.withOut(System.err) { scheduler.run() }
+          // The summary table is this command's machine-consumable output and always goes to
+          // stdout. RunConfig.reportFormat is parsed for CLI consistency but deliberately not read
+          // here, as elsewhere in the codebase.
+          println(TextRenderer.summaryTable(summary))
+          RunJobResult(exitCode = summary.exitCode, summary = Some(summary), errorMessage = None)
+        }
+    }
+  }
+
+  /** Tags per node id, for `tag:` selectors.
+    *
+    * Transforms carry them on AutoTaskInfo, load tables on SchemaInfo, and both are keyed the way
+    * DagBuilder names the corresponding node: a transform by its fullName, a load table by
+    * "domainFinalName.tableFinalName". Boundary nodes have no tags and no entry.
+    */
+  private[run] def tagIndex(
+    tasks: List[AutoTask],
+    schemaHandler: SchemaHandler
+  ): Map[String, Set[String]] = {
+    val transformTags =
+      tasks.map(task => task.taskDesc.fullName().toLowerCase -> task.taskDesc.tags)
+    val loadTags =
+      schemaHandler.domains().flatMap { domain =>
+        domain.tables.map { table =>
+          s"${domain.finalName}.${table.finalName}".toLowerCase -> table.tags
+        }
+      }
+    // A transform and a load table can share a name, and DagBuilder resolves that collision to a
+    // single Task node, so the transform's tags win here too.
+    (loadTags ++ transformTags).filter { case (_, tags) => tags.nonEmpty }.toMap
   }
 
   /** Indexes declared tables by their final name, rejecting any final name claimed by more than one

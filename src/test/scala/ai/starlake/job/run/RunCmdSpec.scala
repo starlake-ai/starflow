@@ -258,6 +258,130 @@ class RunCmdSpec extends TestHelper {
       rowCount("dom3.renamed") shouldBe Success(1)
     }
 
+    it should "execute only the selected task and its upstreams" in {
+      // Domain "pick", not "sel": jsqlparser reads a leading SEL as Teradata's SELECT abbreviation,
+      // so "from sel.first" fails to parse and the task would fail for a reason unrelated to
+      // selection.
+      writeTask("pick", "first", "select 1 as n")
+      writeTask("pick", "second", "select n from pick.first")
+      writeTask("pick", "third", "select n from pick.second")
+      writeTask("pick", "unrelated", "select 2 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("+pick.second")),
+          schemaHandler
+        )
+
+      result.exitCode shouldBe 0
+      val executed = result.summary
+        .getOrElse(fail("expected a summary"))
+        .results
+        .filter(_.node.typ == RunNodeType.Task)
+        .map(_.node.id)
+        .toSet
+      executed shouldBe Set("pick.first", "pick.second")
+    }
+
+    it should "agree with the dry-run plan for the same selector" in {
+      // Spec section 13, acceptance criterion 2: --select +some.table executes exactly that task
+      // and its upstreams, verified against --dry-run output.
+      writeTask("acc", "first", "select 1 as n")
+      writeTask("acc", "second", "select n from acc.first")
+      writeTask("acc", "other", "select 3 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val config = RunConfig(parallelism = Some(1), select = Seq("+acc.second"))
+
+      val planned = new ByteArrayOutputStream()
+      val dryResult =
+        Console.withOut(planned) {
+          RunCmd.runProject(config.copy(dryRun = true), schemaHandler)
+        }
+      val plan = planned.toString("UTF-8")
+
+      dryResult.exitCode shouldBe 0
+      dryResult.summary shouldBe None
+      plan should include("acc.first")
+      plan should include("acc.second")
+      (plan should not).include("acc.other")
+
+      val runResult = RunCmd.runProject(config, schemaHandler)
+      val executed = runResult.summary
+        .getOrElse(fail("expected a summary"))
+        .results
+        .filter(_.node.typ == RunNodeType.Task)
+        .map(_.node.displayName)
+        .toSet
+      executed shouldBe Set("acc.first", "acc.second")
+      executed.foreach(name => plan should include(name))
+    }
+
+    it should "not execute an excluded task" in {
+      // Independent tasks on purpose. The ordering property of exclusion -- that excluding an
+      // interior node keeps its neighbours ordered -- is asserted as a DAG edge in RunDagSpec,
+      // which is the only place it can fail for the right reason: with the scheduler's
+      // alphabetical tie-break, an execution-order assertion here would pass either way.
+      writeTask("exc", "a", "select 1 as n")
+      writeTask("exc", "b", "select 2 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(
+          RunConfig(parallelism = Some(1), select = Seq("exc.*"), exclude = Seq("exc.a")),
+          schemaHandler
+        )
+
+      result.exitCode shouldBe 0
+      val executed = result.summary
+        .getOrElse(fail("expected a summary"))
+        .results
+        .filter(_.node.typ == RunNodeType.Task)
+        .map(_.node.id)
+      executed should contain("exc.b")
+      executed should not contain "exc.a"
+    }
+
+    it should "exit with code 3 when the selection matches nothing" in {
+      writeTask("empty", "task", "select 1 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(RunConfig(select = Seq("nope.nothing")), schemaHandler)
+
+      result.exitCode shouldBe 3
+      result.summary shouldBe None
+      result.errorMessage.getOrElse("") should include("nope.nothing")
+    }
+
+    it should "exit with code 2 on a malformed selector" in {
+      writeTask("bad", "task", "select 1 as n")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        RunCmd.runProject(RunConfig(select = Seq("a.b.c")), schemaHandler)
+
+      result.exitCode shouldBe 2
+      result.errorMessage.getOrElse("") should include("a.b.c")
+    }
+
+    it should "execute nothing under --dry-run" in {
+      writeLoadTable("dry", "things")
+      stageFile("dry", "things-1.csv", "id,name\n1,one\n")
+      writeTask("dry", "fromthings", "select id, name from dry.things")
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result =
+        Console.withOut(new ByteArrayOutputStream()) {
+          RunCmd.runProject(RunConfig(parallelism = Some(1), dryRun = true), schemaHandler)
+        }
+
+      result.exitCode shouldBe 0
+      // The staged file is still waiting: no load node ran.
+      fileNamesIn(DatasetArea.stage("dry")) shouldBe List("things-1.csv")
+    }
+
     it should "exit with code 2 on a cyclic graph" in {
       writeTask("cyclic", "alpha", "select * from cyclic.beta")
       writeTask("cyclic", "beta", "select * from cyclic.alpha")
