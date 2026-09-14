@@ -5,8 +5,8 @@ import org.scalatest.matchers.should.Matchers
 
 class SelectionSpec extends AnyFlatSpec with Matchers {
 
-  /** ext.src (boundary) -> sales.orders (load) -> sales.clean -> sales.revenue
-    * and an unrelated ops.audit
+  /** ext.src (boundary) -> sales.orders (load) -> sales.clean -> sales.revenue and an unrelated
+    * ops.audit
     */
   private val dag: RunDag = RunDag(
     nodes = Map(
@@ -137,15 +137,15 @@ class SelectionSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "reject a malformed select expression" in {
-    Selection.resolve(dag, tags, Seq("a.b.c"), Nil).isLeft shouldBe true
+    Selection.resolve(dag, nodeTags, Seq("a.b.c"), Nil).isLeft shouldBe true
   }
 
   it should "reject a malformed exclude expression" in {
-    Selection.resolve(dag, tags, Nil, Seq("*")).isLeft shouldBe true
+    Selection.resolve(dag, nodeTags, Nil, Seq("*")).isLeft shouldBe true
   }
 
   it should "report the first malformed expression without evaluating the graph" in {
-    Selection.resolve(dag, tags, Seq("sales.clean", "a.b.c"), Nil) match {
+    Selection.resolve(dag, nodeTags, Seq("sales.clean", "a.b.c"), Nil) match {
       case Left(message) => message should include("a.b.c")
       case Right(value)  => fail(s"expected a rejection, got: $value")
     }
