@@ -39,7 +39,7 @@ object Versions {
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
-  val confluentVersion = "7.9.3"
+  val confluentVersion = "7.9.9"
   val kafkaClients = "7.9.3-ce"
   val testContainers = "0.44.1"
   val gcpCloudLogging = "3.38.0"
