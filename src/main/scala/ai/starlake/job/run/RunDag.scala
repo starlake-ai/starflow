@@ -40,4 +40,40 @@ final case class RunDag(nodes: Map[String, RunNode], parents: Map[String, Set[St
   }
 
   def executableCount: Int = nodes.values.count(_.typ != RunNodeType.Boundary)
+
+  /** Restricts the graph to `selected`, rewiring every kept node's parents to its *nearest selected
+    * ancestors* rather than simply dropping edges to unselected nodes.
+    *
+    * Spec section 4 says unselected upstreams are not run. Deleting their edges honours that but
+    * silently loses ordering: with `a -> b -> c` and b unselected, a and c would become independent
+    * and could run in either order. Walking up through b instead keeps `a -> c`, so nothing
+    * unselected executes and the ordering that the project's lineage asserts still holds.
+    *
+    * `restrictTo(nodes.keySet)` is the identity, which is what keeps a run with no selectors
+    * behaving exactly as it did before selection existed.
+    */
+  def restrictTo(selected: Set[String]): RunDag = {
+    val kept = selected.intersect(nodes.keySet)
+
+    def nearestSelectedAncestors(id: String): Set[String] = {
+      val seen = mutable.Set[String]()
+      val found = mutable.Set[String]()
+      val queue = mutable.Queue[String]() ++= parents.getOrElse(id, Set.empty)
+      while (queue.nonEmpty) {
+        val current = queue.dequeue()
+        // `seen` also makes this terminate on a graph that somehow carries a cycle, rather than
+        // hanging: DagBuilder rejects cycles, but this method does not depend on that.
+        if (seen.add(current)) {
+          if (kept.contains(current)) found += current
+          else queue ++= parents.getOrElse(current, Set.empty)
+        }
+      }
+      found.toSet
+    }
+
+    RunDag(
+      nodes = nodes.view.filterKeys(kept.contains).toMap,
+      parents = kept.map(id => id -> nearestSelectedAncestors(id)).toMap
+    )
+  }
 }
