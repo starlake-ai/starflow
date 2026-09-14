@@ -5,14 +5,21 @@ import org.scalatest.matchers.should.Matchers
 
 /** The behaviour every RunStore must have, written once against the trait.
   *
-  * Store tests live here rather than in each implementation's spec on purpose: it is what stops
-  * the trait from quietly acquiring the vocabulary of whichever backend was written first.
-  * Subclasses supply a fresh, empty store per test.
+  * Store tests live here rather than in each implementation's spec on purpose: it is what stops the
+  * trait from quietly acquiring the vocabulary of whichever backend was written first. Subclasses
+  * supply a fresh, empty store per test.
   */
 abstract class RunStoreContractSpec extends AnyFlatSpec with Matchers {
 
   /** Runs `test` against a store whose backing state is empty, then closes it. */
   def withStore(test: RunStore => Unit): Unit
+
+  /** A second store over the same backing state as `previous`, as a fresh process would see it.
+    *
+    * Without this, every case in this file would pass an implementation that kept everything in
+    * memory, which is the one thing a run log must not be: resume exists to survive the process.
+    */
+  def reopenStore(previous: RunStore): RunStore
 
   protected def header(runId: String, fingerprint: String = "fp1") =
     RunLogEvent(
@@ -54,8 +61,10 @@ abstract class RunStoreContractSpec extends AnyFlatSpec with Matchers {
     val history = store.read("r1").getOrElse(fail("expected a history"))
     history.runId shouldBe "r1"
     history.header.fingerprint shouldBe Some("fp1")
+    history.header.fingerprintParts shouldBe Some(Map("graph" -> "g1", "selection" -> "s1"))
     history.header.selectExprs shouldBe Some(List("sales.*"))
     history.header.options shouldBe Some(Map("k" -> "v"))
+    history.header.env shouldBe Some("prod")
     history.succeeded shouldBe Set("a")
     history.attempts shouldBe 1
     history.finished shouldBe false
@@ -96,6 +105,31 @@ abstract class RunStoreContractSpec extends AnyFlatSpec with Matchers {
     store.start(header("20260914-183042-aaaaaa"))
     store.start(header("20260914-190000-bbbbbb"))
     store.latest().map(_.runId) shouldBe Some("20260914-190000-bbbbbb")
+
+    // Started, not touched: resuming the older run must not make it the latest again. A store
+    // that tracked a last-modified stamp instead would pass the two lines above and fail here.
+    store.reopen("20260914-183042-aaaaaa")
+    store.append(header("20260914-183042-aaaaaa").copy(attempt = 2))
+    store.latest().map(_.runId) shouldBe Some("20260914-190000-bbbbbb")
+  }
+
+  it should "survive a fresh store over the same backing state" in withStore { store =>
+    // The whole point of the log: a resume happens in a new process. An in-memory store passes
+    // every other case in this file and fails this one.
+    store.start(header("r1"))
+    store.append(event("r1", 1, 2, RunLogEventType.TaskSucceeded, Some("a")))
+    store.close()
+
+    val fresh = reopenStore(store)
+    try {
+      fresh.read("r1").map(_.succeeded) shouldBe Some(Set("a"))
+      fresh.reopen("r1") shouldBe 2
+    } finally fresh.close()
+  }
+
+  it should "refuse an append with no attempt open" in withStore { store =>
+    a[RunStoreException] should be thrownBy
+    store.append(event("r1", 1, 2, RunLogEventType.TaskSucceeded, Some("a")))
   }
 
   it should "have no latest run when nothing was ever recorded" in withStore { store =>

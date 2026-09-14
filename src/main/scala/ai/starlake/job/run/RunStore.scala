@@ -14,6 +14,11 @@ class RunStoreException(message: String, cause: Throwable = null)
   *
   * Implementations are single-writer. RunScheduler invokes its listener only from the thread that
   * called run(), so no implementation needs locking.
+  *
+  * Two caller obligations the backends cannot both enforce cheaply, so they are stated rather than
+  * defended: `start` is called once per run id, and an attempt's header is appended before that run
+  * is reopened again. `reopen` numbers attempts from what has been recorded, so reopening twice
+  * with nothing written in between is undefined and the backends will disagree.
   */
 trait RunStore {
 
@@ -26,19 +31,26 @@ trait RunStore {
     */
   def reopen(runId: String): Int
 
+  /** Records one event on the attempt opened by the last `start` or `reopen`.
+    * @throws RunStoreException
+    *   if no attempt is open, or the write fails
+    */
   def append(event: RunLogEvent): Unit
 
+  /** Every attempt of that run, folded, or None when the run is unknown. */
   def read(runId: String): Option[RunHistory]
 
-  /** The most recently started run, or None when nothing was ever recorded. */
+  /** The most recently *started* run, or None when nothing was ever recorded. Resuming an older run
+    * does not make it the latest again.
+    */
   def latest(): Option[RunHistory]
 
   def close(): Unit
 }
 
-/** The off switch, used for `--dry-run` and `--no-run-log`. Not a third backend: it stores
-  * nothing. Reading through it is always empty, and reopening through it fails, because
-  * `--resume` against a disabled log is a usage error rather than a run with no history.
+/** The off switch, used for `--dry-run` and `--no-run-log`. Not a third backend: it stores nothing.
+  * Reading through it is always empty, and reopening through it fails, because `--resume` against a
+  * disabled log is a usage error rather than a run with no history.
   */
 object NoopRunStore extends RunStore {
   def start(header: RunLogEvent): Int = 1
