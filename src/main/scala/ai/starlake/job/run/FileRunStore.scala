@@ -105,7 +105,11 @@ class FileRunStore(rootDir: Path) extends RunStore {
     } catch {
       case NonFatal(e) =>
         // No attempt is open any more: a writer that failed mid-line is not one to retry against.
+        // Clearing the field also puts the handle out of close()'s reach, so close it here or it
+        // leaks until the JVM gets around to it.
         writer = None
+        try out.close()
+        catch { case NonFatal(_) => () }
         throw new RunStoreException(s"Cannot write the run log under $rootDir: ${e.getMessage}", e)
     }
   }
@@ -139,12 +143,12 @@ class FileRunStore(rootDir: Path) extends RunStore {
 
   def close(): Unit =
     guard("Cannot close the run log") {
-      writer.foreach(_.close())
-      writer = None
+      try writer.foreach(_.close())
+      finally writer = None
     }
 
   private def eventsIn(file: Path): List[RunLogEvent] = {
-    val lines = guard("Cannot read the run log") {
+    val lines = guard(s"Cannot read the run log $file") {
       Files.readAllLines(file, StandardCharsets.UTF_8).asScala.toList.filter(_.trim.nonEmpty)
     }
     lines.zipWithIndex.flatMap { case (line, index) =>

@@ -127,7 +127,7 @@ class FileRunStoreSpec extends RunStoreContractSpec {
       history.attempts shouldBe 2
   }
 
-  it should "fail with RunStoreException, not a raw IOException, when the store root is unreadable" in {
+  it should "fail with RunStoreException, not a raw IOException, when the store root is not a directory" in {
     // A temp file, not a directory, so Files.createDirectories(runDir) fails underneath start().
     val badRoot = Files.createTempFile("run-store-spec-unreadable", ".tmp")
     try {
