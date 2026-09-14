@@ -114,6 +114,23 @@ class SelectionSpec extends AnyFlatSpec with Matchers {
     Right(Set("proj.sales.revenue"))
   }
 
+  it should "match a tag on a prefixed node id too" in {
+    // The tag index is keyed the way DagBuilder names nodes, so on a graph whose ids carry a
+    // catalog or project prefix the full id would miss. Exact and DomainAll already normalize to
+    // the last two segments; this keeps the third arm of the same match expression consistent, so
+    // `--select sales.revenue` and `--select tag:daily` agree about what they match.
+    val prefixed = RunDag(
+      nodes = Map(
+        "proj.sales.revenue" ->
+        RunNode("proj.sales.revenue", "proj.sales.revenue", RunNodeType.Task)
+      ),
+      parents = Map("proj.sales.revenue" -> Set.empty[String])
+    )
+    Selection
+      .resolve(prefixed, Map("sales.revenue" -> Set("daily")), Seq("tag:daily"), Nil)
+      .map(_.ids) shouldBe Right(Set("proj.sales.revenue"))
+  }
+
   it should "count only executable nodes as matches" in {
     // ext.src is a boundary: it is selected for ordering but it is not a task, so a selector that
     // reaches it must not claim to have matched it.

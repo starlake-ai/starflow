@@ -102,11 +102,18 @@ object Selection {
     matcher: Matcher
   ): Boolean =
     matcher match {
-      case Matcher.Exact(target)     => id == target || lastTwoParts(id) == target
-      case Matcher.DomainAll(domain) => lastTwoParts(id).startsWith(s"$domain.")
-      case Matcher.Tag(value) =>
-        tagsByNodeId.getOrElse(id, Set.empty).exists(_.toLowerCase == value)
+      // Selector.parse guarantees an Exact target is exactly two non-empty segments, so
+      // `id == target` implies `lastTwoParts(id) == target` and testing it separately would be
+      // dead. All three arms normalize the same way, which is what lets a node id carrying a
+      // catalog or project prefix match a two-part selector.
+      case Matcher.Exact(target)     => RunDag.lastTwoParts(id) == target
+      case Matcher.DomainAll(domain) => RunDag.lastTwoParts(id).startsWith(s"$domain.")
+      case Matcher.Tag(value)        =>
+        // tagsByNodeId is keyed the way DagBuilder names nodes, which is two-part today, so the
+        // full id is the key that hits. The last-two-segments fallback keeps this arm consistent
+        // with the two above rather than silently matching nothing on a prefixed graph.
+        val tags =
+          tagsByNodeId.getOrElse(id, tagsByNodeId.getOrElse(RunDag.lastTwoParts(id), Set.empty))
+        tags.exists(_.toLowerCase == value)
     }
-
-  private def lastTwoParts(id: String): String = id.split('.').takeRight(2).mkString(".")
 }

@@ -17,12 +17,29 @@ class RunConfigSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "parse all options" in {
+    // Every flag the command declares, in one invocation. The cases below cover the selector
+    // flags in isolation; this one exists to fail when a new flag is added without being parsed
+    // alongside the others, so it has to stay exhaustive.
     val config = RunCmd.parse(
-      Seq("--parallelism", "4", "--fail-fast", "--options", "k1=v1,k2=v2")
+      Seq(
+        "--parallelism",
+        "4",
+        "--fail-fast",
+        "--select",
+        "sales.a",
+        "--exclude",
+        "tag:wip",
+        "--dry-run",
+        "--options",
+        "k1=v1,k2=v2"
+      )
     )
     config shouldBe defined
     config.get.parallelism shouldBe Some(4)
     config.get.failFast shouldBe true
+    config.get.select shouldBe Seq("sales.a")
+    config.get.exclude shouldBe Seq("tag:wip")
+    config.get.dryRun shouldBe true
     config.get.options shouldBe Map("k1" -> "v1", "k2" -> "v2")
   }
 

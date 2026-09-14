@@ -305,7 +305,7 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
           .map(_ => ())
       case RunNodeType.LoadTable =>
         // Same normalization DagBuilder used to classify this node as a load table
-        val key = node.id.split('.').takeRight(2).mkString(".")
+        val key = RunDag.lastTwoParts(node.id)
         loadTables.get(key) match {
           case Some((domainName, tableName)) =>
             ingestionWorkflow

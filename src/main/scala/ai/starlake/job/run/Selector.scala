@@ -52,15 +52,19 @@ object Selector {
     }
   }
 
-  private def matcherOf(expr: String, body: String): Either[String, Matcher] = {
-    def reject: Either[String, Matcher] = Left(s"Invalid selector '$expr': $Grammar.")
+  /** @param original
+    *   the trimmed expression as the user typed it, operators included: only ever used to name the
+    *   offending input in an error message. `body` is what is actually matched on.
+    */
+  private def matcherOf(original: String, body: String): Either[String, Matcher] = {
+    def reject: Either[String, Matcher] = Left(s"Invalid selector '$original': $Grammar.")
     // Only one '+' is allowed on each side, and it is stripped above: any '+' left here is a
     // doubled operator or a stray one in the middle.
     if (body.isEmpty || body.contains("+")) reject
     else if (body.toLowerCase.startsWith("tag:")) {
       val value = body.drop("tag:".length).trim
       if (value.isEmpty)
-        Left(s"Invalid selector '$expr': a tag selector needs a value, as in 'tag:daily'.")
+        Left(s"Invalid selector '$original': a tag selector needs a value, as in 'tag:daily'.")
       else Right(Matcher.Tag(value.toLowerCase))
     } else if (body.endsWith(".*")) {
       val domain = body.dropRight(".*".length)

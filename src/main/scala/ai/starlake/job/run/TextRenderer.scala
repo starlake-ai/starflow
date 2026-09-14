@@ -117,11 +117,14 @@ object TextRenderer {
     if (unmatched.nonEmpty)
       s"Selection matched no task. These selectors matched nothing: ${unmatched.mkString(", ")}." +
       " Run with --dry-run and no selector to list what the project graph contains."
-    else if (selection.excludeMatches.nonEmpty)
-      "Selection matched no task: --exclude " +
-      selection.excludeMatches.map(_.expr).mkString(", ") +
+    else if (selection.excludeMatches.exists(_.matched > 0)) {
+      // Presence is not effect: `--exclude foo.bar` on a project with no transform is present and
+      // removed nothing, and blaming it would send the user hunting a typo that is not there. Only
+      // exclusions that actually shrank the set emptied it, and only those are named.
+      val effective = selection.excludeMatches.filter(_.matched > 0).map(_.expr)
+      "Selection matched no task: --exclude " + effective.mkString(", ") +
       " removed every selected task."
-    else
+    } else
       "The project graph contains no executable task. `starlake run` builds its graph from" +
       " transform lineage, so a project with no transform has nothing to run."
   }

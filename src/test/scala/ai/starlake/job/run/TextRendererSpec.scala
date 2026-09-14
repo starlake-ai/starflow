@@ -191,6 +191,33 @@ class TextRendererSpec extends AnyFlatSpec with Matchers {
     message.toLowerCase should include("exclude")
   }
 
+  it should "name only the exclusions that actually removed something" in {
+    // An exclusion that matched nothing did not empty the selection, so it must not be blamed for
+    // it. `--exclude ops.audit` here is present but removed zero, and naming it would send the
+    // user looking for a typo in the one selector that is not the problem.
+    val selection = Selection(
+      ids = Set.empty,
+      selectMatches = List(SelectorMatch("sales.*", 3)),
+      excludeMatches = List(SelectorMatch("ops.audit", 0), SelectorMatch("tag:daily", 3))
+    )
+    val message = TextRenderer.emptySelectionMessage(selection)
+    message should include("tag:daily")
+    (message should not).include("ops.audit")
+  }
+
+  it should "not blame an exclusion on a project that had nothing to run" in {
+    // Every exclusion removed zero: the selection was empty before exclusion was applied, so the
+    // real explanation is the third arm, not the exclusions.
+    val selection = Selection(
+      ids = Set.empty,
+      selectMatches = Nil,
+      excludeMatches = List(SelectorMatch("foo.bar", 0))
+    )
+    val message = TextRenderer.emptySelectionMessage(selection)
+    message.toLowerCase should include("no executable task")
+    (message should not).include("--exclude")
+  }
+
   it should "say the project has nothing to run when no selector was given" in {
     val message = TextRenderer.emptySelectionMessage(Selection(Set.empty, Nil, Nil))
     message.toLowerCase should include("no executable task")
