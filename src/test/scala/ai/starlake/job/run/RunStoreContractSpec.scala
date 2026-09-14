@@ -121,6 +121,9 @@ abstract class RunStoreContractSpec extends AnyFlatSpec with Matchers {
     store.close()
 
     val fresh = reopenStore(store)
+    // Not the same object: without this, a subclass whose reopenStore returned `previous` and
+    // whose close() did nothing would pass this case while keeping everything in memory.
+    fresh should not be theSameInstanceAs(store)
     try {
       fresh.read("r1").map(_.succeeded) shouldBe Some(Set("a"))
       fresh.reopen("r1") shouldBe 2

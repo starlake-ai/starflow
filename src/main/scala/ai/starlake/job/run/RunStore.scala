@@ -45,6 +45,9 @@ trait RunStore {
     */
   def latest(): Option[RunHistory]
 
+  /** Releases whatever this store holds open. After it, the instance is spent: a fresh store over
+    * the same backing state is a new instance, never this one reused.
+    */
   def close(): Unit
 }
 
