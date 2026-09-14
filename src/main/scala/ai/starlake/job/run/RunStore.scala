@@ -66,3 +66,69 @@ object NoopRunStore extends RunStore {
   def latest(): Option[RunHistory] = None
   def close(): Unit = ()
 }
+
+object RunStore {
+
+  /** Set by starlake-api when it spawns the CLI, following the same convention as SL_API and the
+    * QoD credential: the spawned process has no session, so what it needs arrives by environment.
+    */
+  val UrlEnv = "SL_RUN_STORE_URL"
+  val UserEnv = "SL_RUN_STORE_USER"
+  val PasswordEnv = "SL_RUN_STORE_PASSWORD"
+
+  /** The caller's own job identifier, stored beside the run rather than as the run id: the runner
+    * keeps ownership of the run id, which is what keeps one log to one writer.
+    */
+  val CorrelationEnv = "SL_RUN_CORRELATION_ID"
+  val LogDirEnv = "SL_RUN_LOG_DIR"
+
+  /** @param notice
+    *   a line to show the user once, when the log did not go where they would expect
+    */
+  final case class FileLogRoot(path: java.nio.file.Path, notice: Option[String])
+
+  private val RemoteUri = "^\\w+://.*"
+
+  def fileLogRoot(root: String, env: Map[String, String]): FileLogRoot =
+    env.get(LogDirEnv).filter(_.trim.nonEmpty) match {
+      case Some(dir) => FileLogRoot(java.nio.file.Paths.get(dir.trim), None)
+      case None =>
+        localPathOf(root) match {
+          case Some(local) =>
+            FileLogRoot(local.resolve(".starlake").resolve("runs"), None)
+          case None =>
+            val fallback =
+              java.nio.file.Paths.get(System.getProperty("java.io.tmpdir")).resolve("starlake-runs")
+            FileLogRoot(
+              fallback,
+              Some(
+                s"Run log: $root is not a local path, so the run log goes to $fallback instead." +
+                s" Set $LogDirEnv to put it somewhere durable."
+              )
+            )
+        }
+    }
+
+  private def localPathOf(root: String): Option[java.nio.file.Path] =
+    if (root.startsWith("file:"))
+      scala.util.Try(java.nio.file.Paths.get(java.net.URI.create(root))).toOption
+    else if (root.matches(RemoteUri)) None
+    else Some(java.nio.file.Paths.get(root))
+
+  /** The store this invocation reads and writes. Whether writing is enabled is a separate decision,
+    * made by RunCmd: `--dry-run` and `--no-run-log` still need to *read* the store to resume.
+    */
+  def forRun(
+    root: String,
+    env: Map[String, String] = sys.env,
+    notify: String => Unit = System.err.println
+  ): RunStore =
+    env.get(UrlEnv).filter(_.trim.nonEmpty) match {
+      case Some(url) =>
+        JdbcRunStore.open(url.trim, env.get(UserEnv), env.get(PasswordEnv), env.get(CorrelationEnv))
+      case None =>
+        val resolved = fileLogRoot(root, env)
+        resolved.notice.foreach(notify)
+        new FileRunStore(resolved.path)
+    }
+}
