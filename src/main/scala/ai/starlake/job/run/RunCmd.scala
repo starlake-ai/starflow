@@ -28,7 +28,17 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
       builder.note(
         "Execute the project's tasks in dependency order, in parallel, inside this JVM." +
         " The graph is built from transform lineage, so a load table is executed only when some" +
-        " transform reads it: tables no transform references are never ingested by this command."
+        " transform reads it: tables no transform references are never ingested by this command." +
+        "\n\nSelector syntax, shared by --select and --exclude:" +
+        "\n  domain.table    exactly that task" +
+        "\n  domain.*        every task in the domain" +
+        "\n  tag:<value>     every task carrying the tag" +
+        "\n  +expr           the matched tasks and all their transitive upstreams" +
+        "\n  expr+           the matched tasks and all their transitive downstreams" +
+        "\n  +expr+          both directions" +
+        "\nMatching is case-insensitive. A run executes the selected set and nothing else:" +
+        " unselected upstreams are not run implicitly, so a task whose input is missing fails" +
+        " normally. A selection that matches no task exits with code 3."
       ),
       builder
         .opt[Int]("parallelism")
@@ -48,6 +58,28 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
         .optional()
         .action((_, c) => c.copy(failFast = true))
         .text("Abort the whole run on first failure instead of only the failed branch"),
+      builder
+        .opt[Seq[String]]("select")
+        .valueName("expr1,expr2...")
+        .optional()
+        .unbounded()
+        .action((x, c) => c.copy(select = c.select ++ x))
+        .text(
+          "Selector expressions, unioned. Repeatable, and each value may itself be a" +
+          " comma-separated list. Omit to select the whole project."
+        ),
+      builder
+        .opt[Seq[String]]("exclude")
+        .valueName("expr1,expr2...")
+        .optional()
+        .unbounded()
+        .action((x, c) => c.copy(exclude = c.exclude ++ x))
+        .text("Selector expressions subtracted after --select. Exclusion wins."),
+      builder
+        .opt[Unit]("dry-run")
+        .optional()
+        .action((_, c) => c.copy(dryRun = true))
+        .text("Resolve and print the execution plan, execute nothing"),
       builder
         .opt[Map[String, String]]("options")
         .valueName("k1=v1,k2=v2...")
