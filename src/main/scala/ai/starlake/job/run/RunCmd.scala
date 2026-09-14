@@ -164,6 +164,7 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
         // Before P2 this escaped runProject and Main mapped it to 1 with a stack trace. A bad
         // project is a configuration error, which the spec's exit table calls 2.
         case NonFatal(e) =>
+          logger.error("Failed to build the task graph", e)
           val detail = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
           Left(graphError(s"Failed to build the task graph: $detail"))
       }
@@ -239,7 +240,7 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
       }
     // A transform and a load table can share a name, and DagBuilder resolves that collision to a
     // single Task node, so the transform's tags win here too.
-    (loadTags ++ transformTags).filter { case (_, tags) => tags.nonEmpty }.toMap
+    (loadTags ++ transformTags).toMap.filter { case (_, tags) => tags.nonEmpty }
   }
 
   /** Indexes declared tables by their final name, rejecting any final name claimed by more than one

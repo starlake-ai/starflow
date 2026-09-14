@@ -392,5 +392,24 @@ class RunCmdSpec extends TestHelper {
       result.exitCode shouldBe 2
       result.errorMessage.getOrElse("") should include("Cycle detected")
     }
+
+    it should "exit with code 2 when the project itself cannot build a graph" in {
+      // Pins the boundary between the two failure modes the run command reports: a throw raised
+      // while building the graph (here, checkNoFinalNameCollision's IllegalStateException) must
+      // stay mapped to exit code 2, not fall through to the scheduler's exit code 1. Two declared
+      // tables resolving to the same final name is the cheapest way to trigger that throw.
+      // Placed last in this block: schemaHandler.domains() accumulates every domain written by
+      // earlier tests in this WithSettings block, and the collision check runs over all of them,
+      // so leaving an ambiguous domain on disk would poison every test that reloads afterwards.
+      writeLoadTable("collide", "a")
+      writeLoadTable("collide", "b", rename = Some("a"))
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      val result = RunCmd.runProject(RunConfig(parallelism = Some(1)), schemaHandler)
+
+      result.exitCode shouldBe 2
+      result.summary shouldBe None
+      result.errorMessage.getOrElse("") should include("Ambiguous load tables")
+    }
   }
 }
