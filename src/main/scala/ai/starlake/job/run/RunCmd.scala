@@ -46,7 +46,13 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
         "\n    +expr+          both directions" +
         "\n\nMatching is case-insensitive. A run executes the selected set and nothing else:" +
         " unselected upstreams are not run implicitly, so a task whose input is missing fails" +
-        " normally. A selection that matches no task exits with code 3."
+        " normally. A selection that matches no task exits with code 3." +
+        "\n\nEvery run writes an event log and prints its run id. --resume continues the most" +
+        " recent run and --resume-id names one: tasks that already succeeded are reported as" +
+        " skipped instead of being executed again, and the selection and --options of the" +
+        " recorded run are replayed, so they cannot be given again alongside a resume. A resume" +
+        " is refused with exit code 4 when the project changed since the recorded run, naming" +
+        " what changed; --force overrides it."
       ),
       builder
         .opt[Int]("parallelism")
@@ -88,6 +94,30 @@ trait RunCmd extends Cmd[RunConfig] with LazyLogging {
         .optional()
         .action((_, c) => c.copy(dryRun = true))
         .text("Resolve and print the execution plan, execute nothing"),
+      builder
+        .opt[Unit]("resume")
+        .optional()
+        .action((_, c) => c.copy(resumeLatest = true))
+        .text("Continue the most recent run: tasks that already succeeded are not run again"),
+      builder
+        .opt[String]("resume-id")
+        .valueName("run-id")
+        .optional()
+        .action((x, c) => c.copy(resumeId = Some(x)))
+        .text("Continue that run. The run id is printed when a run starts"),
+      builder
+        .opt[Unit]("force")
+        .optional()
+        .action((_, c) => c.copy(force = true))
+        .text("Resume even though the project changed since the recorded run"),
+      builder
+        .opt[Unit]("no-run-log")
+        .optional()
+        .action((_, c) => c.copy(noRunLog = true))
+        .text(
+          "Execute without writing a run log. Such a run cannot be resumed." +
+          " SL_RUN_LOG=false does the same for every run in this environment"
+        ),
       builder
         .opt[Map[String, String]]("options")
         .valueName("k1=v1,k2=v2...")
