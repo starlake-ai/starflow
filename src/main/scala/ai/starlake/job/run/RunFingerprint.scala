@@ -24,8 +24,8 @@ final case class FingerprintParts(
 object RunFingerprint {
 
   /** @param envVars
-    *   hashed by value because they are substituted into SQL through Jinja. The hash is one-way,
-    *   so no secret is stored: only the digest reaches the log.
+    *   hashed by value because they are substituted into SQL through Jinja. The hash is one-way, so
+    *   no secret is stored: only the digest reaches the log.
     */
   def parts(
     dag: RunDag,
@@ -36,9 +36,9 @@ object RunFingerprint {
   ): FingerprintParts =
     FingerprintParts(
       graph = sha256(canonicalGraph(dag)),
-      selection = sha256(selection.toList.sorted.mkString("\n")),
+      selection = sha256(selection.toList.sorted.map(sha256).mkString(",")),
       options = sha256(canonicalMap(options)),
-      env = sha256(envName + "\n" + canonicalMap(envVars))
+      env = sha256(sha256(envName) + "," + canonicalMap(envVars))
     )
 
   /** @param taskContent
@@ -59,7 +59,14 @@ object RunFingerprint {
     val currentParts = current.toMap
     if (recorded.isEmpty) List("unknown")
     else
-      currentParts.keys.toList.sorted.filter(key => recorded.get(key).exists(_ != currentParts(key)))
+      currentParts.keys.toList.sorted.filter { key =>
+        recorded.get(key) match {
+          case Some(value) => value != currentParts(key)
+          // Recorded before this part existed. Unverifiable is not the same as equal, and guessing
+          // "equal" is the direction that keeps a stale result.
+          case None => true
+        }
+      }
   }
 
   /** Tasks whose body changed *and* whose recorded success a resume intends to keep.
@@ -73,7 +80,9 @@ object RunFingerprint {
     current: Map[String, String],
     amongst: Set[String]
   ): List[String] =
-    amongst.toList.sorted.filter(id => recorded.get(id).exists(digest => !current.get(id).contains(digest)))
+    amongst.toList.sorted.filter { id =>
+      recorded.get(id).exists(digest => !current.get(id).contains(digest))
+    }
 
   def label(part: String): String =
     part match {
@@ -84,17 +93,42 @@ object RunFingerprint {
       case _           => "something in the project"
     }
 
+  /** Separator that cannot occur in any input: ids, type names and env values are all text, and
+    * text does not contain NUL. Joining on a printable character instead would let a value that
+    * contains that character imitate a different input, and a fingerprint that cannot tell two
+    * projects apart is one that resumes across a change it should have refused.
+    */
+  private val Sep = "\u0000"
+
   private def canonicalGraph(dag: RunDag): String =
     dag.nodes.values.toList
       .sortBy(_.id)
       .map { node =>
-        val parents = dag.parents.getOrElse(node.id, Set.empty).toList.sorted.mkString(",")
-        s"${node.id}|${node.typ}|$parents"
+        val parents = dag.parents.getOrElse(node.id, Set.empty).toList.sorted.mkString(Sep)
+        // Each node collapses to a fixed-length digest, so no node's content can spill into the
+        // next one's field when they are joined below.
+        sha256(node.id + Sep + typeName(node.typ) + Sep + parents)
       }
-      .mkString("\n")
+      .mkString(",")
 
+  /** Named explicitly rather than through `toString`: an added `override def toString` on
+    * RunNodeType would otherwise change every recorded fingerprint with no compile-time signal.
+    */
+  private def typeName(typ: RunNodeType): String =
+    typ match {
+      case RunNodeType.Task      => "Task"
+      case RunNodeType.LoadTable => "LoadTable"
+      case RunNodeType.Boundary  => "Boundary"
+    }
+
+  /** Each entry is digested before joining, so every element of the final join is a fixed-length
+    * hex digest that cannot itself contain the "," join separator or the `Sep` used inside an
+    * entry. Without this, `Map("A" -> "1\nB=2")` and `Map("A" -> "1", "B" -> "2")` would serialize
+    * to the same string and hash the same, which would let a run resume across an env or options
+    * change it should have refused.
+    */
   private def canonicalMap(values: Map[String, String]): String =
-    values.toList.sorted.map { case (k, v) => s"$k=$v" }.mkString("\n")
+    values.toList.sorted.map { case (k, v) => sha256(k + Sep + v) }.mkString(",")
 
   private[run] def sha256(value: String): String =
     MessageDigest

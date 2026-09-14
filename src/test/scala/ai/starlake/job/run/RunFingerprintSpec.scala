@@ -58,6 +58,22 @@ class RunFingerprintSpec extends AnyFlatSpec with Matchers {
     other.env shouldBe parts().env
   }
 
+  it should "not collide two options maps that serialize the same when joined naively" in {
+    // "A" -> "1\nB=2" and {"A" -> "1", "B" -> "2"} both flatten to "A=1\nB=2" under a naive
+    // "k=v" join on newlines. Env values are substituted into SQL through Jinja, and multi-line
+    // values are ordinary there (PEM material, JSON blobs, SQL fragments), so this collision is
+    // reachable in practice, not just in theory.
+    val collapsing = parts(options = Map("A" -> "1\nB=2"))
+    val distinct = parts(options = Map("A" -> "1", "B" -> "2"))
+    collapsing.options should not be distinct.options
+  }
+
+  it should "not collide two env maps that serialize the same when joined naively" in {
+    val collapsing = parts(envVars = Map("A" -> "1\nB=2"))
+    val distinct = parts(envVars = Map("A" -> "1", "B" -> "2"))
+    collapsing.env should not be distinct.env
+  }
+
   "RunFingerprint.changed" should "name only the parts that differ" in {
     val recorded = parts().toMap
     val current = parts(options = Map("k" -> "other"), envName = "dev")
@@ -72,6 +88,14 @@ class RunFingerprintSpec extends AnyFlatSpec with Matchers {
     // An old log, or one written before the breakdown existed: we know the digests differ, we
     // cannot say where, and naming a cause we did not verify would send the user to the wrong file.
     RunFingerprint.changed(Map.empty, parts()) shouldBe List("unknown")
+  }
+
+  it should "treat a key the recorded map says nothing about as changed" in {
+    // A non-empty recorded map that is missing one of the four keys is exactly what an older log
+    // would look like if a fifth part were added later. Silently dropping that key as "matching"
+    // is the unsafe direction: it lets a resume proceed on a part nobody actually verified.
+    val recorded = parts().toMap - "env"
+    RunFingerprint.changed(recorded, parts()) shouldBe List("env")
   }
 
   "RunFingerprint.taskDigests" should "give each task its own digest" in {
