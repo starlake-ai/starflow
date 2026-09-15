@@ -17,7 +17,6 @@ import ai.starlake.job.sink.kafka.KafkaJobCmd
 import ai.starlake.job.site.SiteCmd
 import ai.starlake.job.tools.SummarizeCmd
 import ai.starlake.job.quack.QuackCmd
-import ai.starlake.job.run.{RunCmd, RunJobResult}
 import ai.starlake.job.transform.{JobCmd, TransformCmd}
 import ai.starlake.lineage.{
   AclCmd,
@@ -60,13 +59,10 @@ object Main extends LazyLogging {
     * the single place where a result becomes the Int handed to System.exit.
     *
     * FailedJobResult and an empty PreLoadJobResult are soft failures: the command did not throw but
-    * did not succeed either, so they must not report 0. A RunJobResult carries a code of its own (2
-    * for a cyclic graph, 1 for a failed or skipped node) and that code must win over the generic
-    * success arm below it.
+    * did not succeed either, so they must not report 0.
     */
   def exitCodeOf(result: Try[Any]): Int =
     result match {
-      case Success(runResult: RunJobResult)        => runResult.exitCode
       case Success(r: PreLoadJobResult) if r.empty => 1
       case Success(FailedJobResult)                => 1
       case Success(_)                              => 0
@@ -101,7 +97,6 @@ object Main extends LazyLogging {
     StageCmd,
     LoadCmd,
     TransformCmd,
-    RunCmd,
     ValidateCmd,
     AutoLoadCmd,
     IngestCmd,
@@ -283,16 +278,6 @@ class Main extends LazyLogging {
               0
           if (settings.appConfig.forceHalt) {
             Runtime.getRuntime.halt(status)
-          }
-        case Success(runResult: RunJobResult) =>
-          if (runResult.exitCode == 0)
-            logger.info(s"Successfully $executedCommand")
-          else
-            System.err.println(
-              s"Starflow run finished with exit code ${runResult.exitCode}"
-            )
-          if (settings.appConfig.forceHalt) {
-            Runtime.getRuntime.halt(runResult.exitCode)
           }
         case Success(_) =>
           logger.info(s"Successfully $executedCommand")

@@ -2,12 +2,8 @@
 # Release notes
 
 # 1.8.8:
-__New feature__:
-- **`starlake run` gains task selection and `--dry-run`**: `--select` and `--exclude` restrict the graph to a subset of tasks before it runs, sharing one selector grammar: `domain.table` for one task, `domain.*` for every task in a domain, `tag:<value>` for every task carrying a tag, and `+expr`, `expr+`, `+expr+` to pull in transitive upstreams, downstreams, or both. Selectors are unioned, repeatable, comma-separable and matched case-insensitively; `--exclude` is subtracted after `--select` and always wins. A run executes exactly the selected set and nothing else: an unselected upstream is not run implicitly, so a selected task with a missing input fails normally instead of dragging its dependencies along. A selection that matches no task exits `3` rather than reporting a vacuous success. `--dry-run` resolves the plan and prints it to stdout without executing anything, so a selector can be checked before it is trusted with a real run.
-
-__Behavior change__:
-- **`starlake run` exit code `2` now covers any graph-construction failure, not only a cycle**: an ambiguous project (two declared tables resolving to the same final name) or an unresolvable lineage reference used to escape as exit `1` with a raw stack trace; a malformed `--select`/`--exclude` expression now exits `2` through the same path. All of them go through the same graph-error path as cycle detection and exit `2` with a clean message instead. A selector that is well formed but names something the project does not contain is not a graph failure: it resolves to an empty set and exits `3`.
-- **`starlake run` with no executable task now exits `3`, not `0`**: this covers a project with no transform task at all, not only a `--select`/`--exclude` combination that resolves to nothing. The rule is the same either way: never silently succeed on a run that does nothing.
+__Removed__:
+- **`starlake run` is withdrawn**: the in-process DAG runner shipped in 1.8.7, along with the task selection and `--dry-run` that were queued for this release, is removed pending a decision on whether Starflow should own scheduling at all. A project is still run end to end from the CLI with `starlake load` and `starlake transform`, and the orchestrators Starflow generates DAGs for (Airflow, Dagster, the cloud schedulers) keep doing the scheduling. Anyone who adopted `starlake run` in 1.8.7 should pin that version or move back to calling `load` and `transform` directly. The implementation is kept on the `feature/starlake-run-suspended` branch.
 
 # 1.8.7:
 __New feature__:
