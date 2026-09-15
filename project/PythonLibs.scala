@@ -3,17 +3,17 @@ import sbt.io.Using
 
 import java.security.MessageDigest
 
-/** Keeps distrib/python-libs (wheels + versions.txt consumed by Setup.java and
-  * `starlake.sh upgrade`) in sync with the template versions pinned in Versions.scala.
+/** Keeps distrib/python-libs (wheels + versions.txt consumed by Setup.java and `starlake.sh
+  * upgrade`) in sync with the template versions pinned in Versions.scala.
   */
 object PythonLibs {
 
   /** PyPI package name -> version pinned in Versions.scala */
   def pinnedPackages: Seq[(String, String)] = Seq(
-    "starlake-airflow" -> Versions.airflowTemplates,
-    "starlake-dagster" -> Versions.dagsterTemplates,
+    "starlake-airflow"       -> Versions.airflowTemplates,
+    "starlake-dagster"       -> Versions.dagsterTemplates,
     "starlake-orchestration" -> Versions.orchestrationTemplates,
-    "starlake-snowflake" -> Versions.snowflakeTemplates
+    "starlake-snowflake"     -> Versions.snowflakeTemplates
   )
 
   /** PEP 427 wheel file name for a pure-python wheel */
@@ -22,8 +22,8 @@ object PythonLibs {
 
   def expectedWheels: Seq[String] = pinnedPackages.map { case (pkg, v) => wheelName(pkg, v) }
 
-  /** Offline drift check: fails when versions.txt or the wheels present in `dir`
-    * do not match the versions pinned in Versions.scala.
+  /** Offline drift check: fails when versions.txt or the wheels present in `dir` do not match the
+    * versions pinned in Versions.scala.
     */
   def check(dir: File, log: Logger): Unit = {
     val versionsTxt = dir / "versions.txt"
@@ -41,12 +41,14 @@ object PythonLibs {
     }
     missingWheels.foreach(w => log.error(s"Missing wheel: ${dir / w}"))
     if (drift || missingWheels.nonEmpty)
-      sys.error("Python libs drift detected: run 'sbt syncPythonLibs' and commit distrib/python-libs")
+      sys.error(
+        "Python libs drift detected: run 'sbt syncPythonLibs' and commit distrib/python-libs"
+      )
     log.info(s"Python libs in sync with Versions.scala: ${expected.mkString(", ")}")
   }
 
-  /** Downloads the pinned wheels from PyPI (sha256-verified) into `dir`, removes
-    * stale wheels and regenerates versions.txt.
+  /** Downloads the pinned wheels from PyPI (sha256-verified) into `dir`, removes stale wheels and
+    * regenerates versions.txt.
     */
   def sync(dir: File, log: Logger): Unit = {
     IO.createDirectory(dir)
@@ -82,16 +84,18 @@ object PythonLibs {
     log.info(s"Wrote ${dir / "versions.txt"}")
   }
 
-  /** Resolves the wheel download URL (and its sha256 when advertised) from the
-    * PyPI simple index (PEP 503).
+  /** Resolves the wheel download URL (and its sha256 when advertised) from the PyPI simple index
+    * (PEP 503).
     */
   private def resolveWheelUrl(pkg: String, wheel: String): (String, Option[String]) = {
     val indexUrl = s"https://pypi.org/simple/$pkg/"
     val html = Using.urlInputStream(url(indexUrl))(in => IO.readStream(in))
-    val href = ("href=\"([^\"#]*/" + java.util.regex.Pattern.quote(wheel) + ")(?:#sha256=([0-9a-f]{64}))?\"").r
+    val href = ("href=\"([^\"#]*/" + java.util.regex.Pattern.quote(
+      wheel
+    ) + ")(?:#sha256=([0-9a-f]{64}))?\"").r
     href.findFirstMatchIn(html) match {
       case Some(m) => (m.group(1), Option(m.group(2)))
-      case None    => sys.error(s"$wheel not found on $indexUrl: is this version published on PyPI?")
+      case None => sys.error(s"$wheel not found on $indexUrl: is this version published on PyPI?")
     }
   }
 
