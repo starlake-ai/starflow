@@ -37,21 +37,36 @@ object TaskViewDependency extends LazyLogging {
     result.toList.distinct
   }
 
-  private def getHierarchy(
+  private[lineage] def getHierarchy(
     roots: List[TaskViewDependency],
     allDeps: List[TaskViewDependency],
     result: ListBuffer[TaskViewDependency]
+  ): Unit = getHierarchy(roots, allDeps, result, roots.map(_.name.toLowerCase()).toSet)
+
+  /** @param visited
+    *   every name seen on the path walked so far. Checking only the current level lets a cycle
+    *   longer than two nodes (a -> b -> c -> a) recurse forever, so the guard carries the whole
+    *   path down.
+    */
+  private def getHierarchy(
+    roots: List[TaskViewDependency],
+    allDeps: List[TaskViewDependency],
+    result: ListBuffer[TaskViewDependency],
+    visited: Set[String]
   ): Unit = {
     roots.foreach { root =>
       val subRoots = allDeps.filter(t =>
         t.typ == root.parentTyp && t.name.toLowerCase() == root.parent.toLowerCase()
       )
-      val nocyclicRoots = subRoots.filter { subRoot =>
-        val cycle = roots.exists(_.name.toLowerCase() == subRoot.name.toLowerCase())
-        !cycle
-      }
+      val nocyclicRoots =
+        subRoots.filterNot(subRoot => visited.contains(subRoot.name.toLowerCase()))
       result ++= nocyclicRoots
-      getHierarchy(nocyclicRoots, allDeps, result)
+      getHierarchy(
+        nocyclicRoots,
+        allDeps,
+        result,
+        visited ++ nocyclicRoots.map(_.name.toLowerCase())
+      )
     }
   }
 

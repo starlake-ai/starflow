@@ -1830,11 +1830,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   }
 
   def dependenciesAsSchemaString(query: String): List[String] = {
-    val tables =
-      Try(SQLUtils.extractTableNames(query)) // if syntax is correct this works fine
-        .getOrElse(
-          SQLUtils.extractTableNamesUsingRegEx(query)
-        ) // if syntax is incorrect, we try to extract using regex
+    val tables = SQLUtils.extractInputTableNamesWithFallback(query)
 
     val domainAndTables = tables.flatMap { table =>
       val components = table.split("\\.")

@@ -617,7 +617,7 @@ abstract class AutoTask(
 
   def dependencies(streams: CaseInsensitiveMap[String]): List[String] = {
     if (taskDesc.parseSQL.getOrElse(true)) {
-      val result = SQLUtils.extractTableNamesUsingRegEx(
+      val result = SQLUtils.extractInputTableNamesWithFallback(
         parseJinja(taskSQL, schemaHandler.activeEnvVars())
       )
       val withStreamsResolved = result.map { table =>

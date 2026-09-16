@@ -10,6 +10,7 @@ import com.manticore.jsqlformatter.JSQLFormatter
 import com.typesafe.scalalogging.LazyLogging
 import net.sf.jsqlparser.statement.Statement
 
+import java.util.regex.{Matcher, Pattern}
 import scala.util.matching.Regex
 import scala.util.{Failure, Success, Try}
 
@@ -24,11 +25,30 @@ object SQLUtils extends LazyLogging {
   // --- Delegated to SqlParser ---
   def extractTableNamesUsingRegEx(sql: String): List[String] =
     SqlParser.extractTableNamesUsingRegEx(sql)
-  def extractTableNamesFromCTEsUsingRegEx(sql: String): List[String] =
-    SqlParser.extractTableNamesFromCTEsUsingRegEx(sql)
   def extractColumnNames(sql: String): List[String] = SqlParser.extractColumnNames(sql)
   def extractTableNames(sql: String): List[String] = SqlParser.extractTableNames(sql)
   def extractCTENames(sql: String): List[String] = SqlParser.extractCTENames(sql)
+  def extractInputTableNames(sql: String): List[String] =
+    SqlParser.extractInputTableNames(sql)
+  def extractCTENamesUsingRegEx(sql: String): List[String] =
+    SqlParser.extractCTENamesUsingRegEx(sql)
+
+  /** Tables read by the statement, degrading to the regex extractor when the SQL does not parse
+    * (unresolved Jinja, dialect specific syntax jsqlparser does not know, ...). The regex path
+    * cannot resolve CTE references, so CTE names are subtracted explicitly there.
+    */
+  def extractInputTableNamesWithFallback(sql: String): List[String] =
+    Try(SqlParser.extractInputTableNames(sql)) match {
+      case Success(tables) => tables
+      case Failure(e) =>
+        logger.info(
+          s"Could not parse SQL, falling back to regex based table extraction: ${e.getMessage}"
+        )
+        val cteNames = SqlParser.extractCTENamesUsingRegEx(sql)
+        SqlParser
+          .extractTableNamesUsingRegEx(sql)
+          .filterNot(table => cteNames.exists(_.equalsIgnoreCase(table)))
+    }
   def jsqlParse(sql: String): Statement = SqlParser.jsqlParse(sql)
   def getSelectStatementIndex(sql: String): Int = SqlParser.getSelectStatementIndex(sql)
 
@@ -130,7 +150,7 @@ object SQLUtils extends LazyLogging {
         tablesFound.foreach { tableFound =>
           val resolvedTableName =
             resolveTableNameInSql(tableFound, refs, domains, tasks, ctes, connection)
-          source = source.replaceAll(tableFound, resolvedTableName)
+          source = replaceTableRef(source, tableFound, resolvedTableName)
         }
         resolvedSQL += sql.substring(startIndex, regex.start) + source
         startIndex = regex.end
@@ -138,6 +158,24 @@ object SQLUtils extends LazyLogging {
       resolvedSQL = resolvedSQL + sql.substring(startIndex)
       resolvedSQL
     }
+  }
+
+  /** Replaces a table reference by its resolved name.
+    *
+    * Both operands are data, not patterns: an unescaped table name would make `.` match any
+    * character (so `sales.orders` would also rewrite `salesXorders`), and an unescaped replacement
+    * would read `$` as a group reference (a BigQuery partition decorator such as `orders$20260101`
+    * throws rather than being inserted literally). The lookarounds keep the match on a whole
+    * reference so that a short name is not substituted inside a longer one that an earlier
+    * iteration already resolved.
+    */
+  private def replaceTableRef(
+    source: String,
+    tableName: String,
+    resolvedTableName: String
+  ): String = {
+    val pattern = Pattern.compile(s"(?<![\\w.])${Pattern.quote(tableName)}(?![\\w.])")
+    pattern.matcher(source).replaceAll(Matcher.quoteReplacement(resolvedTableName))
   }
 
   private def resolveTableNameInSql(
