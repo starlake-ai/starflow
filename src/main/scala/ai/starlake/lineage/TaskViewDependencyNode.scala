@@ -27,6 +27,18 @@ object TaskViewDependencyNode {
     entity: TaskViewDependency,
     entities: List[TaskViewDependency],
     relations: List[TaskViewDependency]
+  ): TaskViewDependencyNode = dependencies(entity, entities, relations, Set.empty)
+
+  /** @param ancestors
+    *   names already on the path from the root down to `entity`. A parent that is an ancestor
+    *   closes a cycle (a task reading its own sink, or two tasks referencing each other) and is
+    *   dropped rather than expanded, which would otherwise recurse until the stack overflows.
+    */
+  private def dependencies(
+    entity: TaskViewDependency,
+    entities: List[TaskViewDependency],
+    relations: List[TaskViewDependency],
+    ancestors: Set[String]
   ): TaskViewDependencyNode = {
     val thisEntityRelations =
       relations
@@ -36,11 +48,12 @@ object TaskViewDependencyNode {
         .mapValues(_.head)
         .values
         .toList
-    val parentEntities = thisEntityRelations.flatMap { r =>
-      entities.find(_.name == r.parent)
-    }
+    val path = ancestors + entity.name.toLowerCase()
+    val parentEntities = thisEntityRelations
+      .filterNot(r => path.contains(r.parent.toLowerCase()))
+      .flatMap(r => entities.find(_.name == r.parent))
     val deps = parentEntities.map { parentEntity =>
-      dependencies(parentEntity, entities, relations)
+      dependencies(parentEntity, entities, relations, path)
     }
     TaskViewDependencyNode(entity, deps)
   }

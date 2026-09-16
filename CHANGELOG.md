@@ -1,6 +1,12 @@
 
 # Release notes
 
+# 1.7.11:
+__Bug fix__:
+- **The tables that a task reads are taken from its parsed SQL**: they were found by a regular expression, which also took for tables the names of the common table expressions of the task (`WITH recent AS (...) SELECT ... FROM recent`), the column of an `EXTRACT(YEAR FROM order_date)`, names in comments and string literals, and the target of an `INSERT INTO t SELECT ... FROM t`. A common table expression or a comment that named a table made `dag-generate` and the lineage add a dependency on that table, and a BigQuery transform looked for the descriptions of its columns in these names. The SQL of the task is now parsed, the tables of its common table expressions and subqueries included and its target excluded; a SQL that does not parse, because of unresolved Jinja or a syntax that the parser does not know, still goes through the regular expression, without the names of its common table expressions.
+  - A cycle of three tasks or more (`a` reads `b`, `b` reads `c`, `c` reads `a`) made the lineage of the tasks recurse until the stack overflowed: the walk now stops on a task that it has already visited.
+  - The table references that a transform resolves in its SQL are replaced as whole names: a `sales.orders` reference also rewrote `salesXorders`, and a resolved name holding a `$`, such as a BigQuery partition decorator (`orders$20260101`), failed the task.
+
 # 1.7.10:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
 - **Transform DAGs**: a task that reads a table declared in `metadata/external` now depends on it, as on a table of `metadata/load` (#1984). `extract-bq-schema`, for one, writes such declarations for the tables of BigQuery. After `dag-generate`, a DAG without cron, triggered by datasets:
