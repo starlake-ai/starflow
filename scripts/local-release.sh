@@ -382,9 +382,6 @@ if should_run 9; then
     "$API_DIR/versions.sh"
     "$UI_DIR/.versions"
   )
-  BROAD_VERSION_FILES=(
-    "$UI_DIR/Dockerfile"
-  )
   # Version pattern: matches X.Y.Z or X.Y.Z-SNAPSHOT
   VER_RE='[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-SNAPSHOT\)*'
 
@@ -398,19 +395,6 @@ if should_run 9; then
       fi
     else
       echo "  Skipped (missing or no SL_VERSION): $file"
-    fi
-  done
-
-  for file in "${BROAD_VERSION_FILES[@]}"; do
-    if [[ -f "$file" ]]; then
-      if [[ "$DRY_RUN" == true ]]; then
-        echo "  [DRY-RUN] Would update version references in: $file"
-      else
-        sed -i '' "s/$VER_RE/$PROPAGATE_VERSION/g" "$file"
-        echo "  Updated: $file"
-      fi
-    else
-      echo "  Skipped (missing): $file"
     fi
   done
 
