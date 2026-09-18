@@ -57,7 +57,7 @@ class DependencyGraphCycleSpec extends AnyFlatSpec with Matchers {
     val node = TaskViewDependencyNode.dependencies(entities.head, entities, relations)
 
     collectNames(node) should contain theSameElementsAs
-      List("d.top", "d.left", "d.base", "d.right", "d.base")
+    List("d.top", "d.left", "d.base", "d.right", "d.base")
   }
 
   "TaskViewDependency.getHierarchy" should "terminate on a three node cycle" in {

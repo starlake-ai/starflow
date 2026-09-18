@@ -3,9 +3,9 @@ package ai.starlake.sql
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** Table-level lineage feeds DAG generation and `transform --recursive`, so the set of input
-  * tables extracted from a task SQL must be exact: a missing entry schedules a task before its
-  * upstream, an extra entry adds a phantom node to the generated DAG.
+/** Table-level lineage feeds DAG generation and `transform --recursive`, so the set of input tables
+  * extracted from a task SQL must be exact: a missing entry schedules a task before its upstream,
+  * an extra entry adds a phantom node to the generated DAG.
   */
 class SqlParserInputTablesSpec extends AnyFlatSpec with Matchers {
 
