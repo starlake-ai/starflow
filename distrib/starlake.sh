@@ -25,6 +25,15 @@ fi
 
 case "$1" in
   reinstall)
+    # Recover SL_VERSION from the old versions.sh before removing it, so the
+    # install case below can still pin setup.jar to that release. Only this one
+    # value is read - the rest is deliberately left unset so Setup reprovisions
+    # it from scratch, exactly as reinstall did before.
+    if [ -z "${SL_VERSION:-}" ] && [ -f "$SCRIPT_DIR/versions.sh" ]
+    then
+      SL_VERSION="$(sed -n 's/^SL_VERSION=${SL_VERSION:-\(.*\)}$/\1/p' "$SCRIPT_DIR/versions.sh")"
+      export SL_VERSION
+    fi
     rm "$SCRIPT_DIR/versions.sh"
     rm -rf "$SCRIPT_DIR/bin/spark"
     ;;
@@ -286,7 +295,16 @@ verify_sha256() {
 }
 
 launch_setup() {
-  local setup_url=https://raw.githubusercontent.com/starlake-ai/starlake/master/distrib/setup.jar
+  # $1: optional git ref (tag, e.g. "v1.7.5") to fetch setup.jar from; defaults
+  # to "master". Setup.java's compiled-in pins (Spark, Hadoop and every
+  # connector version) are what get written to versions.sh and provisioned into
+  # bin/, so they have to come from the SAME release as the core jar. Taking
+  # them from master instead pairs a 1.7.x core jar (built for Spark 3.5) with
+  # master's Spark 4 pins, which is how the 1.7 image build broke on
+  # delta-spark_3.5_2.13/4.3.1 (no such artifact). Versions with no release tag
+  # to fetch from - SNAPSHOTs, local builds - still fall back to master.
+  local ref="${1:-master}"
+  local setup_url=https://raw.githubusercontent.com/starlake-ai/starlake/$ref/distrib/setup.jar
   get_binary_from_url $setup_url "$SCRIPT_DIR/setup.jar"
 
   if [ -n "${JAVA_HOME}" ]; then
@@ -423,7 +441,23 @@ case "$1" in
 	  echo Redshift Spark connector ${SPARK_REDSHIFT_VERSION}
     ;;
   install|reinstall)
-    launch_setup
+    # Pin setup.jar to the release being installed whenever SL_VERSION names
+    # one. SL_VERSION is either exported by the caller (scripts/versions.sh
+    # exports it from version.sbt for the image build) or read from versions.sh
+    # at the top of this script. Non-release values - SNAPSHOTs, locally built
+    # versions - have no release tag to fetch a setup.jar from.
+    if [[ "${SL_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      TARGET_REF="v$SL_VERSION"
+    else
+      TARGET_REF="master"
+    fi
+    # Export so the java Setup subprocess installs THIS version; without it an
+    # SL_VERSION read from versions.sh stays shell-local and Setup falls back to
+    # the latest github release, pairing a latest core jar with a pinned setup.
+    if [ -n "${SL_VERSION:-}" ]; then
+      export SL_VERSION
+    fi
+    launch_setup "$TARGET_REF"
     echo
     echo "Installation done. You're ready to enjoy Starlake!"
     echo If any errors happen during installation. Please try to install again or open an issue.
