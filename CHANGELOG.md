@@ -1,6 +1,10 @@
 
 # Release notes
 
+# 1.7.5:
+__Bug fix__:
+- **Installing 1.7.x no longer provisions master's connector set**: `starlake install` fetched `setup.jar` from `master` no matter which version was being installed, and `setup.jar` is what pins Spark, Hadoop and every connector version written into `versions.sh` and downloaded into `bin/`. A 1.7 install (built for Spark 3.5) was therefore paired with master's Spark 4 pins. Most visibly it broke the 1.7 Docker image, whose build asked Maven Central for `delta-spark_3.5_2.13/4.3.1`, an artifact that does not exist, so the image never published for 1.7.3 or 1.7.4. `setup.jar` is now fetched from the tag of the release being installed, so it and the core jar always come from the same release. SNAPSHOTs and local builds, which have no release tag to fetch from, still use `master`.
+
 # 1.7.4:
 __Bug fix__:
 - **BigQuery transforms no longer break when the task declares a presql** (#1792): on the native BigQuery path the presql statements and the main query were joined with `;` as a *separator*, so the last presql statement was glued to the `CREATE`/`INSERT` that followed it and BigQuery rejected the whole script with `Syntax error: Expected end of input but got keyword CREATE`. Adding a trailing `;` in the YAML could not work around it, since every presql is stripped of its terminator when the project is loaded. Each statement now carries its own terminator, and a task with no presql is unaffected.
