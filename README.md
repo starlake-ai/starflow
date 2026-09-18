@@ -6,7 +6,7 @@
 <h3 align="center">Declarative data pipelines by Starlake: Extract. Load. Transform. Orchestrate.</h3>
 
 <p align="center">
-  <a href="https://github.com/starlake-ai/starflow/actions/workflows/test-only.yml"><img src="https://github.com/starlake-ai/starflow/actions/workflows/test-only.yml/badge.svg?event=pull_request" alt="Build Status"/></a>
+  <a href="https://github.com/starlake-ai/starflow/actions/workflows/test-only.yml"><img src="https://github.com/starlake-ai/starflow/actions/workflows/test-only.yml/badge.svg?event=pull_request" alt="CI"/></a>
   <a href="https://github.com/starlake-ai/starflow/releases/latest"><img src="https://img.shields.io/github/v/release/starlake-ai/starflow" alt="GitHub Release"/></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"/></a>
   <a href="https://github.com/starlake-ai/starflow/stargazers"><img src="https://img.shields.io/github/stars/starlake-ai/starflow" alt="GitHub Stars"/></a>

@@ -1,4 +1,4 @@
-name: test-only
+name: CI
 # This workflow is triggered on demand and on merge. Run the complete workflow test, publish the snapshot and build the docker image
 #  and trigger the API workflow.
 on:
