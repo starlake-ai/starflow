@@ -1,6 +1,10 @@
 
 # Release notes
 
+# 1.7.4:
+__Bug fix__:
+- **BigQuery transforms no longer break when the task declares a presql** (#1792): on the native BigQuery path the presql statements and the main query were joined with `;` as a *separator*, so the last presql statement was glued to the `CREATE`/`INSERT` that followed it and BigQuery rejected the whole script with `Syntax error: Expected end of input but got keyword CREATE`. Adding a trailing `;` in the YAML could not work around it, since every presql is stripped of its terminator when the project is loaded. Each statement now carries its own terminator, and a task with no presql is unaffected.
+
 # 1.7.3:
 __Bug fix__:
 - **DuckDB extraction finds its tables again** (#1737): the 1.8.3 fix backported to the 1.7 line. duckdb_jdbc 1.5.3+ reports base tables with the JDBC standard type `TABLE` instead of `BASE TABLE`, which made `starlake extract-data` against DuckDB abort with `SL_LAST_EXPORT table not found` after finding 0 tables. Both spellings are now passed, which works on old and new drivers alike.
