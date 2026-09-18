@@ -380,7 +380,6 @@ if should_run 9; then
   SL_VERSION_FILES=(
     "$API_DIR/.versions"
     "$API_DIR/versions.sh"
-    "$UI_DIR/.versions"
   )
   # Version pattern: matches X.Y.Z or X.Y.Z-SNAPSHOT
   VER_RE='[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-SNAPSHOT\)*'
