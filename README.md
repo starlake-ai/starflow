@@ -26,7 +26,11 @@
 
 ---
 
-**Your warehouse, described, not scripted.** Starflow turns hundreds of lines of BigQuery/Snowflake/Redshift/Spark boilerplate into a few lines of YAML: declare **what** your pipeline does, and Starflow works out **how**: schemas, merges, quality checks, lineage, and the DAGs to run it all.
+**Test on your laptop. Ship to your warehouse. Same SQL, same YAML, no rewrite.**
+
+Starflow is a declarative Extract · Load · Transform · Orchestrate engine: describe **what** your pipeline does in YAML and plain SQL, and Starflow works out **how**: schemas, merges, quality checks, lineage, and the DAGs to run it all.
+
+And because it transpiles your warehouse SQL to DuckDB, the whole pipeline, loads included, runs and tests locally in seconds. **Engine choice becomes an environment variable, not a replatforming program.**
 
 ## A pipeline in 30 seconds
 
@@ -62,8 +66,32 @@ starlake transform --name kpi.revenue     # run SQL with the right MERGE/INSERT 
 <p align="center"><img src="docs/static/img/transform-dags.png" alt="Generated DAG" width="500"/></p>
 <p align="center"><i>The Airflow DAG above was generated from the SQL dependencies. Nobody wrote it.</i></p>
 
+## Test locally. Run anywhere.
+
+Your transforms are written for BigQuery or Snowflake. Starflow transpiles them to DuckDB, so the whole pipeline runs on your laptop. No dev warehouse. No waiting. No bill.
+
+A test is just a folder: the input you feed in, the output you expect back.
+
+```
+metadata/tests/transform/sales_kpi/byseller_kpi/test1/
+├── sales.orders.csv        # input fixture
+├── sales.customers.json    # input fixture
+└── _expected.csv           # what the transform must produce
+```
+
+```bash
+starlake test                                  # every load and transform, on local DuckDB
+starlake test --transform --domain sales_kpi   # just this one
+starlake test --site                           # HTML report with coverage
+```
+
+- **No SQL rewriting**: your warehouse dialect is transpiled, not reimplemented by hand.
+- **Loads are tested too**: parsing, type validation, merge strategy and rejected rows, not just SQL.
+- **One project, any engine**: `SL_ENV=DUCKDB` on the laptop, `SL_ENV=BQ` in production. Same YAML, same SQL.
+
 ## Why teams pick Starflow
 
+- **Local-first**: the full pipeline runs on DuckDB in CI and on your laptop, on your warehouse in production, from one codebase.
 - **Config, not code**: YAML and plain SQL replace bespoke ETL scripts and orchestration glue.
 - **Any source, any warehouse, any orchestrator**: files, JDBC databases and Kafka into BigQuery, Snowflake, Redshift, DuckDB, PostgreSQL, Delta Lake or Iceberg, scheduled on Airflow, Dagster or Snowflake Tasks with generated DAGs.
 - **Quality and lineage built in**: expectations run at load time, and table- and column-level lineage falls out of your SQL automatically.
