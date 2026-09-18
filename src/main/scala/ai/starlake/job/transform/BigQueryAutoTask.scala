@@ -498,7 +498,7 @@ class BigQueryAutoTask(
                       sharding = None
                     )
                     val allSql =
-                      preSql.mkString(";\n") + mainSql() + ";\n" + postSql.mkString(";\n")
+                      preSql.map(_ + ";\n").mkString + mainSql() + ";\n" + postSql.mkString(";\n")
                     val finalSql = prepareBranchContext(taskDesc.getSql()) match {
                       case Some(ctx) =>
                         logger.info(
