@@ -92,4 +92,42 @@ class InstallerVersionSyncSpec extends AnyFlatSpec with Matchers {
   it should "pin POSTGRESQL_VERSION to the build's postgresql dependency" in {
     dotVersion("POSTGRESQL_VERSION") shouldBe postgresqlBuild
   }
+
+  // While the pinned snowflake-jdbc vendors a stale Conscrypt, the installer serves a repackaged
+  // jar and the build attaches the same one to the test classpath. The two substitutions key on
+  // their own copy of the affected version and URL; if they drift, either users or CI silently go
+  // back to the Maven jar and BigQuery dies on linux-x86_64 again.
+  behavior of "snowflake-jdbc Conscrypt substitution"
+
+  private def literal(source: String, name: String, where: String): String =
+    s"""$name =\\s*"([^"]+)"""".r
+      .findFirstMatchIn(source)
+      .map(_.group(1))
+      .getOrElse(fail(s"$name not found in $where"))
+
+  it should "key the installer and the build on the same affected version" in {
+    literal(
+      setupJava,
+      "SNOWFLAKE_JDBC_CONSCRYPT_AFFECTED_VERSION",
+      "src/main/java/Setup.java"
+    ) shouldBe
+    literal(
+      dependenciesScala,
+      "snowflakeJDBCConscryptAffectedVersion",
+      "project/Dependencies.scala"
+    )
+  }
+
+  it should "serve the installer and the build the same repackaged jar" in {
+    val releaseBase = literal(setupJava, "SL_RELEASE_BASE_URL", "src/main/java/Setup.java")
+    val setupPath = """SL_RELEASE_BASE_URL \+ "(/deps-snowflake-jdbc-[^"]+\.jar)"""".r
+      .findFirstMatchIn(setupJava)
+      .map(_.group(1))
+      .getOrElse(fail("noconscrypt jar path not found in src/main/java/Setup.java"))
+    val buildUrl = """"(https://github\.com/[^"]*noconscrypt[^"]*\.jar)"""".r
+      .findFirstMatchIn(dependenciesScala)
+      .map(_.group(1))
+      .getOrElse(fail("noconscrypt jar url not found in project/Dependencies.scala"))
+    buildUrl shouldBe releaseBase + setupPath
+  }
 }

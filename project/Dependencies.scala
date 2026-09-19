@@ -118,9 +118,35 @@ object Dependencies {
     )
   )
 
+  // snowflake-jdbc 4.0.1+ ships its vendored Conscrypt 2.5.2 unrelocated, at the real org.conscrypt
+  // package. google-api-gax then takes that private copy for an installed Conscrypt and calls
+  // setNamedGroups() -- added in 2.6.x -- so every BigQuery call in the JVM dies with
+  // NoSuchMethodError, but only where the bundled native library loads: linux-x86_64 yes,
+  // osx-aarch64 no, which is why CI sees it and Apple silicon does not. Setup.java serves installs
+  // a repackaged 4.3.4 with those entries stripped (see the note there for the upstream fix); the
+  // test classpath must run the same jar, otherwise the BigQuery suites abort on Linux. Coursier
+  // silently ignores sbt's `from "<url>"`, so build.sbt fetches it and attaches it as an unmanaged
+  // Test jar in place of the Maven artifact. Both sides key on the same affected version and revert
+  // together once the pin moves; InstallerVersionSyncSpec guards that they stay identical.
+  val snowflakeJDBCConscryptAffectedVersion = "4.3.4"
+
+  val snowflakeJDBCNoConscryptUrl: Option[String] =
+    if (Versions.snowflakeJDBC == snowflakeJDBCConscryptAffectedVersion)
+      Some(
+        "https://github.com/starlake-ai/starflow/releases/download/deps-snowflake-jdbc-4.3.4-noconscrypt/snowflake-jdbc-4.3.4-noconscrypt.jar"
+      )
+    else None
+
   val snowflake = Seq(
-    "net.snowflake" % "snowflake-jdbc" % Versions.snowflakeJDBC % "provided" excludeAll (jacksonExclusions: _*),
-    "net.snowflake" %% "spark-snowflake" % Versions.snowflakeSpark % "provided" excludeAll (jacksonExclusions: _*)
+    // spark-snowflake pins its own older snowflake-jdbc, which would drag the Maven jar -- and its
+    // Conscrypt -- back onto the classpath next to whichever driver is declared here.
+    "net.snowflake" %% "spark-snowflake" % Versions.snowflakeSpark % "provided" excludeAll (jacksonExclusions: _*) exclude ("net.snowflake", "snowflake-jdbc")
+  ) ++ (
+    if (snowflakeJDBCNoConscryptUrl.isEmpty)
+      Seq(
+        "net.snowflake" % "snowflake-jdbc" % Versions.snowflakeJDBC % "provided" excludeAll (jacksonExclusions: _*)
+      )
+    else Seq.empty
   )
 
   val redshift = Seq(
