@@ -149,6 +149,30 @@ assembly / assemblyMergeStrategy := {
 // Required by the Test container framework
 Test / fork := true
 
+// The pinned snowflake-jdbc vendors an unrelocated Conscrypt that breaks every BigQuery call on
+// linux-x86_64 (details in project/Dependencies.scala and Setup.java). Tests run the same
+// repackaged jar the installer serves; it is fetched once into the user cache since coursier
+// ignores `from "<url>"`, and attached as an unmanaged Test jar so it never reaches the assembly.
+val snowflakeJDBCNoConscryptJar =
+  taskKey[Seq[File]]("snowflake-jdbc with the vendored Conscrypt stripped, or empty when the pin is clean")
+
+snowflakeJDBCNoConscryptJar := {
+  val log = streams.value.log
+  snowflakeJDBCNoConscryptUrl.toSeq.map { source =>
+    val target = file(sys.props("user.home")) / ".cache" / "starlake" / "build-deps" / source.split('/').last
+    if (!target.exists()) {
+      log.info(s"Fetching $source")
+      IO.createDirectory(target.getParentFile)
+      val partial = new File(target.getPath + ".part")
+      sbt.io.Using.urlInputStream(url(source))(in => IO.transfer(in, partial))
+      IO.move(partial, target)
+    }
+    target
+  }
+}
+
+Test / unmanagedJars ++= snowflakeJDBCNoConscryptJar.value.map(Attributed.blank)
+
 excludeDependencies ++= Seq(
   ExclusionRule("org.javassist", "javassist"),
   // google-cloud-bigquery 2.69.0+ (also embedded in spark-4.1-bigquery 0.45.0+) probes Conscrypt
