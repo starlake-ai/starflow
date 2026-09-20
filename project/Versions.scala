@@ -33,7 +33,7 @@ object Versions {
   val bigquery = "2.71.0"
   val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
-  val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
+  val awsSdkBundle = "2.55.1" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
   val sparkBigquery =
     "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
