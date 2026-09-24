@@ -1,7 +1,7 @@
 object Versions {
   val spark4 = "4.1.3"
   val deltaSpark = "4.4.0" // artifact id is delta-spark_4.1
-  val scalatest = "3.2.19"
+  val scalatest = "3.2.20"
   // scalacheck-1-18 has no 3.2.20.0 on Maven Central (3.2.19.0 is the last of its line),
   // so scalatest is held at 3.2.19 to move together with it.
   val scalacheckForScalatest = "3.2.19.0"
