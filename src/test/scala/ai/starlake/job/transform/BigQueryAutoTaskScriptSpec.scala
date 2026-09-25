@@ -76,8 +76,18 @@ class BigQueryAutoTaskScriptSpec extends AnyFlatSpec with Matchers {
 
   it should "match a fully qualified name only in the target's project" in {
     val presql = List("CREATE TABLE IF NOT EXISTS `my-prj.my_domain.my_table` (id INT64)")
-    BigQueryAutoTask.presqlCreatesTable(presql, Some("MY-PRJ"), "my_domain", "my_table") shouldBe true
-    BigQueryAutoTask.presqlCreatesTable(presql, Some("other-prj"), "my_domain", "my_table") shouldBe false
+    BigQueryAutoTask.presqlCreatesTable(
+      presql,
+      Some("MY-PRJ"),
+      "my_domain",
+      "my_table"
+    ) shouldBe true
+    BigQueryAutoTask.presqlCreatesTable(
+      presql,
+      Some("other-prj"),
+      "my_domain",
+      "my_table"
+    ) shouldBe false
     BigQueryAutoTask.presqlCreatesTable(presql, None, "my_domain", "my_table") shouldBe false
   }
 
@@ -100,7 +110,11 @@ class BigQueryAutoTaskScriptSpec extends AnyFlatSpec with Matchers {
     BigQueryAutoTask.plannedFromPresql(true, false, Materialization.TABLE) shouldBe true
     BigQueryAutoTask.plannedFromPresql(true, false, Materialization.HYBRID) shouldBe true
     BigQueryAutoTask.plannedFromPresql(true, false, Materialization.VIEW) shouldBe false
-    BigQueryAutoTask.plannedFromPresql(true, false, Materialization.MATERIALIZED_VIEW) shouldBe false
+    BigQueryAutoTask.plannedFromPresql(
+      true,
+      false,
+      Materialization.MATERIALIZED_VIEW
+    ) shouldBe false
     BigQueryAutoTask.plannedFromPresql(true, true, Materialization.TABLE) shouldBe false
     BigQueryAutoTask.plannedFromPresql(false, false, Materialization.TABLE) shouldBe false
   }
