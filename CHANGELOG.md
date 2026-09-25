@@ -1,6 +1,13 @@
 
 # Release notes
 
+# 1.7.6:
+__Bug fix__:
+- **BigQuery transforms whose presql creates their target run on a new environment** (#1803): on the native BigQuery path, Starlake decided between `CREATE TABLE ... AS SELECT` and `INSERT`/`MERGE` by checking whether the table existed *before* the script ran, while the presql runs *inside* that script. A presql creating the target (`CREATE TABLE IF NOT EXISTS my_domain.my_table (...)`, typically followed by a `DELETE` of the re-computed window) therefore collided with the `CREATE TABLE ... AS SELECT` on the first run (`Already Exists ... at [3:1]`), and the task only succeeded from its second run on. When a top-level presql statement is a `CREATE [OR REPLACE] TABLE [IF NOT EXISTS]` of the task's own target (dataset and table names as in the sink, case-sensitive, project optional), the main query is now always an `INSERT`/`MERGE` into it: the first run behaves like every later one, and the table has the columns, partitioning and options the presql declares. The `INSERT`/`MERGE` still writes the columns of the SELECT, so a column the presql does not declare fails at the first run instead of being created.
+  - A presql that only `DELETE`s from a table that does not exist yet still fails on the first run: add a `CREATE TABLE IF NOT EXISTS` for the target at the top of the presql. A `CREATE` nested in a scripting block (`IF ... THEN`, `BEGIN ... END`) is not taken into account, since it may not run.
+  - `SCD2` tasks: the presql `CREATE` must declare the start/end timestamp columns.
+  - Unchanged: tasks whose presql does not create their target, views, materialized views, audit tables, and runs on a data branch.
+
 # 1.7.5:
 __Bug fix__:
 - **Installing 1.7.x no longer provisions master's connector set**: `starlake install` fetched `setup.jar` from `master` no matter which version was being installed, and `setup.jar` is what pins Spark, Hadoop and every connector version written into `versions.sh` and downloaded into `bin/`. A 1.7 install (built for Spark 3.5) was therefore paired with master's Spark 4 pins. Most visibly it broke the 1.7 Docker image, whose build asked Maven Central for `delta-spark_3.5_2.13/4.3.1`, an artifact that does not exist, so the image never published for 1.7.3 or 1.7.4. `setup.jar` is now fetched from the tag of the release being installed, so it and the core jar always come from the same release. SNAPSHOTs and local builds, which have no release tag to fetch from, still use `master`.
