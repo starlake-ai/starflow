@@ -37,7 +37,7 @@ object Versions {
   val sparkBigquery =
     "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
   val bigqueryConnector = "hadoop3-1.2.0"
-  val h2 = "2.5.250" // Test only
+  val h2 = "2.5.252" // Test only
   val poi = "4.1.2"
   val confluentVersion = "7.9.3"
   val kafkaClients = "7.9.3-ce"
