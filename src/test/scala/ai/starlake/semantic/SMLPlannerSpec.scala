@@ -487,4 +487,66 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
     customers.secondaryAttributes.map(_.name) shouldBe List("customers c_mktsegment")
     plan.stats.skippedHierarchies shouldBe 1
   }
+
+  it should "trim padded field names instead of failing" in {
+    val plan = SMLPlanner.plan(
+      "pad",
+      model(
+        """name: pad
+          |tables:
+          |  - name: events
+          |    dimensions:
+          |      - {name: " region ", expr: REGION}
+          |      - {name: " country"}
+          |      - {name: "channel "}
+          |    facts: [{name: amount, data_type: DOUBLE}]
+          |    metrics: [{name: total, expr: SUM(amount)}]
+          |    hierarchies:
+          |      - name: geo
+          |        levels: [{field: country}, {field: region}]
+          |"""
+      )
+    )
+    plan.dimensions.map(_.name) shouldBe List("events geo Dimension", "events channel Dimension")
+    plan.dimensions.head.levelAttributes.map(a => (a.name, a.keyColumns)) shouldBe List(
+      ("events country", List("country")),
+      ("events region", List("REGION"))
+    )
+  }
+
+  it should "not double the period before the TODO of a NULL calculation" in {
+    val plan = SMLPlanner.plan(
+      "dots",
+      model(
+        """name: dots
+          |tables:
+          |  - name: t
+          |    facts: [{name: price, data_type: DOUBLE}]
+          |    metrics:
+          |      - {name: ranked, expr: RANK() OVER (ORDER BY price), description: Rank.}
+          |"""
+      )
+    )
+    plan.calculations.map(_.description) shouldBe List(
+      Some("Rank. TODO Starflow: translate original SQL to MDX: RANK() OVER (ORDER BY price)")
+    )
+  }
+
+  it should "give the fact role to a table whose metrics all fall back to NULL calculations" in {
+    val plan = SMLPlanner.plan(
+      "scores",
+      model(
+        """name: scores
+          |tables:
+          |  - name: scores
+          |    dimensions: [{name: player}]
+          |    metrics:
+          |      - {name: ranked, expr: RANK() OVER (ORDER BY player)}
+          |"""
+      )
+    )
+    plan.metrics shouldBe Nil
+    plan.calculations.map(c => (c.name, c.expression)) shouldBe List("ranked" -> "NULL")
+    plan.dimensions.map(_.name) shouldBe List("scores player Dimension")
+  }
 }

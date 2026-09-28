@@ -92,12 +92,16 @@ private[semantic] object SMLPlanner extends LazyLogging {
   def plan(modelName: String, model: JsonNode): Model = {
     val (tables, skippedHierarchies) = buildTables(modelName, model)
     val (relationships, skippedRelationships) = parseRelationships(model, tables)
-    val (metrics, calculations, fallbacks) = planMetrics(model, tables)
+    val (metrics, calculations, fallbacks, assigned) = planMetrics(model, tables)
     logUnusedFacts(model, tables)
 
-    val factTables = tables
-      .filter(t => t.fields.exists(_.kind == "fact") || metrics.exists(_.dataset == t.name))
-      .toSet
+    // A metric assigned to a table gives it the fact role even when it is exported as a NULL
+    // calculation; hidden metrics of calculations give it to the tables they aggregate.
+    val factTables = tables.filter { t =>
+      t.fields.exists(_.kind == "fact") ||
+      assigned.contains(t.name) ||
+      metrics.exists(_.dataset == t.name)
+    }.toSet
     val targets = relationships.map(_.right).toSet
     val dimensionTables = tables.filter { t =>
       targets.contains(t) ||
@@ -179,9 +183,10 @@ private[semantic] object SMLPlanner extends LazyLogging {
   private def fieldsOf(table: JsonNode): List[Field] = {
     def of(key: String, kind: String): List[Field] =
       elems(table, key).flatMap { n =>
-        text(n, "name").map(name =>
-          Field(name, kind, text(n, "expr"), smlDataType(text(n, "data_type")), n)
-        )
+        text(n, "name")
+          .map(_.trim)
+          .filter(_.nonEmpty)
+          .map(name => Field(name, kind, text(n, "expr"), smlDataType(text(n, "data_type")), n))
       }
     of("dimensions", "dimension") ++ of("time_dimensions", "time") ++ of("facts", "fact")
   }
@@ -323,15 +328,19 @@ private[semantic] object SMLPlanner extends LazyLogging {
       case ExprArg(sql) => (target.addColumn(columnBase, sql, "double"), call.method)
     }
 
-  /** Metrics, calculations and the number of metrics exported as NULL calculations. */
+  /** Metrics, calculations, the number of metrics exported as NULL calculations and the names of
+    * the tables owning at least one metric definition.
+    */
   private def planMetrics(
     model: JsonNode,
     tables: List[TableState]
-  ): (List[Metric], List[Calculation], Int) = {
+  ): (List[Metric], List[Calculation], Int, Set[String]) = {
     val tableLevel = tables.flatMap(t => elems(t.node, "metrics").map(m => (m, t)))
     val owned = assignModelMetrics(model, tables.map(_.name), _.toLowerCase).toList.flatMap {
       case (key, entries) =>
-        entries.collect { case (m, true) => (m, tables.find(_.name.toLowerCase == key).get) }
+        entries.collect { case (m, true) => m }.flatMap { m =>
+          tables.find(_.name.toLowerCase == key).map(t => (m, t))
+        }
     }
     val modelLevel = elems(model, "metrics").map(m => (m, owned.find(_._1 eq m).map(_._2)))
     val allNames =
@@ -403,14 +412,16 @@ private[semantic] object SMLPlanner extends LazyLogging {
               calculations += Calculation(
                 in.name,
                 in.label,
-                Some(in.description.fold(todo)(d => s"$d. $todo")),
+                Some(in.description.fold(todo) { d =>
+                  if (d.endsWith(".")) s"$d $todo" else s"$d. $todo"
+                }),
                 "NULL",
                 in.hidden
               )
           }
       }
     }
-    (metrics.toList, calculations.toList, fallbacks)
+    (metrics.toList, calculations.toList, fallbacks, inputs.flatMap(_.owner.map(_.name)).toSet)
   }
 
   /** Facts that no metric expression mentions produce no SML metric; say so once per fact. */
