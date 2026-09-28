@@ -14,7 +14,7 @@ private[semantic] object SMLMetricParser {
   case class TextToken(text: String) extends Token
 
   private val FunctionStart = """^([A-Za-z_][A-Za-z0-9_]*)\s*\(""".r
-  private val DistinctArg = """(?is)^DISTINCT\s+(.+)$""".r
+  private val DistinctArg = """(?is)^DISTINCT\b\s*(.+)$""".r
   private val NumberLiteral = """^\d+(\.\d+)?""".r
   private val IdentifierToken = """^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?""".r
 
@@ -110,12 +110,19 @@ private[semantic] object SMLMetricParser {
       closingParen(s, open).flatMap { close =>
         val inner = s.substring(open + 1, close).trim
         val (distinct, arg) = inner match {
-          case DistinctArg(a) => (true, a.trim)
+          case DistinctArg(a) => (true, unwrap(a.trim))
           case other          => (false, other)
         }
         method(m.group(1), distinct, arg).map(meth => (AggregateCall(meth, arg), close + 1))
       }
     }
+
+  /** `arg` without one pair of parentheses enclosing all of it: `(x)` is `x`, `(a) + (b)` is kept.
+    */
+  private def unwrap(arg: String): String =
+    if (arg.startsWith("(") && closingParen(arg, 0).contains(arg.length - 1))
+      arg.substring(1, arg.length - 1).trim
+    else arg
 
   /** Index of the ')' matching the '(' at `open`, skipping single-quoted strings. */
   private def closingParen(s: String, open: Int): Option[Int] = {

@@ -46,6 +46,16 @@ class SMLMetricParserSpec extends AnyFlatSpec with Matchers {
     parseCall("SUM()") shouldBe None
   }
 
+  it should "accept DISTINCT followed by a parenthesized argument" in {
+    parseCall("COUNT(DISTINCT(x))") shouldBe Some(AggregateCall("count distinct", "x"))
+    parseCall("SUM(DISTINCT(x))") shouldBe Some(AggregateCall("sum distinct", "x"))
+    parseCall("COUNT(DISTINCT (a) + (b))") shouldBe Some(
+      AggregateCall("count distinct", "(a) + (b)")
+    )
+    parseCall("AVG(DISTINCT(x))") shouldBe None
+    parseCall("COUNT(DISTINCTx)") shouldBe Some(AggregateCall("count non-null", "DISTINCTx"))
+  }
+
   "decompose" should "split arithmetic over aggregates into calls and render MDX" in {
     val tokens = decompose("(SUM(orders.total) - 10.5) / COUNT(DISTINCT customers.id)").get
     tokens.collect { case AggToken(c) => c } shouldBe List(
