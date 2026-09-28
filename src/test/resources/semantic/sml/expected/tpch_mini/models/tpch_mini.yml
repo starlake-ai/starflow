@@ -1,0 +1,37 @@
+unique_name: tpch_mini
+object_type: model
+label: tpch_mini
+description: Mini TPC-H
+relationships:
+  - unique_name: lineitem_to_orders
+    from:
+      dataset: lineitem
+      join_columns: [L_ORDERKEY]
+    to:
+      dimension: orders Dimension
+      level: orders o_orderkey
+  - unique_name: orders_to_customers
+    from:
+      dataset: orders
+      join_columns: [O_CUSTKEY]
+    to:
+      dimension: customers Dimension
+      level: customers c_custkey
+  - unique_name: orders_self
+    from:
+      dataset: orders
+      join_columns: [O_ORDERKEY]
+    to:
+      dimension: orders Dimension
+      level: orders o_orderkey
+metrics:
+  - unique_name: revenue
+  - unique_name: order_revenue
+  - unique_name: order_count
+  - unique_name: _sl_revenue_per_order_1
+  - unique_name: _sl_revenue_per_order_2
+  - unique_name: revenue_per_order
+  - unique_name: running_total
+dimensions:
+  - lineitem l_returnflag Dimension
+  - orders order_calendar Dimension

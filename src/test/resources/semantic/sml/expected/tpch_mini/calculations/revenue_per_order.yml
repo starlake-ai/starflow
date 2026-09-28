@@ -1,0 +1,4 @@
+unique_name: revenue_per_order
+object_type: metric_calc
+label: revenue_per_order
+expression: "[Measures].[_sl_revenue_per_order_1] / [Measures].[_sl_revenue_per_order_2]"

@@ -1,0 +1,25 @@
+unique_name: orders
+object_type: dataset
+label: orders
+connection_id: tpch_mini - TPCH.SF1
+table: ORDERS
+columns:
+  - name: O_ORDERKEY
+    data_type: decimal(38,0)
+  - name: O_CUSTKEY
+    data_type: decimal(38,0)
+  - name: O_ORDERSTATUS
+    data_type: string
+  - name: O_ORDERDATE
+    data_type: date
+  - name: O_TOTALPRICE
+    data_type: decimal(12,2)
+  - name: o_orderdate_year
+    data_type: int
+    sql: EXTRACT(YEAR FROM O_ORDERDATE)
+  - name: o_orderdate_quarter
+    data_type: int
+    sql: EXTRACT(QUARTER FROM O_ORDERDATE)
+  - name: o_orderdate_month
+    data_type: int
+    sql: EXTRACT(MONTH FROM O_ORDERDATE)

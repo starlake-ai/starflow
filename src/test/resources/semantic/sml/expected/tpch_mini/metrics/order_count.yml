@@ -1,0 +1,6 @@
+unique_name: order_count
+object_type: metric
+label: order_count
+calculation_method: count non-null
+dataset: orders
+column: O_ORDERKEY

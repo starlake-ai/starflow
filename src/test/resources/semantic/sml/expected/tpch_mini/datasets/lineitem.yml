@@ -1,0 +1,17 @@
+unique_name: lineitem
+object_type: dataset
+label: lineitem
+connection_id: tpch_mini - TPCH.SF1
+table: LINEITEM
+columns:
+  - name: L_ORDERKEY
+    data_type: decimal(38,0)
+  - name: L_RETURNFLAG
+    data_type: string
+  - name: L_EXTENDEDPRICE
+    data_type: decimal(12,2)
+  - name: L_DISCOUNT
+    data_type: decimal(12,2)
+  - name: _sl_revenue
+    data_type: double
+    sql: L_EXTENDEDPRICE * (1 - L_DISCOUNT)
