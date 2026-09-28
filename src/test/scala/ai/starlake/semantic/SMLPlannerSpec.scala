@@ -217,14 +217,6 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
         None
       ),
       ModelRelationship(
-        "orders_to_customers",
-        "orders",
-        List("O_CUSTKEY"),
-        "customers Dimension",
-        "customers c_custkey",
-        None
-      ),
-      ModelRelationship(
         "orders_self",
         "orders",
         List("O_ORDERKEY"),
@@ -232,6 +224,11 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
         "orders o_orderkey",
         None
       )
+    )
+    // orders has both roles: its relationship to customers is embedded only, reached through
+    // the orders_self link.
+    plan.dimensions(1).relationships.map(r => (r.name, r.toDimension)) shouldBe List(
+      "orders_to_customers" -> "customers Dimension"
     )
     val customers = plan.dimensions(3)
     customers.hierarchies shouldBe List(
@@ -548,5 +545,48 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
     plan.metrics shouldBe Nil
     plan.calculations.map(c => (c.name, c.expression)) shouldBe List("ranked" -> "NULL")
     plan.dimensions.map(_.name) shouldBe List("scores player Dimension")
+  }
+
+  it should "reorder composite join columns to the leaf key order and skip mismatched counts" in {
+    val plan = SMLPlanner.plan(
+      "keys",
+      model(
+        """name: keys
+          |tables:
+          |  - name: sales
+          |    dimensions: [{name: x}, {name: y}]
+          |    facts: [{name: amount, data_type: DOUBLE}]
+          |    metrics: [{name: total, expr: SUM(amount)}]
+          |  - name: parts
+          |    primary_key: {columns: [a, b]}
+          |    dimensions: [{name: a}, {name: b}, {name: p}, {name: q}]
+          |  - name: stores
+          |    primary_key: {columns: [s]}
+          |    dimensions: [{name: s}, {name: u}, {name: v}]
+          |    hierarchies: [{name: h, levels: [{field: s}]}]
+          |relationships:
+          |  - name: sales_to_parts
+          |    left_table: sales
+          |    right_table: parts
+          |    relationship_columns: [{left_column: x, right_column: b}, {left_column: y, right_column: a}]
+          |  - name: stores_to_parts
+          |    left_table: stores
+          |    right_table: parts
+          |    relationship_columns: [{left_column: u, right_column: b}, {left_column: v, right_column: a}]
+          |  - name: half_key
+          |    left_table: sales
+          |    right_table: parts
+          |    relationship_columns: [{left_column: x, right_column: a}]
+          |"""
+      )
+    )
+    plan.relationships.map(r => (r.name, r.joinColumns)) shouldBe List(
+      "sales_to_parts" -> List("y", "x")
+    )
+    val stores = plan.dimensions.find(_.name == "stores Dimension").get
+    stores.relationships.map(r => (r.name, r.joinColumns)) shouldBe List(
+      "stores_to_parts" -> List("v", "u")
+    )
+    plan.stats.skippedRelationships shouldBe 1
   }
 }

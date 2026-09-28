@@ -756,55 +756,58 @@ private[semantic] object SMLPlanner extends LazyLogging {
           logger.warn(s"Relationship '${r.name}' skipped, table '${r.right.name}' has no dimension")
           skipped += 1
         case Some((rightDim, rightKey)) =>
-          if (r.pairs.map(_._2.name.toLowerCase) != rightKey.map(_.name.toLowerCase))
-            logger.warn(
-              s"Relationship '${r.name}': right columns are not the leaf key of '${rightDim.name}'"
-            )
-          val joinColumns = r.pairs.map { case (l, _) => r.left.column(l.name) }
-          val leftDim = regular.get(r.left.name).map(_._1)
-          val isSelfReferencing = r.left eq r.right
-          if (factTables.contains(r.left))
-            modelRelationships += ModelRelationship(
-              r.name,
-              r.left.name,
-              joinColumns,
-              rightDim.name,
-              rightDim.leafLevel,
-              None
-            )
-          if (isSelfReferencing) {
-            // A dimension must not embed itself: the self-referencing relationship is exported
-            // as a role-played model relationship only, and only when the table has a fact role.
-            if (factTables.contains(r.left)) {
-              selfReferencing += r.name
-              logger.warn(
-                s"Relationship '${r.name}' is self-referencing, exported as a role-played model relationship only"
-              )
-            } else {
-              logger.warn(
-                s"Relationship '${r.name}' skipped, self-referencing relationships require table '${r.left.name}' to have a fact role"
-              )
-              skipped += 1
-            }
-          } else {
-            leftDim.foreach { d =>
-              embedded(r.left.name) = embedded.getOrElse(r.left.name, Nil) :+ EmbeddedRelationship(
-                r.name,
-                r.left.name,
-                joinColumns,
-                d.hierarchies.head.name,
-                d.leafLevel,
-                rightDim.name,
-                rightDim.leafLevel,
-                None
-              )
-            }
-            if (!factTables.contains(r.left) && leftDim.isEmpty) {
-              logger.warn(
-                s"Relationship '${r.name}' skipped, table '${r.left.name}' has neither metrics nor a dimension"
-              )
-              skipped += 1
-            }
+          joinColumns(r, rightDim, rightKey) match {
+            case None => skipped += 1
+            case Some(columns) =>
+              val leftDim = regular.get(r.left.name).map(_._1)
+              val isSelfReferencing = r.left eq r.right
+              val isFact = factTables.contains(r.left)
+              // A table with both roles reaches its embedded relationships through its self link;
+              // a direct model relationship would give AtScale two paths to the same dimension.
+              if (isFact && (isSelfReferencing || leftDim.isEmpty))
+                modelRelationships += ModelRelationship(
+                  r.name,
+                  r.left.name,
+                  columns,
+                  rightDim.name,
+                  rightDim.leafLevel,
+                  None
+                )
+              if (isSelfReferencing) {
+                // A dimension must not embed itself: the self-referencing relationship is exported
+                // as a role-played model relationship only, and only when the table has a fact role.
+                if (isFact) {
+                  selfReferencing += r.name
+                  logger.warn(
+                    s"Relationship '${r.name}' is self-referencing, exported as a role-played model relationship only"
+                  )
+                } else {
+                  logger.warn(
+                    s"Relationship '${r.name}' skipped, self-referencing relationships require table '${r.left.name}' to have a fact role"
+                  )
+                  skipped += 1
+                }
+              } else {
+                leftDim.foreach { d =>
+                  embedded(r.left.name) =
+                    embedded.getOrElse(r.left.name, Nil) :+ EmbeddedRelationship(
+                      r.name,
+                      r.left.name,
+                      columns,
+                      d.hierarchies.headOption.map(_.name).getOrElse(""),
+                      d.leafLevel,
+                      rightDim.name,
+                      rightDim.leafLevel,
+                      None
+                    )
+                }
+                if (!isFact && leftDim.isEmpty) {
+                  logger.warn(
+                    s"Relationship '${r.name}' skipped, table '${r.left.name}' has neither metrics nor a dimension"
+                  )
+                  skipped += 1
+                }
+              }
           }
       }
     }
@@ -830,6 +833,36 @@ private[semantic] object SMLPlanner extends LazyLogging {
       embedded.view.mapValues(rolePlayEmbedded).toMap,
       skipped
     )
+  }
+
+  /** Left columns of `r` in the order of the right dimension's leaf key: reordered when the right
+    * columns are a permutation of the key (AtScale pairs join columns with key columns by
+    * position), kept with a warning when they are other columns, None (logged) when their count
+    * differs.
+    */
+  private def joinColumns(
+    r: Rel,
+    rightDim: Dimension,
+    rightKey: List[Field]
+  ): Option[List[String]] = {
+    val rightNames = r.pairs.map(_._2.name.toLowerCase)
+    val keyNames = rightKey.map(_.name.toLowerCase)
+    val leftColumns = r.pairs.map { case (l, _) => r.left.column(l.name) }
+    if (rightNames.size != keyNames.size) {
+      logger.warn(
+        s"Relationship '${r.name}' skipped, it has ${rightNames.size} columns but the leaf key of " +
+        s"'${rightDim.name}' has ${keyNames.size}"
+      )
+      None
+    } else if (rightNames == keyNames) Some(leftColumns)
+    else if (rightNames.sorted == keyNames.sorted && rightNames.distinct.size == rightNames.size)
+      Some(keyNames.map(k => leftColumns(rightNames.indexOf(k))))
+    else {
+      logger.warn(
+        s"Relationship '${r.name}': right columns are not the leaf key of '${rightDim.name}'"
+      )
+      Some(leftColumns)
+    }
   }
 
   private def rolePlayModel(relationships: List[ModelRelationship]): List[ModelRelationship] = {

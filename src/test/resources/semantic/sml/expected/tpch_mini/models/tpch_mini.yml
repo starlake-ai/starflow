@@ -10,13 +10,6 @@ relationships:
     to:
       dimension: orders Dimension
       level: orders o_orderkey
-  - unique_name: orders_to_customers
-    from:
-      dataset: orders
-      join_columns: [O_CUSTKEY]
-    to:
-      dimension: customers Dimension
-      level: customers c_custkey
   - unique_name: orders_self
     from:
       dataset: orders
