@@ -96,4 +96,98 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
       Connection("shop - default", None, None)
     )
   }
+
+  it should "classify metrics as native metrics, MDX calculations or NULL fallbacks" in {
+    val plan = SMLPlanner.plan(
+      "sales",
+      model(
+        """name: sales
+          |tables:
+          |  - name: shop_a
+          |    primary_key: {columns: [id]}
+          |    dimensions: [{name: id, expr: ID, data_type: INT}]
+          |    facts:
+          |      - {name: price, expr: PRICE, data_type: "NUMBER(10,2)"}
+          |      - {name: net, expr: PRICE - DISCOUNT, data_type: "NUMBER(10,2)"}
+          |    metrics:
+          |      - {name: revenue, expr: SUM(price), description: Gross, synonyms: [sales]}
+          |      - {name: net_total, expr: SUM(net * 2), access_modifier: private_access}
+          |      - {name: orders, expr: COUNT(*)}
+          |      - {name: ranked, expr: RANK() OVER (ORDER BY price), description: Rank}
+          |  - name: shop_b
+          |    facts: [{name: amount, data_type: DOUBLE}]
+          |    metrics:
+          |      - {name: revenue, expr: SUM(amount)}
+          |      - {name: foreign, expr: SUM(shop_a.price)}
+          |"""
+      )
+    )
+    plan.metrics shouldBe List(
+      Metric(
+        "shop_a_revenue",
+        "revenue",
+        Some("Gross. Synonyms: sales"),
+        "shop_a",
+        "PRICE",
+        "sum",
+        hidden = false
+      ),
+      Metric("net_total", "net_total", None, "shop_a", "_sl_net_total", "sum", hidden = true),
+      Metric("orders", "orders", None, "shop_a", "ID", "count non-null", hidden = false),
+      Metric("shop_b_revenue", "revenue", None, "shop_b", "amount", "sum", hidden = false),
+      Metric("_sl_foreign_1", "_sl_foreign_1", None, "shop_a", "PRICE", "sum", hidden = true)
+    )
+    plan.calculations shouldBe List(
+      Calculation(
+        "ranked",
+        "ranked",
+        Some("Rank. TODO Starflow: translate original SQL to MDX: RANK() OVER (ORDER BY price)"),
+        "NULL",
+        hidden = false
+      ),
+      Calculation("foreign", "foreign", None, "[Measures].[_sl_foreign_1]", hidden = false)
+    )
+    plan.stats.fallbackCalculations shouldBe 1
+    plan.datasets.head.columns.last shouldBe Column(
+      "_sl_net_total",
+      "double",
+      Some("(PRICE - DISCOUNT) * 2")
+    )
+  }
+
+  it should "turn unowned arithmetic over qualified aggregates into a calculation with hidden metrics" in {
+    val plan = SMLPlanner.plan(
+      "m",
+      model(
+        """name: m
+          |tables:
+          |  - name: orders
+          |    facts: [{name: total, expr: TOTAL, data_type: DOUBLE}]
+          |  - name: customers
+          |    dimensions: [{name: id, expr: ID}]
+          |metrics:
+          |  - name: basket
+          |    expr: SUM(orders.total) / COUNT(DISTINCT customers.id)
+          |  - name: vague
+          |    expr: SUM(total) / 2
+          |"""
+      )
+    )
+    plan.metrics shouldBe List(
+      Metric("_sl_basket_1", "_sl_basket_1", None, "orders", "TOTAL", "sum", hidden = true),
+      Metric(
+        "_sl_basket_2",
+        "_sl_basket_2",
+        None,
+        "customers",
+        "ID",
+        "count distinct",
+        hidden = true
+      )
+    )
+    plan.calculations.map(c => (c.name, c.expression)) shouldBe List(
+      "basket" -> "[Measures].[_sl_basket_1] / [Measures].[_sl_basket_2]",
+      "vague"  -> "NULL"
+    )
+  }
 }

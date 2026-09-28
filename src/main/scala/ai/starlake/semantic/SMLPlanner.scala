@@ -1,5 +1,6 @@
 package ai.starlake.semantic
 
+import ai.starlake.semantic.SMLMetricParser.{AggToken, AggregateCall}
 import com.fasterxml.jackson.databind.JsonNode
 import com.typesafe.scalalogging.LazyLogging
 
@@ -89,18 +90,20 @@ private[semantic] object SMLPlanner extends LazyLogging {
 
   def plan(modelName: String, model: JsonNode): Model = {
     val (tables, skippedHierarchies) = buildTables(modelName, model)
+    val (metrics, calculations, fallbacks) = planMetrics(model, tables)
+    logUnusedFacts(model, tables)
     Model(
       name = modelName,
       description = combinedDescription(model),
       connections = tables.map(connectionOf(modelName, _)).distinct,
       datasets = datasets(modelName, tables),
       dimensions = Nil,
-      metrics = Nil,
-      calculations = Nil,
+      metrics = metrics,
+      calculations = calculations,
       relationships = Nil,
       degenerateDimensions = Nil,
       usesTimeHierarchies = false,
-      stats = Stats(skippedHierarchies, 0, 0, 0)
+      stats = Stats(skippedHierarchies, 0, 0, fallbacks)
     )
   }
 
@@ -199,4 +202,194 @@ private[semantic] object SMLPlanner extends LazyLogging {
         t.columns.toList
       )
     }
+
+  private sealed trait Arg
+  private case class FieldArg(column: String) extends Arg
+  private case object StarArg extends Arg
+  private case class ExprArg(sql: String) extends Arg
+
+  private case class MetricInput(
+    name: String,
+    label: String,
+    description: Option[String],
+    hidden: Boolean,
+    expr: String,
+    owner: Option[TableState]
+  )
+
+  private val QualifierRef = """([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]""".r
+
+  /** Table and argument kind of an aggregate call. The target is the table named by the argument's
+    * qualifiers, else the owner. None when qualifiers name several tables, when no table is known,
+    * or when the call targets another table and that is not allowed.
+    */
+  private def resolveCall(
+    call: AggregateCall,
+    owner: Option[TableState],
+    tables: List[TableState],
+    allowOtherTable: Boolean
+  ): Option[(TableState, Arg)] = {
+    val arg = call.arg.trim
+    val qualified = QualifierRef
+      .findAllMatchIn(arg)
+      .map(_.group(1))
+      .flatMap(q => tables.find(_.name.equalsIgnoreCase(q)))
+      .toList
+      .distinct
+    val target = qualified match {
+      case Nil                                                 => owner
+      case t :: Nil if allowOtherTable || owner.exists(_ eq t) => Some(t)
+      case _                                                   => None
+    }
+    target.map { t =>
+      val kind =
+        if (arg == "*") StarArg
+        else {
+          val bare = arg match {
+            case QualifiedPattern(q, f) if q.equalsIgnoreCase(t.name) => Some(f)
+            case IdentifierPattern()                                  => Some(arg)
+            case _                                                    => None
+          }
+          bare.flatMap(t.field) match {
+            case Some(f) => FieldArg(t.column(f.name))
+            case None    => ExprArg(SMLMetricParser.substitute(arg, fieldRef(t, _)))
+          }
+        }
+      (t, kind)
+    }
+  }
+
+  /** SQL reference of a bare or table-qualified field token of `t`. */
+  private def fieldRef(t: TableState, token: String): Option[String] = {
+    val fieldName = token match {
+      case QualifiedPattern(q, f) if q.equalsIgnoreCase(t.name) => Some(f)
+      case QualifiedPattern(_, _)                               => None
+      case other                                                => Some(other)
+    }
+    fieldName.flatMap(t.field).map(f => t.ref(f.name))
+  }
+
+  /** Column and calculation method of a resolved call; may add generated columns. */
+  private def materialize(
+    call: AggregateCall,
+    target: TableState,
+    arg: Arg,
+    columnBase: String
+  ): (String, String) =
+    arg match {
+      case FieldArg(column) => (column, call.method)
+      case StarArg =>
+        target.primaryKey match {
+          case pk :: Nil => (target.column(pk.name), "count non-null")
+          case _ =>
+            (target.generatedColumn("_sl_row_count", "_sl_row_count", "1", "int"), "sum")
+        }
+      case ExprArg(sql) => (target.addColumn(columnBase, sql, "double"), call.method)
+    }
+
+  /** Metrics, calculations and the number of metrics exported as NULL calculations. */
+  private def planMetrics(
+    model: JsonNode,
+    tables: List[TableState]
+  ): (List[Metric], List[Calculation], Int) = {
+    val tableLevel = tables.flatMap(t => elems(t.node, "metrics").map(m => (m, t)))
+    val owned = assignModelMetrics(model, tables.map(_.name), _.toLowerCase).toList.flatMap {
+      case (key, entries) =>
+        entries.collect { case (m, true) => (m, tables.find(_.name.toLowerCase == key).get) }
+    }
+    val modelLevel = elems(model, "metrics").map(m => (m, owned.find(_._1 eq m).map(_._2)))
+    val allNames =
+      (tableLevel.map(_._1) ++ modelLevel.map(_._1)).map(text(_, "name").getOrElse("").toLowerCase)
+
+    def input(m: JsonNode, owner: Option[TableState], prefix: Option[String]): Option[MetricInput] =
+      (text(m, "name"), text(m, "expr")) match {
+        case (Some(name), Some(expr)) =>
+          val unique = prefix match {
+            case Some(p) if allNames.count(_ == name.toLowerCase) > 1 => s"${p}_$name"
+            case _                                                    => name
+          }
+          Some(MetricInput(unique, name, combinedDescription(m), isHidden(m), expr, owner))
+        case _ =>
+          logger.warn(s"Metric without name or expr skipped: $m")
+          None
+      }
+    val inputs =
+      tableLevel.flatMap { case (m, t) => input(m, Some(t), Some(t.name)) } ++
+      modelLevel.flatMap { case (m, owner) => input(m, owner, None) }
+
+    val metrics = ArrayBuffer[Metric]()
+    val calculations = ArrayBuffer[Calculation]()
+    var fallbacks = 0
+    inputs.foreach { in =>
+      val native = for {
+        owner         <- in.owner
+        call          <- SMLMetricParser.parseCall(in.expr)
+        (target, arg) <- resolveCall(call, Some(owner), tables, allowOtherTable = false)
+      } yield {
+        val (column, method) = materialize(call, target, arg, s"_sl_${in.name}")
+        Metric(in.name, in.label, in.description, target.name, column, method, in.hidden)
+      }
+      native match {
+        case Some(metric) => metrics += metric
+        case None =>
+          val arithmetic = SMLMetricParser.decompose(in.expr).flatMap { tokens =>
+            val resolved = tokens.collect { case AggToken(c) => c }.map { c =>
+              resolveCall(c, in.owner, tables, allowOtherTable = true).map(r => (c, r))
+            }
+            if (resolved.forall(_.isDefined)) Some((tokens, resolved.flatten)) else None
+          }
+          arithmetic match {
+            case Some((tokens, resolved)) =>
+              val names = resolved.zipWithIndex.map { case ((call, (target, arg)), i) =>
+                val baseName = s"_sl_${in.name}_${i + 1}"
+                val (column, method) = materialize(call, target, arg, baseName)
+                metrics += Metric(
+                  baseName,
+                  baseName,
+                  None,
+                  target.name,
+                  column,
+                  method,
+                  hidden = true
+                )
+                baseName
+              }
+              calculations += Calculation(
+                in.name,
+                in.label,
+                in.description,
+                SMLMetricParser.render(tokens, names),
+                in.hidden
+              )
+            case None =>
+              fallbacks += 1
+              val todo = s"TODO Starflow: translate original SQL to MDX: ${in.expr}"
+              calculations += Calculation(
+                in.name,
+                in.label,
+                Some(in.description.fold(todo)(d => s"$d. $todo")),
+                "NULL",
+                in.hidden
+              )
+          }
+      }
+    }
+    (metrics.toList, calculations.toList, fallbacks)
+  }
+
+  /** Facts that no metric expression mentions produce no SML metric; say so once per fact. */
+  private def logUnusedFacts(model: JsonNode, tables: List[TableState]): Unit = {
+    val exprs =
+      (tables.flatMap(t => elems(t.node, "metrics")) ++ elems(model, "metrics"))
+        .flatMap(text(_, "expr"))
+    tables.foreach { t =>
+      t.fields.filter(_.kind == "fact").foreach { f =>
+        val word = ("(?i)\\b" + java.util.regex.Pattern.quote(f.name) + "\\b").r
+        if (!exprs.exists(e => word.findFirstIn(e).isDefined))
+          logger.info(
+            s"Table '${t.name}': fact '${f.name}' is not used by any metric, no SML metric generated"
+          )
+      }
+    }
+  }
 }
