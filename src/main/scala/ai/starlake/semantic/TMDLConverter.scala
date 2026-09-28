@@ -93,6 +93,11 @@ object TMDLConverter extends LazyLogging {
     connection: Option[ConnectionInfo]
   ): Seq[(String, String)] = {
     val tables = elems(model, "tables")
+    tables.filter(_.has("hierarchies")).foreach { t =>
+      logger.info(
+        s"Table '${t.path("name").asText()}': hierarchies ignored, the TMDL export does not support them"
+      )
+    }
     val metricsByTable =
       assignModelMetrics(model, tables.map(_.path("name").asText()), _.toLowerCase)
     val (relEntries, generatedKeys) = relationshipPlan(elems(model, "relationships"))

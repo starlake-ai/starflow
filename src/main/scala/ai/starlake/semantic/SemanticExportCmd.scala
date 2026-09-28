@@ -17,7 +17,7 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
   val command = "semantic-export"
 
   override def pageDescription: String =
-    "Export semantic models from metadata/semantic to Apache Ossie, a LookML project or a Power BI TMDL folder."
+    "Export semantic models from metadata/semantic to Apache Ossie, a LookML project, a Power BI TMDL folder or an AtScale SML repository."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake semantic-export",
@@ -28,6 +28,8 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
       "looker",
       "tmdl",
       "power bi",
+      "atscale",
+      "sml",
       "open semantic interchange",
       "BI",
       "AI agents"
@@ -42,9 +44,10 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
         """
           |Export the semantic models stored in metadata/semantic/ to another semantic
           |format. Supported formats: ossie (Apache Ossie, incubating), lookml (a Looker
-          |project: one view file per table plus a model file with explores) and tmdl
+          |project: one view file per table plus a model file with explores), tmdl
           |(a Power BI TMDL folder: database.tmdl, model.tmdl, relationships.tmdl and
-          |one `tables/<table>.tmdl` per table).
+          |one `tables/<table>.tmdl` per table) and sml (an AtScale SML repository:
+          |catalog, connections, datasets, dimensions, metrics, calculations, model).
           |
           |For ossie, Starflow-specific attributes with no Ossie counterpart are
           |preserved in custom_extensions blocks under the STARLAKE vendor name.
@@ -56,6 +59,12 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
           |and anything else becomes a BLANK() measure carrying the original SQL in a
           |TODO comment.
           |
+          |For sml, --connection names the AtScale data warehouse connection written as
+          |as_connection in every SML connection file. Relationship targets become
+          |dimensions, table hierarchies become SML hierarchies, simple aggregates become
+          |SML metrics, arithmetic over aggregates becomes MDX calculations, and anything
+          |else a NULL calculation carrying the original SQL in a TODO.
+          |
           |example: starlake semantic-export
           |         --format tmdl
           |         --model ecommerce_analytics
@@ -66,11 +75,13 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
         .opt[String]("format")
         .action((x, c) => c.copy(format = x))
         .validate(x =>
-          if (Set("ossie", "lookml", "tmdl").contains(x)) builder.success
+          if (Set("ossie", "lookml", "tmdl", "sml").contains(x)) builder.success
           else
-            builder.failure(s"Unsupported format '$x'. Supported formats: ossie, lookml, tmdl")
+            builder.failure(
+              s"Unsupported format '$x'. Supported formats: ossie, lookml, tmdl, sml"
+            )
         )
-        .text("Target format: ossie (default), lookml or tmdl")
+        .text("Target format: ossie (default), lookml, tmdl or sml")
         .optional(),
       builder
         .opt[String]("model")
@@ -90,7 +101,7 @@ object SemanticExportCmd extends Cmd[SemanticExportConfig] {
         .opt[String]("connection")
         .action((x, c) => c.copy(connection = Some(x)))
         .text(
-          "lookml: Looker connection name written to the model file; tmdl: Starflow connection used to derive the Power Query source. Defaults to the project's connectionRef"
+          "lookml: Looker connection name written to the model file; tmdl: Starflow connection used to derive the Power Query source; sml: AtScale data warehouse connection written as as_connection. Defaults to the project's connectionRef"
         )
         .optional(),
       reportFormatOption(builder)((c, x) => c.copy(reportFormat = x))

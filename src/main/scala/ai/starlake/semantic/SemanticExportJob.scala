@@ -11,7 +11,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 /** Exports semantic models stored in metadata/semantic/ to the Apache Ossie (incubating)
-  * interchange format, a LookML project or a Power BI TMDL folder.
+  * interchange format, a LookML project, a Power BI TMDL folder or an AtScale SML repository.
   *
   * Input models follow the Snowflake-style semantic model layout (tables with dimensions /
   * time_dimensions / facts / metrics / filters, relationships, model-level metrics,
@@ -78,6 +78,20 @@ class SemanticExportJob(config: SemanticExportConfig)(implicit settings: Setting
               s"Connection '$connectionName' not found, TMDL partitions will use a generic source"
             )
           writeAll(TMDLConverter.convert(name, node, connectionInfo))
+        case "sml" =>
+          val asConnection = config.connection.getOrElse(settings.appConfig.connectionRef)
+          val plan = SMLPlanner.plan(name, node)
+          if (plan.usesTimeHierarchies)
+            settings.appConfig.connections
+              .get(settings.appConfig.connectionRef)
+              .flatMap(info => Try(info.getJdbcEngineName().toString.toLowerCase).toOption)
+              .filter(engine => engine == "sqlserver" || engine == "synapse")
+              .foreach { engine =>
+                logger.warn(
+                  s"Semantic model '$name': time hierarchy columns use EXTRACT, which $engine does not support"
+                )
+              }
+          writeAll(SMLConverter.render(plan, asConnection))
         case _ =>
           val ossie = OssieConverter.convert(name, node)
           val target = new Path(outputDir, s"$name.ossie.yaml")
@@ -169,6 +183,8 @@ object OssieConverter {
 
     if (table.has("filters"))
       starlakeExtension(ds, "filters", table.get("filters"))
+    if (table.has("hierarchies"))
+      starlakeExtension(ds, "hierarchies", table.get("hierarchies"))
     ds
   }
 
