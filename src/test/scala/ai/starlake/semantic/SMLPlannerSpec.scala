@@ -589,4 +589,110 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
     )
     plan.stats.skippedRelationships shouldBe 1
   }
+
+  it should "make unique names unique per object type and keep every reference resolvable" in {
+    val plan = SMLPlanner.plan(
+      "adv",
+      model(
+        """name: adv
+          |tables:
+          |  - name: events
+          |    dimensions: [{name: x}, {name: a}, {name: b}, {name: shop_id}, {name: shop2}]
+          |    facts: [{name: n, data_type: INT}]
+          |    metrics: [{name: total, expr: SUM(n)}]
+          |    hierarchies:
+          |      - name: x
+          |        levels: [{field: a}, {field: b}]
+          |  - name: Events
+          |    dimensions: [{name: k}]
+          |  - name: shop
+          |    primary_key: {columns: [id]}
+          |    dimensions: [{name: id}, {name: boss}]
+          |    facts: [{name: price, data_type: DOUBLE}]
+          |    metrics:
+          |      - {name: _sl_ratio_1, expr: MIN(price)}
+          |      - {name: revenue, expr: SUM(price)}
+          |      - {name: revenue, expr: MAX(price)}
+          |      - {name: ratio, expr: SUM(price) / COUNT(id)}
+          |  - name: stores
+          |    primary_key: {columns: [sid]}
+          |    dimensions: [{name: sid}, {name: s1}, {name: s2}]
+          |    hierarchies:
+          |      - name: h
+          |        levels: [{field: sid}]
+          |relationships:
+          |  - {name: events_to_shop, left_table: events, right_table: shop, relationship_columns: [{left_column: shop2, right_column: id}]}
+          |  - {left_table: events, right_table: shop, relationship_columns: [{left_column: shop_id, right_column: id}]}
+          |  - {name: shop_self, left_table: shop, right_table: shop, relationship_columns: [{left_column: boss, right_column: id}]}
+          |  - {name: loc, left_table: stores, right_table: shop, relationship_columns: [{left_column: s1, right_column: id}]}
+          |  - {name: loc, left_table: stores, right_table: shop, relationship_columns: [{left_column: s2, right_column: id}]}
+          |"""
+      )
+    )
+    def assertUnique(kind: String, names: List[String]): Unit =
+      withClue(s"$kind: $names") {
+        names.map(_.toLowerCase).distinct.size shouldBe names.size
+      }
+    assertUnique("datasets", plan.datasets.map(_.name))
+    assertUnique("dimensions", plan.dimensions.map(_.name))
+    assertUnique("measures", plan.metrics.map(_.name) ++ plan.calculations.map(_.name))
+    assertUnique("model relationships", plan.relationships.map(_.name))
+    plan.dimensions.foreach(d => assertUnique(d.name, d.relationships.map(_.name)))
+
+    val datasets = plan.datasets.map(_.name).toSet
+    val measures = (plan.metrics.map(_.name) ++ plan.calculations.map(_.name)).toSet
+    val levels = plan.dimensions.map(d => d.name -> d.levelAttributes.map(_.name).toSet).toMap
+    plan.metrics.foreach(m => datasets should contain(m.dataset))
+    plan.calculations.foreach { c =>
+      """\[Measures\]\.\[([^\]]+)\]""".r.findAllMatchIn(c.expression).foreach { m =>
+        measures should contain(m.group(1))
+      }
+    }
+    plan.degenerateDimensions.foreach(d => levels.keySet should contain(d))
+    val allRelationships =
+      plan.relationships.map(r => (r.dataset, r.toDimension, r.toLevel, r.name, r.rolePlay)) ++
+      plan.dimensions.flatMap(
+        _.relationships.map(r => (r.dataset, r.toDimension, r.toLevel, r.name, r.rolePlay))
+      )
+    allRelationships.foreach { case (dataset, toDimension, toLevel, name, rolePlay) =>
+      datasets should contain(dataset)
+      levels.get(toDimension).exists(_.contains(toLevel)) shouldBe true
+      rolePlay.foreach(_ shouldBe s"$name {0}")
+    }
+
+    plan.datasets.map(d => (d.name, d.table)) shouldBe List(
+      "events"   -> "events",
+      "Events_2" -> "Events",
+      "shop"     -> "shop",
+      "stores"   -> "stores"
+    )
+    plan.dimensions.map(_.name) shouldBe List(
+      "events x Dimension",
+      "events x Dimension_2",
+      "shop Dimension",
+      "stores Dimension"
+    )
+    plan.degenerateDimensions shouldBe List("events x Dimension", "events x Dimension_2")
+    plan.metrics.map(_.name) shouldBe List(
+      "total",
+      "_sl_ratio_1",
+      "shop_revenue",
+      "shop_revenue_2",
+      "_sl_ratio_1_2",
+      "_sl_ratio_2"
+    )
+    plan.calculations.map(c => (c.name, c.expression)) shouldBe List(
+      "ratio" -> "[Measures].[_sl_ratio_1_2] / [Measures].[_sl_ratio_2]"
+    )
+    plan.relationships.map(r => (r.name, r.rolePlay)) shouldBe List(
+      "events_to_shop"   -> Some("events_to_shop {0}"),
+      "events_to_shop_2" -> Some("events_to_shop_2 {0}"),
+      "shop_self"        -> Some("shop_self {0}"),
+      "shop_self_2"      -> None
+    )
+    plan.dimensions.last.relationships.map(r => (r.name, r.rolePlay)) shouldBe List(
+      "loc"   -> Some("loc {0}"),
+      "loc_2" -> Some("loc_2 {0}")
+    )
+  }
 }

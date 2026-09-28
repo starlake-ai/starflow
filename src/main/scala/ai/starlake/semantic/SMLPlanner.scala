@@ -132,18 +132,20 @@ private[semantic] object SMLPlanner extends LazyLogging {
       s"${stats.skippedDimensions} dimensions, ${stats.skippedRelationships} relationships; " +
       s"${stats.fallbackCalculations} metrics exported as NULL calculations"
     )
-    Model(
-      name = modelName,
-      description = combinedDescription(model),
-      connections = tables.map(connectionOf(modelName, _)).distinct,
-      datasets = datasets(modelName, tables),
-      dimensions = dimensions,
-      metrics = metrics,
-      calculations = calculations,
-      relationships = routing.model,
-      degenerateDimensions = dimensions.filter(_.isDegenerate).map(_.name),
-      usesTimeHierarchies = dimensions.exists(_.isTime),
-      stats = stats
+    SMLNames.uniquify(
+      Model(
+        name = modelName,
+        description = combinedDescription(model),
+        connections = tables.map(connectionOf(modelName, _)).distinct,
+        datasets = datasets(modelName, tables),
+        dimensions = dimensions,
+        metrics = metrics,
+        calculations = calculations,
+        relationships = routing.model,
+        degenerateDimensions = dimensions.filter(_.isDegenerate).map(_.name),
+        usesTimeHierarchies = dimensions.exists(_.isTime),
+        stats = stats
+      )
     )
   }
 
@@ -196,13 +198,16 @@ private[semantic] object SMLPlanner extends LazyLogging {
 
   /** Tables with their fields and validated hierarchies, plus the number of skipped hierarchies. */
   private def buildTables(modelName: String, model: JsonNode): (List[TableState], Int) = {
-    val tables = elems(model, "tables").flatMap { t =>
-      text(t, "name") match {
-        case Some(n) => Some(new TableState(n, t, fieldsOf(t)))
+    val named = elems(model, "tables").flatMap { t =>
+      text(t, "name").map(_.trim).filter(_.nonEmpty) match {
+        case Some(n) => Some((n, t))
         case None =>
           logger.warn(s"Model '$modelName': a table without name is skipped")
           None
       }
+    }
+    val tables = named.zip(SMLNames.unique("dataset", named.map(_._1))).map { case ((_, t), name) =>
+      new TableState(name, t, fieldsOf(t))
     }
     val skipped = tables.map { t =>
       val (hierarchies, skippedCount) = SMLHierarchies.parse(
@@ -239,7 +244,9 @@ private[semantic] object SMLPlanner extends LazyLogging {
         t.name,
         combinedDescription(t.node),
         connectionOf(modelName, t).name,
-        text(t.node.path("base_table"), "table").getOrElse(t.name),
+        text(t.node.path("base_table"), "table")
+          .orElse(text(t.node, "name").map(_.trim))
+          .getOrElse(t.name),
         t.columns.toList
       )
     }
@@ -364,6 +371,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
 
     val metrics = ArrayBuffer[Metric]()
     val calculations = ArrayBuffer[Calculation]()
+    val measures = new SMLNames.Namespace("measure")
     var fallbacks = 0
     inputs.foreach { in =>
       val native = for {
@@ -372,7 +380,8 @@ private[semantic] object SMLPlanner extends LazyLogging {
         (target, arg) <- resolveCall(call, Some(owner), tables, allowOtherTable = false)
       } yield {
         val (column, method) = materialize(call, target, arg, s"_sl_${in.name}")
-        Metric(in.name, in.label, in.description, target.name, column, method, in.hidden)
+        val name = measures.claim(in.name)
+        Metric(name, in.label, in.description, target.name, column, method, in.hidden)
       }
       native match {
         case Some(metric) => metrics += metric
@@ -388,19 +397,20 @@ private[semantic] object SMLPlanner extends LazyLogging {
               val names = resolved.zipWithIndex.map { case ((call, (target, arg)), i) =>
                 val baseName = s"_sl_${in.name}_${i + 1}"
                 val (column, method) = materialize(call, target, arg, baseName)
+                val name = measures.claim(baseName)
                 metrics += Metric(
-                  baseName,
-                  baseName,
+                  name,
+                  name,
                   None,
                   target.name,
                   column,
                   method,
                   hidden = true
                 )
-                baseName
+                name
               }
               calculations += Calculation(
-                in.name,
+                measures.claim(in.name),
                 in.label,
                 in.description,
                 SMLMetricParser.render(tokens, names),
@@ -410,7 +420,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
               fallbacks += 1
               val todo = s"TODO Starflow: translate original SQL to MDX: ${in.expr}"
               calculations += Calculation(
-                in.name,
+                measures.claim(in.name),
                 in.label,
                 Some(in.description.fold(todo) { d =>
                   if (d.endsWith(".")) s"$d $todo" else s"$d. $todo"
@@ -451,7 +461,12 @@ private[semantic] object SMLPlanner extends LazyLogging {
   private def parseRelationships(model: JsonNode, tables: List[TableState]): (List[Rel], Int) = {
     var skipped = 0
     val rels = elems(model, "relationships").flatMap { rel =>
-      val name = text(rel, "name").getOrElse("")
+      val left = text(rel, "left_table").flatMap(l => tables.find(_.name.equalsIgnoreCase(l.trim)))
+      val right =
+        text(rel, "right_table").flatMap(r => tables.find(_.name.equalsIgnoreCase(r.trim)))
+      val name = text(rel, "name").map(_.trim).filter(_.nonEmpty).getOrElse {
+        s"${text(rel, "left_table").fold("")(_.trim)}_to_${text(rel, "right_table").fold("")(_.trim)}"
+      }
       def skip(reason: String): Option[Rel] = {
         logger.warn(s"Relationship '$name' skipped, $reason")
         skipped += 1
@@ -464,8 +479,6 @@ private[semantic] object SMLPlanner extends LazyLogging {
             s"Relationship '$name': relationship_type '$t' has no SML mapping, handled as many_to_one"
           )
         }
-      val left = text(rel, "left_table").flatMap(l => tables.find(_.name.equalsIgnoreCase(l)))
-      val right = text(rel, "right_table").flatMap(r => tables.find(_.name.equalsIgnoreCase(r)))
       val columns = elems(rel, "relationship_columns").map { rc =>
         (text(rc, "left_column").getOrElse(""), text(rc, "right_column").getOrElse(""))
       }
