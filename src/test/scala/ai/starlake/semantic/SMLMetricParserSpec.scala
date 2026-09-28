@@ -62,6 +62,11 @@ class SMLMetricParserSpec extends AnyFlatSpec with Matchers {
     decompose("1 + 2") shouldBe None
   }
 
+  "render" should "refuse to render with a wrong number of measure names" in {
+    val tokens = decompose("SUM(a) + SUM(b)").get
+    an[IllegalArgumentException] should be thrownBy render(tokens, List("only_one"))
+  }
+
   "substitute" should "replace field identifiers outside strings and keep function names" in {
     val fields = Map("price" -> "PRICE", "qty" -> "(QUANTITY * 1)", "orders.price" -> "PRICE")
     substitute(

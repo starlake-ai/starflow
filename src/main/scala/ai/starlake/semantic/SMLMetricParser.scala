@@ -54,6 +54,10 @@ private[semantic] object SMLMetricParser {
 
   /** MDX text of decomposed tokens, each call replaced by the next measure of `names`. */
   def render(tokens: List[Token], names: List[String]): String = {
+    require(
+      names.size == tokens.count(_.isInstanceOf[AggToken]),
+      s"render needs one measure name per aggregate call, got ${names.size}"
+    )
     val measures = names.iterator
     tokens.map {
       case TextToken(text) => text
@@ -76,14 +80,19 @@ private[semantic] object SMLMetricParser {
         i = stop
       } else if (c.isDigit) {
         var j = i
-        while (j < sql.length && (sql.charAt(j).isLetterOrDigit || "_.".indexOf(sql.charAt(j).toInt) >= 0))
+        while (
+          j < sql.length && (sql.charAt(j).isLetterOrDigit || "_.".indexOf(
+            sql.charAt(j).toInt
+          ) >= 0)
+        )
           j += 1
         out.append(sql, i, j)
         i = j
       } else
         IdentifierToken.findPrefixOf(sql.substring(i)) match {
           case Some(token) =>
-            val isFunction = sql.substring(i + token.length).dropWhile(_.isWhitespace).startsWith("(")
+            val isFunction =
+              sql.substring(i + token.length).dropWhile(_.isWhitespace).startsWith("(")
             out.append(if (isFunction) token else resolve(token).getOrElse(token))
             i += token.length
           case None =>
@@ -131,18 +140,18 @@ private[semantic] object SMLMetricParser {
     if (arg.isEmpty || (arg == "*" && (distinct || !function.equalsIgnoreCase("COUNT")))) None
     else
       (function.toUpperCase, distinct) match {
-        case ("SUM", false)                   => Some("sum")
-        case ("SUM", true)                    => Some("sum distinct")
-        case ("AVG", false)                   => Some("average")
-        case ("MIN", false)                   => Some("minimum")
-        case ("MAX", false)                   => Some("maximum")
-        case ("COUNT", false)                 => Some("count non-null")
-        case ("COUNT", true)                  => Some("count distinct")
-        case ("APPROX_COUNT_DISTINCT", false) => Some("estimated count distinct")
+        case ("SUM", false)                    => Some("sum")
+        case ("SUM", true)                     => Some("sum distinct")
+        case ("AVG", false)                    => Some("average")
+        case ("MIN", false)                    => Some("minimum")
+        case ("MAX", false)                    => Some("maximum")
+        case ("COUNT", false)                  => Some("count non-null")
+        case ("COUNT", true)                   => Some("count distinct")
+        case ("APPROX_COUNT_DISTINCT", false)  => Some("estimated count distinct")
         case ("STDDEV" | "STDDEV_SAMP", false) => Some("stddev_samp")
-        case ("STDDEV_POP", false)            => Some("stddev_pop")
-        case ("VARIANCE" | "VAR_SAMP", false) => Some("var_samp")
-        case ("VAR_POP", false)               => Some("var_pop")
-        case _                                => None
+        case ("STDDEV_POP", false)             => Some("stddev_pop")
+        case ("VARIANCE" | "VAR_SAMP", false)  => Some("var_samp")
+        case ("VAR_POP", false)                => Some("var_pop")
+        case _                                 => None
       }
 }
