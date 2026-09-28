@@ -1,5 +1,6 @@
 package ai.starlake.semantic
 
+import ai.starlake.semantic.SMLHierarchies.{GeneralHierarchy, TimeHierarchy}
 import ai.starlake.semantic.SMLMetricParser.{AggToken, AggregateCall}
 import com.fasterxml.jackson.databind.JsonNode
 import com.typesafe.scalalogging.LazyLogging
@@ -90,20 +91,55 @@ private[semantic] object SMLPlanner extends LazyLogging {
 
   def plan(modelName: String, model: JsonNode): Model = {
     val (tables, skippedHierarchies) = buildTables(modelName, model)
+    val (relationships, skippedRelationships) = parseRelationships(model, tables)
     val (metrics, calculations, fallbacks) = planMetrics(model, tables)
     logUnusedFacts(model, tables)
+
+    val factTables = tables
+      .filter(t => t.fields.exists(_.kind == "fact") || metrics.exists(_.dataset == t.name))
+      .toSet
+    val targets = relationships.map(_.right).toSet
+    val dimensionTables = tables.filter { t =>
+      targets.contains(t) ||
+      (!factTables.contains(t) && t.hierarchies.exists(_.isInstanceOf[GeneralHierarchy]))
+    }.toSet
+    tables
+      .filterNot(t => factTables.contains(t) || dimensionTables.contains(t))
+      .foreach(t =>
+        logger.warn(s"Table '${t.name}' has no fact or dimension role, exported as a dataset only")
+      )
+
+    val dims = planDimensions(tables, relationships, factTables, dimensionTables)
+    val routing = routeRelationships(tables, relationships, factTables, dims.regular)
+    val dimensions = tables.flatMap { t =>
+      dims.regular
+        .get(t.name)
+        .map { case (d, _) => d.copy(relationships = routing.embedded.getOrElse(t.name, Nil)) }
+        .toList ++ dims.degenerate.getOrElse(t.name, Nil)
+    }
+    val stats = Stats(
+      skippedHierarchies + dims.skippedHierarchies,
+      dims.skippedDimensions,
+      skippedRelationships + routing.skipped,
+      fallbacks
+    )
+    logger.info(
+      s"Model '$modelName': SML export skipped ${stats.skippedHierarchies} hierarchies, " +
+      s"${stats.skippedDimensions} dimensions, ${stats.skippedRelationships} relationships; " +
+      s"${stats.fallbackCalculations} metrics exported as NULL calculations"
+    )
     Model(
       name = modelName,
       description = combinedDescription(model),
       connections = tables.map(connectionOf(modelName, _)).distinct,
       datasets = datasets(modelName, tables),
-      dimensions = Nil,
+      dimensions = dimensions,
       metrics = metrics,
       calculations = calculations,
-      relationships = Nil,
-      degenerateDimensions = Nil,
-      usesTimeHierarchies = false,
-      stats = Stats(skippedHierarchies, 0, 0, fallbacks)
+      relationships = routing.model,
+      degenerateDimensions = dimensions.filter(_.isDegenerate).map(_.name),
+      usesTimeHierarchies = dimensions.exists(_.isTime),
+      stats = stats
     )
   }
 
@@ -390,6 +426,374 @@ private[semantic] object SMLPlanner extends LazyLogging {
             s"Table '${t.name}': fact '${f.name}' is not used by any metric, no SML metric generated"
           )
       }
+    }
+  }
+
+  private case class Rel(
+    name: String,
+    left: TableState,
+    right: TableState,
+    pairs: List[(Field, Field)]
+  )
+
+  /** Valid relationships and the number of skipped ones. */
+  private def parseRelationships(model: JsonNode, tables: List[TableState]): (List[Rel], Int) = {
+    var skipped = 0
+    val rels = elems(model, "relationships").flatMap { rel =>
+      val name = text(rel, "name").getOrElse("")
+      def skip(reason: String): Option[Rel] = {
+        logger.warn(s"Relationship '$name' skipped, $reason")
+        skipped += 1
+        None
+      }
+      text(rel, "relationship_type")
+        .filterNot(t => t.equalsIgnoreCase("many_to_one") || t.equalsIgnoreCase("one_to_one"))
+        .foreach { t =>
+          logger.warn(
+            s"Relationship '$name': relationship_type '$t' has no SML mapping, handled as many_to_one"
+          )
+        }
+      val left = text(rel, "left_table").flatMap(l => tables.find(_.name.equalsIgnoreCase(l)))
+      val right = text(rel, "right_table").flatMap(r => tables.find(_.name.equalsIgnoreCase(r)))
+      val columns = elems(rel, "relationship_columns").map { rc =>
+        (text(rc, "left_column").getOrElse(""), text(rc, "right_column").getOrElse(""))
+      }
+      (left, right) match {
+        case (Some(l), Some(r)) =>
+          if (columns.isEmpty) skip("it has no relationship_columns")
+          else {
+            val pairs = columns.map { case (lc, rc) => (l.field(lc), r.field(rc)) }
+            if (pairs.exists { case (a, b) => a.isEmpty || b.isEmpty })
+              skip("a relationship column is not a field of its table")
+            else Some(Rel(name, l, r, pairs.map { case (a, b) => (a.get, b.get) }))
+          }
+        case _ => skip("left_table or right_table is not a table of the model")
+      }
+    }
+    (rels, skipped)
+  }
+
+  private def fieldLevel(t: TableState, fieldName: String, key: List[String]): LevelAttribute = {
+    val f = t.field(fieldName).get
+    LevelAttribute(
+      s"${t.name} ${f.name}",
+      f.name,
+      combinedDescription(f.node),
+      t.name,
+      key.map(t.column),
+      t.column(f.name),
+      t.column(f.name),
+      isUniqueKey = false,
+      timeUnit = None,
+      hidden = isHidden(f.node)
+    )
+  }
+
+  /** The dimension of a dimension-role table and its leaf key fields; None without a key. */
+  private def regularDimension(
+    t: TableState,
+    relationships: List[Rel]
+  ): Option[(Dimension, List[Field])] = {
+    val keyFields =
+      if (t.primaryKey.nonEmpty) t.primaryKey
+      else {
+        val fromRelationships = relationships.filter(_.right eq t).map(_.pairs.map(_._2))
+        if (fromRelationships.map(_.map(_.name.toLowerCase)).distinct.size > 1)
+          logger.warn(
+            s"Table '${t.name}': relationships target different key columns, using those of the first relationship"
+          )
+        fromRelationships.headOption.getOrElse(Nil)
+      }
+    if (keyFields.isEmpty) {
+      logger.warn(s"Table '${t.name}': no primary key nor relationship key, dimension skipped")
+      None
+    } else {
+      val leafField = keyFields.last
+      val leaf = LevelAttribute(
+        s"${t.name} ${leafField.name}",
+        leafField.name,
+        combinedDescription(leafField.node),
+        t.name,
+        keyFields.map(f => t.column(f.name)),
+        t.column(leafField.name),
+        t.column(leafField.name),
+        isUniqueKey = true,
+        timeUnit = None,
+        hidden = isHidden(leafField.node)
+      )
+      val attributes = mutable.LinkedHashMap[String, LevelAttribute]()
+      val general = t.hierarchies.collect { case g: GeneralHierarchy => g }
+      val hierarchies =
+        if (general.isEmpty) List(Hierarchy(s"${t.name} Hierarchy", t.name, None, List(leaf.name)))
+        else
+          general.map { g =>
+            val levelNames = g.levels.map { l =>
+              val attribute =
+                if (l.field.equalsIgnoreCase(leafField.name)) leaf
+                else fieldLevel(t, l.field, l.key)
+              attributes.getOrElseUpdate(attribute.name, attribute).name
+            }
+            val withLeaf =
+              if (levelNames.last == leaf.name) levelNames else levelNames :+ leaf.name
+            Hierarchy(s"${t.name} ${g.name} Hierarchy", g.name, g.description, withLeaf)
+          }
+      attributes.getOrElseUpdate(leaf.name, leaf)
+      val levelFields =
+        general.flatMap(_.levels.map(_.field.toLowerCase)).toSet + leafField.name.toLowerCase
+      val secondary = t.fields
+        .filter(f => f.kind != "fact" && !levelFields.contains(f.name.toLowerCase))
+        .map { f =>
+          SecondaryAttribute(
+            s"${t.name} ${f.name}",
+            f.name,
+            combinedDescription(f.node),
+            t.name,
+            t.column(f.name),
+            isHidden(f.node)
+          )
+        }
+      val dimension = Dimension(
+        s"${t.name} Dimension",
+        t.name,
+        combinedDescription(t.node),
+        isTime = false,
+        isDegenerate = false,
+        attributes.values.toList,
+        hierarchies,
+        leaf.name,
+        secondary,
+        Nil
+      )
+      Some((dimension, keyFields))
+    }
+  }
+
+  private def degenerateHierarchy(t: TableState, g: GeneralHierarchy): Dimension = {
+    val levels = g.levels.map(l => fieldLevel(t, l.field, l.key))
+    Dimension(
+      s"${t.name} ${g.name} Dimension",
+      g.name,
+      g.description,
+      isTime = false,
+      isDegenerate = true,
+      levels,
+      List(Hierarchy(s"${t.name} ${g.name} Hierarchy", g.name, g.description, levels.map(_.name))),
+      levels.last.name,
+      Nil,
+      Nil
+    )
+  }
+
+  /** Degenerate time dimension; generates the EXTRACT and CAST columns its levels need. */
+  private def timeDimension(t: TableState, h: TimeHierarchy): Dimension = {
+    val f = t.field(h.time).get
+    val c = t.ref(f.name)
+    def gen(unit: String, sql: String, dataType: String): String =
+      t.generatedColumn(s"${f.name}:$unit", s"${f.name}_$unit", sql, dataType)
+    val year =
+      if (h.units.exists(_ != "day")) Some(gen("year", s"EXTRACT(YEAR FROM $c)", "int")) else None
+    val levels = h.units.map { unit =>
+      val (keys, column) = unit match {
+        case "year" => (List(year.get), year.get)
+        case "quarter" =>
+          val q = gen("quarter", s"EXTRACT(QUARTER FROM $c)", "int")
+          (List(year.get, q), q)
+        case "month" =>
+          val m = gen("month", s"EXTRACT(MONTH FROM $c)", "int")
+          (List(year.get, m), m)
+        case _ =>
+          val d =
+            if (f.dataType == "date") t.column(f.name)
+            else gen("day", s"CAST($c AS DATE)", "date")
+          (List(d), d)
+      }
+      LevelAttribute(
+        s"${t.name} ${h.name} $unit",
+        s"${f.name} $unit",
+        None,
+        t.name,
+        keys,
+        column,
+        column,
+        isUniqueKey = false,
+        timeUnit = Some(unit),
+        hidden = false
+      )
+    }
+    Dimension(
+      s"${t.name} ${h.name} Dimension",
+      h.name,
+      h.description,
+      isTime = true,
+      isDegenerate = true,
+      levels,
+      List(Hierarchy(s"${t.name} ${h.name} Hierarchy", h.name, h.description, levels.map(_.name))),
+      levels.last.name,
+      Nil,
+      Nil
+    )
+  }
+
+  /** One single-level degenerate dimension per plain field of a fact-only table. */
+  private def plainFieldDimensions(
+    t: TableState,
+    general: List[GeneralHierarchy],
+    time: List[TimeHierarchy],
+    relationships: List[Rel]
+  ): List[Dimension] = {
+    val used = general.flatMap(_.levels.map(_.field.toLowerCase)).toSet ++
+      time.map(_.time.toLowerCase) ++
+      relationships.filter(_.left eq t).flatMap(_.pairs.map(_._1.name.toLowerCase))
+    t.fields.filter(f => f.kind != "fact" && !used.contains(f.name.toLowerCase)).map { f =>
+      val level = fieldLevel(t, f.name, List(f.name))
+      Dimension(
+        s"${t.name} ${f.name} Dimension",
+        f.name,
+        combinedDescription(f.node),
+        isTime = false,
+        isDegenerate = true,
+        List(level),
+        List(Hierarchy(s"${t.name} ${f.name} Hierarchy", f.name, None, List(level.name))),
+        level.name,
+        Nil,
+        Nil
+      )
+    }
+  }
+
+  private case class DimensionPlan(
+    regular: Map[String, (Dimension, List[Field])],
+    degenerate: Map[String, List[Dimension]],
+    skippedHierarchies: Int,
+    skippedDimensions: Int
+  )
+
+  private def planDimensions(
+    tables: List[TableState],
+    relationships: List[Rel],
+    factTables: Set[TableState],
+    dimensionTables: Set[TableState]
+  ): DimensionPlan = {
+    var skippedHierarchies = 0
+    var skippedDimensions = 0
+    val regular = mutable.Map[String, (Dimension, List[Field])]()
+    val degenerate = mutable.Map[String, List[Dimension]]()
+    tables.foreach { t =>
+      val isFact = factTables.contains(t)
+      val isDimension = dimensionTables.contains(t)
+      if (isDimension)
+        regularDimension(t, relationships) match {
+          case Some(d) => regular(t.name) = d
+          case None    => skippedDimensions += 1
+        }
+      val general = t.hierarchies.collect { case g: GeneralHierarchy => g }
+      val time = t.hierarchies.collect { case h: TimeHierarchy => h }
+      val built = ArrayBuffer[Dimension]()
+      if (isFact && !isDimension) general.foreach(g => built += degenerateHierarchy(t, g))
+      time.foreach { h =>
+        if (isFact) built += timeDimension(t, h)
+        else {
+          logger.warn(
+            s"Table '${t.name}': time hierarchy '${h.name}' skipped, time hierarchies are only supported on fact tables"
+          )
+          skippedHierarchies += 1
+        }
+      }
+      if (isFact && !isDimension) built ++= plainFieldDimensions(t, general, time, relationships)
+      degenerate(t.name) = built.toList
+    }
+    DimensionPlan(regular.toMap, degenerate.toMap, skippedHierarchies, skippedDimensions)
+  }
+
+  private case class Routing(
+    model: List[ModelRelationship],
+    embedded: Map[String, List[EmbeddedRelationship]],
+    skipped: Int
+  )
+
+  private def routeRelationships(
+    tables: List[TableState],
+    relationships: List[Rel],
+    factTables: Set[TableState],
+    regular: Map[String, (Dimension, List[Field])]
+  ): Routing = {
+    var skipped = 0
+    val modelRelationships = ArrayBuffer[ModelRelationship]()
+    val embedded = mutable.Map[String, List[EmbeddedRelationship]]()
+    relationships.foreach { r =>
+      regular.get(r.right.name) match {
+        case None =>
+          logger.warn(s"Relationship '${r.name}' skipped, table '${r.right.name}' has no dimension")
+          skipped += 1
+        case Some((rightDim, rightKey)) =>
+          if (r.pairs.map(_._2.name.toLowerCase) != rightKey.map(_.name.toLowerCase))
+            logger.warn(
+              s"Relationship '${r.name}': right columns are not the leaf key of '${rightDim.name}'"
+            )
+          val joinColumns = r.pairs.map { case (l, _) => r.left.column(l.name) }
+          val leftDim = regular.get(r.left.name).map(_._1)
+          if (factTables.contains(r.left))
+            modelRelationships += ModelRelationship(
+              r.name,
+              r.left.name,
+              joinColumns,
+              rightDim.name,
+              rightDim.leafLevel,
+              None
+            )
+          leftDim.foreach { d =>
+            embedded(r.left.name) = embedded.getOrElse(r.left.name, Nil) :+ EmbeddedRelationship(
+              r.name,
+              r.left.name,
+              joinColumns,
+              d.hierarchies.head.name,
+              d.leafLevel,
+              rightDim.name,
+              rightDim.leafLevel,
+              None
+            )
+          }
+          if (!factTables.contains(r.left) && leftDim.isEmpty) {
+            logger.warn(
+              s"Relationship '${r.name}' skipped, table '${r.left.name}' has neither metrics nor a dimension"
+            )
+            skipped += 1
+          }
+      }
+    }
+    tables.filter(factTables.contains).foreach { t =>
+      regular.get(t.name).foreach { case (d, key) =>
+        modelRelationships += ModelRelationship(
+          s"${t.name}_self",
+          t.name,
+          key.map(f => t.column(f.name)),
+          d.name,
+          d.leafLevel,
+          None
+        )
+      }
+    }
+    Routing(
+      rolePlayModel(modelRelationships.toList),
+      embedded.view.mapValues(rolePlayEmbedded).toMap,
+      skipped
+    )
+  }
+
+  private def rolePlayModel(relationships: List[ModelRelationship]): List[ModelRelationship] = {
+    val counts =
+      relationships.groupBy(r => (r.dataset, r.toDimension)).view.mapValues(_.size).toMap
+    relationships.map { r =>
+      if (counts((r.dataset, r.toDimension)) > 1) r.copy(rolePlay = Some(s"${r.name} {0}")) else r
+    }
+  }
+
+  private def rolePlayEmbedded(
+    relationships: List[EmbeddedRelationship]
+  ): List[EmbeddedRelationship] = {
+    val counts = relationships.groupBy(_.toDimension).view.mapValues(_.size).toMap
+    relationships.map { r =>
+      if (counts(r.toDimension) > 1) r.copy(rolePlay = Some(s"${r.name} {0}")) else r
     }
   }
 }
