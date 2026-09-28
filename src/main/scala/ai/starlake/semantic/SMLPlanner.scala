@@ -489,11 +489,13 @@ private[semantic] object SMLPlanner extends LazyLogging {
     )
   }
 
-  /** The dimension of a dimension-role table and its leaf key fields; None without a key. */
+  /** The dimension of a dimension-role table, its leaf key fields and the number of general
+    * hierarchies skipped because their leaf key field is not their last level; None without a key.
+    */
   private def regularDimension(
     t: TableState,
     relationships: List[Rel]
-  ): Option[(Dimension, List[Field])] = {
+  ): Option[(Dimension, List[Field], Int)] = {
     val keyFields =
       if (t.primaryKey.nonEmpty) t.primaryKey
       else {
@@ -523,10 +525,24 @@ private[semantic] object SMLPlanner extends LazyLogging {
       )
       val attributes = mutable.LinkedHashMap[String, LevelAttribute]()
       val general = t.hierarchies.collect { case g: GeneralHierarchy => g }
+      var skippedGeneral = 0
+      val validGeneral = general.filter { g =>
+        val leafIndex = g.levels.indexWhere(_.field.equalsIgnoreCase(leafField.name))
+        val ok = leafIndex < 0 || leafIndex == g.levels.size - 1
+        if (!ok) {
+          logger.warn(
+            s"Table '${t.name}': general hierarchy '${g.name}' skipped, leaf key field " +
+            s"'${leafField.name}' is not its last level"
+          )
+          skippedGeneral += 1
+        }
+        ok
+      }
       val hierarchies =
-        if (general.isEmpty) List(Hierarchy(s"${t.name} Hierarchy", t.name, None, List(leaf.name)))
+        if (validGeneral.isEmpty)
+          List(Hierarchy(s"${t.name} Hierarchy", t.name, None, List(leaf.name)))
         else
-          general.map { g =>
+          validGeneral.map { g =>
             val levelNames = g.levels.map { l =>
               val attribute =
                 if (l.field.equalsIgnoreCase(leafField.name)) leaf
@@ -539,7 +555,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
           }
       attributes.getOrElseUpdate(leaf.name, leaf)
       val levelFields =
-        general.flatMap(_.levels.map(_.field.toLowerCase)).toSet + leafField.name.toLowerCase
+        validGeneral.flatMap(_.levels.map(_.field.toLowerCase)).toSet + leafField.name.toLowerCase
       val secondary = t.fields
         .filter(f => f.kind != "fact" && !levelFields.contains(f.name.toLowerCase))
         .map { f =>
@@ -564,7 +580,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
         secondary,
         Nil
       )
-      Some((dimension, keyFields))
+      Some((dimension, keyFields, skippedGeneral))
     }
   }
 
@@ -683,8 +699,10 @@ private[semantic] object SMLPlanner extends LazyLogging {
       val isDimension = dimensionTables.contains(t)
       if (isDimension)
         regularDimension(t, relationships) match {
-          case Some(d) => regular(t.name) = d
-          case None    => skippedDimensions += 1
+          case Some((d, keyFields, skippedGeneral)) =>
+            regular(t.name) = (d, keyFields)
+            skippedHierarchies += skippedGeneral
+          case None => skippedDimensions += 1
         }
       val general = t.hierarchies.collect { case g: GeneralHierarchy => g }
       val time = t.hierarchies.collect { case h: TimeHierarchy => h }
@@ -720,6 +738,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
     var skipped = 0
     val modelRelationships = ArrayBuffer[ModelRelationship]()
     val embedded = mutable.Map[String, List[EmbeddedRelationship]]()
+    val selfReferencing = mutable.Set[String]()
     relationships.foreach { r =>
       regular.get(r.right.name) match {
         case None =>
@@ -732,6 +751,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
             )
           val joinColumns = r.pairs.map { case (l, _) => r.left.column(l.name) }
           val leftDim = regular.get(r.left.name).map(_._1)
+          val isSelfReferencing = r.left eq r.right
           if (factTables.contains(r.left))
             modelRelationships += ModelRelationship(
               r.name,
@@ -741,29 +761,50 @@ private[semantic] object SMLPlanner extends LazyLogging {
               rightDim.leafLevel,
               None
             )
-          leftDim.foreach { d =>
-            embedded(r.left.name) = embedded.getOrElse(r.left.name, Nil) :+ EmbeddedRelationship(
-              r.name,
-              r.left.name,
-              joinColumns,
-              d.hierarchies.head.name,
-              d.leafLevel,
-              rightDim.name,
-              rightDim.leafLevel,
-              None
-            )
-          }
-          if (!factTables.contains(r.left) && leftDim.isEmpty) {
-            logger.warn(
-              s"Relationship '${r.name}' skipped, table '${r.left.name}' has neither metrics nor a dimension"
-            )
-            skipped += 1
+          if (isSelfReferencing) {
+            // A dimension must not embed itself: the self-referencing relationship is exported
+            // as a role-played model relationship only, and only when the table has a fact role.
+            if (factTables.contains(r.left)) {
+              selfReferencing += r.name
+              logger.warn(
+                s"Relationship '${r.name}' is self-referencing, exported as a role-played model relationship only"
+              )
+            } else {
+              logger.warn(
+                s"Relationship '${r.name}' skipped, self-referencing relationships require table '${r.left.name}' to have a fact role"
+              )
+              skipped += 1
+            }
+          } else {
+            leftDim.foreach { d =>
+              embedded(r.left.name) = embedded.getOrElse(r.left.name, Nil) :+ EmbeddedRelationship(
+                r.name,
+                r.left.name,
+                joinColumns,
+                d.hierarchies.head.name,
+                d.leafLevel,
+                rightDim.name,
+                rightDim.leafLevel,
+                None
+              )
+            }
+            if (!factTables.contains(r.left) && leftDim.isEmpty) {
+              logger.warn(
+                s"Relationship '${r.name}' skipped, table '${r.left.name}' has neither metrics nor a dimension"
+              )
+              skipped += 1
+            }
           }
       }
     }
-    tables.filter(factTables.contains).foreach { t =>
-      regular.get(t.name).foreach { case (d, key) =>
-        modelRelationships += ModelRelationship(
+    val userRelationships = rolePlayModel(modelRelationships.toList).map { r =>
+      if (selfReferencing.contains(r.name)) r.copy(rolePlay = Some(s"${r.name} {0}")) else r
+    }
+    // Generated self links never take part in role-play grouping and are appended last, in
+    // table order, after role play has been resolved for user relationships.
+    val selfLinks = tables.filter(factTables.contains).flatMap { t =>
+      regular.get(t.name).map { case (d, key) =>
+        ModelRelationship(
           s"${t.name}_self",
           t.name,
           key.map(f => t.column(f.name)),
@@ -774,7 +815,7 @@ private[semantic] object SMLPlanner extends LazyLogging {
       }
     }
     Routing(
-      rolePlayModel(modelRelationships.toList),
+      userRelationships ++ selfLinks,
       embedded.view.mapValues(rolePlayEmbedded).toMap,
       skipped
     )

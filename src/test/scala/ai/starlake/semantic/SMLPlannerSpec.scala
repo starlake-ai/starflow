@@ -414,4 +414,77 @@ class SMLPlannerSpec extends AnyFlatSpec with Matchers {
       List("ts_day")
     )
   }
+
+  it should "export a self-referencing relationship as a role-played model relationship only" in {
+    val plan = SMLPlanner.plan(
+      "org",
+      model(
+        """name: org
+          |tables:
+          |  - name: employees
+          |    primary_key: {columns: [employee_id]}
+          |    dimensions:
+          |      - {name: employee_id}
+          |      - {name: manager_id}
+          |    facts:
+          |      - {name: salary, data_type: NUMBER}
+          |    metrics:
+          |      - {name: total_salary, expr: SUM(salary)}
+          |relationships:
+          |  - {name: reports_to, left_table: employees, right_table: employees, relationship_columns: [{left_column: manager_id, right_column: employee_id}]}
+          |"""
+      )
+    )
+    val employees = plan.dimensions.find(_.name == "employees Dimension").get
+    employees.relationships shouldBe Nil
+    plan.relationships shouldBe List(
+      ModelRelationship(
+        "reports_to",
+        "employees",
+        List("manager_id"),
+        "employees Dimension",
+        "employees employee_id",
+        Some("reports_to {0}")
+      ),
+      ModelRelationship(
+        "employees_self",
+        "employees",
+        List("employee_id"),
+        "employees Dimension",
+        "employees employee_id",
+        None
+      )
+    )
+  }
+
+  it should "skip a general hierarchy whose leaf key field is not its last level" in {
+    val plan = SMLPlanner.plan(
+      "leaf",
+      model(
+        """name: leaf
+          |tables:
+          |  - name: customers
+          |    primary_key: {columns: [c_custkey]}
+          |    dimensions:
+          |      - {name: c_custkey}
+          |      - {name: c_mktsegment}
+          |    hierarchies:
+          |      - name: bad
+          |        levels: [{field: c_custkey}, {field: c_mktsegment}]
+          |  - name: orders
+          |    dimensions: [{name: o_custkey}]
+          |    facts:
+          |      - {name: o_totalprice, data_type: NUMBER}
+          |    metrics:
+          |      - {name: total, expr: SUM(o_totalprice)}
+          |relationships:
+          |  - {name: orders_to_customers, left_table: orders, right_table: customers, relationship_columns: [{left_column: o_custkey, right_column: c_custkey}]}
+          |"""
+      )
+    )
+    val customers = plan.dimensions.find(_.name == "customers Dimension").get
+    customers.hierarchies.map(_.name) shouldBe List("customers Hierarchy")
+    customers.secondaryAttributes.map(_.name) shouldBe List("customers c_mktsegment")
+    plan.stats.skippedHierarchies shouldBe 1
+  }
 }
