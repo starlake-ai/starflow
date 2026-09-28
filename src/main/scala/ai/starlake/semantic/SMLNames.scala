@@ -4,14 +4,14 @@ import com.typesafe.scalalogging.LazyLogging
 
 import scala.collection.mutable
 
-/** Makes SML `unique_name`s unique per object type. A later duplicate (compared ignoring case)
-  * gets the first free `_2`, `_3`, ... suffix and every reference to it is rewritten.
+/** Makes SML `unique_name`s unique per object type. A later duplicate (compared ignoring case) gets
+  * the first free `_2`, `_3`, ... suffix and every reference to it is rewritten.
   *
   * Datasets and measures (metrics and calculations share one namespace) are named through a
-  * [[SMLNames.Namespace]] while they are planned, so that references to them (dataset names used
-  * by every other object, hidden metrics named in calculation expressions) are built from the
-  * final names. Dimensions and relationships are made unique by [[SMLNames.uniquify]] once the
-  * plan is complete.
+  * [[SMLNames.Namespace]] while they are planned, so that references to them (dataset names used by
+  * every other object, hidden metrics named in calculation expressions) are built from the final
+  * names. Dimensions and relationships are made unique by [[SMLNames.uniquify]] once the plan is
+  * complete.
   */
 private[semantic] object SMLNames extends LazyLogging {
 

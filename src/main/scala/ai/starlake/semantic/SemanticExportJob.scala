@@ -80,6 +80,11 @@ class SemanticExportJob(config: SemanticExportConfig)(implicit settings: Setting
           writeAll(TMDLConverter.convert(name, node, connectionInfo))
         case "sml" =>
           val asConnection = config.connection.getOrElse(settings.appConfig.connectionRef)
+          if (asConnection.trim.isEmpty)
+            logger.warn(
+              s"Semantic model '$name': as_connection is empty, set it with --connection " +
+              "to the AtScale data warehouse connection"
+            )
           val plan = SMLPlanner.plan(name, node)
           if (plan.usesTimeHierarchies)
             settings.appConfig.connections
