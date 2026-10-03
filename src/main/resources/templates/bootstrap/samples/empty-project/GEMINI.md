@@ -1,6 +1,6 @@
-# CLAUDE.md
+# GEMINI.md
 
-Guidance for Claude Code working in this **Starlake / Starflow** project.
+Guidance for Gemini working in this **Starlake / Starflow** project.
 
 The full contract is in [AGENTS.md](AGENTS.md) — what this project contains, where
 to look things up, and how to hand back a change. Read it before your first edit.

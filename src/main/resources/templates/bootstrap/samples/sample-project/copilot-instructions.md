@@ -1,12 +1,10 @@
-# CLAUDE.md
+# Copilot instructions
 
-Guidance for Claude Code working in this **Starlake / Starflow** project.
+Guidance for GitHub Copilot working in this **Starlake / Starflow** project.
 
-The full contract is in [AGENTS.md](AGENTS.md) — what this project contains, where
-to look things up, and how to hand back a change. Read it before your first edit.
-The rules below are the part you must never skip.
-
-@AGENTS.md
+The full contract is in `AGENTS.md` at the project root — what this project
+contains, where to look things up, and how to hand back a change. Read it before
+your first edit. The rules below are the part you must never skip.
 
 ## Ground rules
 
