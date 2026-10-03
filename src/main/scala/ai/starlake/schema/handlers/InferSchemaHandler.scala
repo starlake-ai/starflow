@@ -405,10 +405,12 @@ object InferSchemaHandler extends LazyLogging {
         field.name
       )
     } yield {
+      // quote the name so that dots and other special chars are not parsed as nested fields
+      val fieldColumn = col("`" + field.name.replace("`", "``") + "`")
       (
         List(
-          fAttribute(col(field.name)).as(attributeColumnName),
-          fSample(col(field.name)).as(sampleColumnName)
+          fAttribute(fieldColumn).as(attributeColumnName),
+          fSample(fieldColumn).as(sampleColumnName)
         ),
         (attributeColumnName, sampleColumnName)
       )
@@ -418,7 +420,7 @@ object InferSchemaHandler extends LazyLogging {
     val (attributeTypeColumnNames, sampleColumnNames) = columnNames.unzip
     val reduceAttributeColumnTypes = attributeTypeColumnNames.map { column =>
       reduce(
-        collect_set(lineWithColumnTypesDF("`" + column + "`")),
+        collect_set(lineWithColumnTypesDF("`" + column.replace("`", "``") + "`")),
         lit(DataTypesToInt.NULL.id),
         (finalType, elementColumn) => {
           DataTypesToInt.coerceDataType(finalType, elementColumn)
@@ -426,7 +428,7 @@ object InferSchemaHandler extends LazyLogging {
       ).as(column)
     }
     val maxSampleColumn = sampleColumnNames.map { column =>
-      max(lineWithColumnTypesDF("`" + column + "`")).as(column)
+      max(lineWithColumnTypesDF("`" + column.replace("`", "``") + "`")).as(column)
     }
     logger.whenDebugEnabled {
       lineWithColumnTypesDF.show(truncate = false)
