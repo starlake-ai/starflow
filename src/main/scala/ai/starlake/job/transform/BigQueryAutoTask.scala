@@ -269,6 +269,31 @@ class BigQueryAutoTask(
     runBQ(None, Some(sparkSchema))
   }
 
+  /** True when one of the task's own presql statements creates its target table, so that the main
+    * SQL must be planned against an existing table whatever the state before the script (#1803).
+    * Views, materialized views, audit tables, unparsed SQL and data branches keep the probe-based
+    * plan.
+    */
+  private def presqlCreatesTarget: Boolean = {
+    val userPresql = preSql.drop(testInitSqls.length)
+    val createsTarget =
+      userPresql.nonEmpty &&
+      dataBranch.isEmpty && // presql and main SQL may then be rewritten to different tables
+      BigQueryAutoTask.plannedFromPresql(
+        taskDesc.parseSQL.getOrElse(true),
+        taskDesc._auditTableName.isDefined,
+        resolveMaterializedView()
+      ) && BigQueryAutoTask.presqlCreatesTable(
+        userPresql,
+        Option(originalTargetTableId.getProject),
+        originalTargetTableId.getDataset,
+        originalTargetTableId.getTable
+      )
+    if (createsTarget)
+      logger.info(s"Presql creates $fullTableName: main SQL planned against an existing table")
+    createsTarget
+  }
+
   private def runPrePostSql(prePostSql: List[String]): Option[Failure[JobResult]] = {
     val sqlResult: List[Try[JobResult]] = runSqls(prePostSql)
     sqlResult.foreach(Utils.logFailure(_, logger))
@@ -299,13 +324,13 @@ class BigQueryAutoTask(
   ): Try[JobResult] = {
 
     // Builds the main SQL statement, handling both native and Spark modes
-    def mainSql(): String = {
+    def mainSql(tableExistsForcedValue: Option[Boolean] = None): String = {
       val targetSQL =
         if (loadedDF.isEmpty) {
           // We are in native mode (no Spark Dataframe)
           // We build the query
           // This will not return  alter table to add/remove columns if needed + the main sql transpiled to insert/update/create/merge
-          buildAllSQLQueriesMerged(None, tableExistsForcedValue = None, forceNative = true)
+          buildAllSQLQueriesMerged(None, tableExistsForcedValue, forceNative = true)
         } else {
           // We are in Spark mode, we just need to substitute the variables in the main SQL
           // We do not rewrite it with insert/update/create/merge as we will use the spark dataframe write capabilities
@@ -497,8 +522,16 @@ class BigQueryAutoTask(
                       createIfAbsent = true,
                       sharding = None
                     )
-                    val allSql =
-                      preSql.map(_ + ";\n").mkString + mainSql() + ";\n" + postSql.mkString(";\n")
+                    // The presql runs inside the same script as the main SQL, so an existence probe
+                    // taken before the script is stale when the presql creates the target: the CTAS
+                    // it plans collides with the presql's CREATE (#1803). Plan against the table the
+                    // presql is about to create instead.
+                    val tableExistsForcedValue = if (presqlCreatesTarget) Some(true) else None
+                    val allSql = BigQueryAutoTask.nativeScript(
+                      preSql,
+                      mainSql(tableExistsForcedValue),
+                      postSql
+                    )
                     val finalSql = prepareBranchContext(taskDesc.getSql()) match {
                       case Some(ctx) =>
                         logger.info(
@@ -905,4 +938,92 @@ class BigQueryAutoTask(
         }
     }
   }
+}
+
+object BigQueryAutoTask {
+
+  private val CreateTablePattern =
+    """(?isU)^CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:`[^`]+`|[\w\-]+)(?:\s*\.\s*(?:`[^`]+`|[\w\-]+))*)""".r.unanchored
+
+  // BigQuery string literals ('...', "...", triple-quoted, with r/b prefixes) never hold a statement
+  private val StringLiteral =
+    "(?s)'''.*?'''|\"\"\".*?\"\"\"|'(?:\\\\.|[^'\\\\])*'|\"(?:\\\\.|[^\"\\\\])*\"".r
+
+  private val HashComment = "#[^\\n]*".r
+
+  private val BlockStart =
+    """(?is)(?:BEGIN(?!\s+TRANSACTION\b)|IF|WHILE|LOOP|REPEAT|FOR|CASE)\b.*""".r
+
+  private val BlockEnd = """(?is)(?:END|UNTIL)\b.*""".r
+
+  /** Whether a task may have its main SQL planned from its presql: only when Starlake parses its
+    * SQL and writes a table itself. Views and materialized views are always (re)created by the main
+    * SQL, and audit tables are created from the engine's own DDL.
+    */
+  def plannedFromPresql(
+    parseSQL: Boolean,
+    isAuditTable: Boolean,
+    materialization: Materialization
+  ): Boolean =
+    parseSQL && !isAuditTable &&
+    materialization != Materialization.VIEW &&
+    materialization != Materialization.MATERIALIZED_VIEW
+
+  /** The top-level statements of the presql, with comments and string literals removed. Statements
+    * nested in a scripting block (BEGIN, IF, LOOP, ...) are left out: they may not run.
+    */
+  private def topLevelStatements(presql: List[String]): List[String] = {
+    val statements = presql
+      .flatMap { entry =>
+        val code = StringLiteral.replaceAllIn(SQLUtils.stripComments(entry), "''")
+        HashComment.replaceAllIn(code, "").split(';').toList
+      }
+      .map(_.trim)
+      .filter(_.nonEmpty)
+    statements
+      .foldLeft((0, List.empty[String])) { case ((depth, topLevel), statement) =>
+        statement match {
+          case BlockEnd()      => (math.max(depth - 1, 0), topLevel)
+          case BlockStart()    => (depth + 1, topLevel)
+          case _ if depth == 0 => (depth, statement :: topLevel)
+          case _               => (depth, topLevel)
+        }
+      }
+      ._2
+      .reverse
+  }
+
+  /** True when a top-level presql statement is a `CREATE [OR REPLACE] TABLE [IF NOT EXISTS]` of
+    * `[project.]domain.table`, backticked or not. Dataset and table names are case-sensitive, as in
+    * BigQuery. TEMP, EXTERNAL and SNAPSHOT tables never match: their keyword sits before TABLE.
+    *
+    * @param project
+    *   the project the target table resolves to, which a fully qualified name must equal
+    */
+  def presqlCreatesTable(
+    presql: List[String],
+    project: Option[String],
+    domain: String,
+    table: String
+  ): Boolean = {
+    def isTarget(name: String): Boolean =
+      name.replace("`", "").split('.').map(_.trim).toList match {
+        case List(ds, tbl) =>
+          ds == domain && tbl == table
+        case List(prj, ds, tbl) =>
+          project.exists(prj.equalsIgnoreCase) && ds == domain && tbl == table
+        case _ => false
+      }
+    topLevelStatements(presql).exists {
+      case CreateTablePattern(name) => isTarget(name)
+      case _                        => false
+    }
+  }
+
+  /** The single multi-statement script submitted on the native, unsharded path. Every presql
+    * statement carries its own terminator: presql entries have theirs stripped at load time
+    * (#1792).
+    */
+  def nativeScript(preSql: List[String], mainSql: String, postSql: List[String]): String =
+    preSql.map(_ + ";\n").mkString + mainSql + ";\n" + postSql.mkString(";\n")
 }
