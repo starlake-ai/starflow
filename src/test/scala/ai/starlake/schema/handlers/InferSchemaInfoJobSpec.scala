@@ -100,6 +100,45 @@ class InferSchemaInfoJobSpec extends TestHelper {
         StandardCharsets.UTF_8
       ) shouldBe "JSON_ARRAY"
     }
+    "GetFormatParquetWithoutExtension" should "detect parquet from magic bytes" in {
+      for (sourceFile <- File.temporaryFile()) {
+        File("src/test/resources/sample/infer-schema/userdata1.parquet")
+          .copyTo(sourceFile, overwrite = true)
+        inferSchemaJob.getFormatFile(sourceFile.pathAsString, StandardCharsets.UTF_8) shouldBe
+        "PARQUET"
+      }
+    }
+
+    "Infer Schema" should "support DSV header names containing dots" in {
+      for {
+        sourceFile <- File.temporaryFile(suffix = ".csv")
+        targetDir  <- File.temporaryDirectory()
+      } {
+        sourceFile.overwrite("price.eur;name\n1.5;a\n2.5;b\n")
+        val resultPath =
+          inferSchemaJob.infer(
+            domainName = "prices",
+            tableName = "dotted",
+            pattern = None,
+            comment = None,
+            inputPath = sourceFile.pathAsString,
+            saveDir = targetDir.pathAsString,
+            forceFormat = None,
+            writeMode = WriteMode.OVERWRITE,
+            rowTag = None,
+            encoding = StandardCharsets.UTF_8,
+            clean = false
+          )(settings.storageHandler())
+        resultPath.isSuccess shouldBe true
+        val targetFile = File(targetDir, "prices", "dotted.sl.yml")
+        val table = YamlSerde
+          .deserializeYamlTables(targetFile.contentAsString, targetFile.pathAsString)
+          .head
+          .table
+        table.attributes.map(_.name) should contain theSameElementsAs List("price.eur", "name")
+      }
+    }
+
     "Ingest Flat Locations JSON" should "produce file in accepted" in {
       new SpecTrait(
         sourceDomainOrJobPathname = "/sample/simple-json-locations/locations_domain.sl.yml",

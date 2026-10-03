@@ -79,7 +79,8 @@ class InferSchemaJob(implicit settings: Settings) extends LazyLogging {
         "JSON_ARRAY"
       case "json" if filePath.firstLine(encoding).startsWith("{") =>
         "JSON"
-      case "csv" | "dsv" | "tsv" | "psv" => "DSV"
+      case "csv" | "dsv" | "tsv" | "psv"  => "DSV"
+      case _ if hasParquetMagic(filePath) => "PARQUET"
       case _ =>
         val jsonRegexStart = """\{.*""".r
         val jsonArrayRegexStart = """\[.*""".r
@@ -105,6 +106,17 @@ class InferSchemaJob(implicit settings: Settings) extends LazyLogging {
         }
     }
   }
+
+  /** Parquet files start with the "PAR1" magic bytes. Used when the file has no extension (eg.
+    * uploaded temp files) so binary content is not parsed as DSV.
+    */
+  private def hasParquetMagic(filePath: Path)(implicit storageHandler: StorageHandler): Boolean =
+    Try {
+      storageHandler.readAndExecuteIS(filePath) { is =>
+        val magic = new Array[Byte](4)
+        is.readNBytes(magic, 0, 4) == 4 && new String(magic, "US-ASCII") == "PAR1"
+      }
+    }.getOrElse(false)
 
   /** Get separator file by taking the character that appears the most in 10 lines of the dataset
     *
