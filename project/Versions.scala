@@ -47,7 +47,7 @@ object Versions {
   val jinja = "2.7.4" // forces dependency override on guava
   val snowflakeJDBC = "4.3.4" // spark-snowflake 3.2.x requires >= 4.0.2
   val snowflakeSpark: String = "3.2.2-spark_4.1"
-  val duckdb = "1.5.5.1"
+  val duckdb = "1.5.6.0"
   val bigQueue = "0.7.0"
   val redshiftJDBC = "2.2.8"
   val scalaParallelCollections = "1.2.0" // matches Spark 4.1.3
