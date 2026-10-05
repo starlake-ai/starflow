@@ -1,0 +1,49 @@
+unique_name: customers Dimension
+object_type: dimension
+label: customers
+type: standard
+hierarchies:
+  - unique_name: customers segment Hierarchy
+    label: segment
+    levels:
+      - unique_name: customers c_mktsegment
+      - unique_name: customers c_custkey
+        secondary_attributes:
+          - unique_name: customers c_name
+            label: c_name
+            description: "Synonyms: customer name"
+            dataset: customers
+            key_columns: [C_NAME]
+            name_column: C_NAME
+            sort_column: C_NAME
+          - unique_name: customers c_nationkey
+            label: c_nationkey
+            dataset: customers
+            key_columns: [C_NATIONKEY]
+            name_column: C_NATIONKEY
+            sort_column: C_NATIONKEY
+level_attributes:
+  - unique_name: customers c_mktsegment
+    label: c_mktsegment
+    dataset: customers
+    key_columns: [C_MKTSEGMENT]
+    name_column: C_MKTSEGMENT
+    sort_column: C_MKTSEGMENT
+  - unique_name: customers c_custkey
+    label: c_custkey
+    dataset: customers
+    key_columns: [C_CUSTKEY]
+    name_column: C_CUSTKEY
+    sort_column: C_CUSTKEY
+    is_unique_key: true
+relationships:
+  - unique_name: customers_to_nations
+    from:
+      dataset: customers
+      join_columns: [C_NATIONKEY]
+      hierarchy: customers segment Hierarchy
+      level: customers c_custkey
+    to:
+      dimension: nations Dimension
+      level: nations n_nationkey
+    type: embedded

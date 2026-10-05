@@ -1,0 +1,10 @@
+unique_name: nations
+object_type: dataset
+label: nations
+connection_id: tpch_mini - TPCH.SF1
+table: NATION
+columns:
+  - name: N_NATIONKEY
+    data_type: decimal(38,0)
+  - name: N_NAME
+    data_type: string

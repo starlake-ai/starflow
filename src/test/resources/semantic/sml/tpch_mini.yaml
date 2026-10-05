@@ -1,0 +1,108 @@
+name: tpch_mini
+description: Mini TPC-H
+tables:
+  - name: lineitem
+    base_table: {database: TPCH, schema: SF1, table: LINEITEM}
+    dimensions:
+      - name: l_orderkey
+        expr: L_ORDERKEY
+        data_type: NUMBER(38,0)
+      - name: l_returnflag
+        expr: L_RETURNFLAG
+        data_type: VARCHAR(1)
+        description: Return flag
+    facts:
+      - name: l_extendedprice
+        expr: L_EXTENDEDPRICE
+        data_type: NUMBER(12,2)
+      - name: l_discount
+        expr: L_DISCOUNT
+        data_type: NUMBER(12,2)
+    metrics:
+      - name: revenue
+        expr: SUM(l_extendedprice * (1 - l_discount))
+        description: Net revenue
+  - name: orders
+    base_table: {database: TPCH, schema: SF1, table: ORDERS}
+    primary_key: {columns: [o_orderkey]}
+    dimensions:
+      - name: o_orderkey
+        expr: O_ORDERKEY
+        data_type: NUMBER(38,0)
+      - name: o_custkey
+        expr: O_CUSTKEY
+        data_type: NUMBER(38,0)
+      - name: o_orderstatus
+        expr: O_ORDERSTATUS
+        data_type: VARCHAR(1)
+    time_dimensions:
+      - name: o_orderdate
+        expr: O_ORDERDATE
+        data_type: DATE
+    facts:
+      - name: o_totalprice
+        expr: O_TOTALPRICE
+        data_type: NUMBER(12,2)
+    metrics:
+      - name: order_revenue
+        expr: SUM(o_totalprice)
+      - name: order_count
+        expr: COUNT(*)
+    hierarchies:
+      - name: order_calendar
+        time: o_orderdate
+        levels: [year, quarter, month, day]
+  - name: customers
+    base_table: {database: TPCH, schema: SF1, table: CUSTOMER}
+    primary_key: {columns: [c_custkey]}
+    dimensions:
+      - name: c_custkey
+        expr: C_CUSTKEY
+        data_type: NUMBER(38,0)
+      - name: c_name
+        expr: C_NAME
+        data_type: VARCHAR(25)
+        synonyms: [customer name]
+      - name: c_nationkey
+        expr: C_NATIONKEY
+        data_type: NUMBER(38,0)
+      - name: c_mktsegment
+        expr: C_MKTSEGMENT
+        data_type: VARCHAR(10)
+    hierarchies:
+      - name: segment
+        levels:
+          - field: c_mktsegment
+          - field: c_custkey
+  - name: nations
+    base_table: {database: TPCH, schema: SF1, table: NATION}
+    primary_key: {columns: [n_nationkey]}
+    dimensions:
+      - name: n_nationkey
+        expr: N_NATIONKEY
+        data_type: NUMBER(38,0)
+      - name: n_name
+        expr: N_NAME
+        data_type: VARCHAR(25)
+relationships:
+  - name: lineitem_to_orders
+    left_table: lineitem
+    right_table: orders
+    relationship_columns: [{left_column: l_orderkey, right_column: o_orderkey}]
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns: [{left_column: o_custkey, right_column: c_custkey}]
+  - name: customers_to_nations
+    left_table: customers
+    right_table: nations
+    relationship_columns: [{left_column: c_nationkey, right_column: n_nationkey}]
+metrics:
+  - name: revenue_per_order
+    expr: SUM(lineitem.l_extendedprice) / COUNT(DISTINCT orders.o_orderkey)
+  - name: running_total
+    expr: SUM(orders.o_totalprice) OVER (ORDER BY orders.o_orderdate)
+verified_queries:
+  - name: q1
+    question: What is the revenue?
+    sql: SELECT 1

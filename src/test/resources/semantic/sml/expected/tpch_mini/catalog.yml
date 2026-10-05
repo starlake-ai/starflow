@@ -1,0 +1,7 @@
+unique_name: tpch_mini
+object_type: catalog
+label: tpch_mini
+description: Mini TPC-H
+version: 1.8
+aggressive_agg_promotion: false
+build_speculative_aggs: false

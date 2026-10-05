@@ -1,0 +1,24 @@
+unique_name: nations Dimension
+object_type: dimension
+label: nations
+type: standard
+hierarchies:
+  - unique_name: nations Hierarchy
+    label: nations
+    levels:
+      - unique_name: nations n_nationkey
+        secondary_attributes:
+          - unique_name: nations n_name
+            label: n_name
+            dataset: nations
+            key_columns: [N_NAME]
+            name_column: N_NAME
+            sort_column: N_NAME
+level_attributes:
+  - unique_name: nations n_nationkey
+    label: n_nationkey
+    dataset: nations
+    key_columns: [N_NATIONKEY]
+    name_column: N_NATIONKEY
+    sort_column: N_NATIONKEY
+    is_unique_key: true

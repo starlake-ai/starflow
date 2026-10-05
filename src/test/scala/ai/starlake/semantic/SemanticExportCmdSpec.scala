@@ -30,4 +30,10 @@ class SemanticExportCmdSpec extends AnyFlatSpec with Matchers {
       SemanticExportConfig(format = "tmdl", connection = Some("pg_conn"))
     )
   }
+
+  it should "accept the sml format" in {
+    SemanticExportCmd.parse(Seq("--format", "sml", "--connection", "snowflake_prod")) shouldBe Some(
+      SemanticExportConfig(format = "sml", connection = Some("snowflake_prod"))
+    )
+  }
 }
