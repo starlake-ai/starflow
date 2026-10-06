@@ -7,6 +7,11 @@ __Bug Fix__:
   - A presql that only `DELETE`s from a table that does not exist yet still fails on the first run: add a `CREATE TABLE IF NOT EXISTS` for the target at the top of the presql. A `CREATE` nested in a scripting block (`IF ... THEN`, `BEGIN ... END`) is not taken into account, since it may not run.
   - `SCD2` tasks: the presql `CREATE` must declare the start/end timestamp columns.
   - Unchanged: tasks whose presql does not create their target, views, materialized views, audit tables, and runs on a data branch.
+- **Spark starts again inside the Starflow UI/API**: the 1.8.8 api bundle shipped Netty 4.1 (pulled in by the AWS S3 SDK's async client), and the api's `lib/` precedes Spark's jars on its classpath. Spark 4.1 needs Netty 4.2, so every action that starts Spark in the api process, such as inferring a schema from the UI, failed with `NoSuchMethodError: io.netty.channel.SingleThreadEventLoop.<init>`. The unused async client and its Netty are no longer bundled.
+- **Schema inference on files without an extension and on dotted column names** (#1815): an extension-less Parquet file was sniffed by its first line and parsed as delimited text; Parquet is now detected by its `PAR1` magic bytes. Headers containing a dot, such as `price.eur`, were read as nested fields and failed; column names are now quoted.
+
+__Improvement__:
+- DuckDB JDBC driver upgraded to 1.5.6.0 (#1823) and jsqlparser to 5.4.104 (#1821).
 
 # 1.8.8:
 __Removed__:
