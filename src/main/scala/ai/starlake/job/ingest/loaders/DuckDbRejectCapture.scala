@@ -1,6 +1,6 @@
 package ai.starlake.job.ingest.loaders
 
-import ai.starlake.config.Settings
+import ai.starlake.config.{ConnectionInfo, Settings}
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.schema.model.SchemaInfo
 import com.typesafe.scalalogging.LazyLogging
@@ -31,6 +31,13 @@ object DuckDbRejectCapture extends LazyLogging {
       |WHERE e.scan_id = (SELECT max(scan_id) FROM reject_scans)
       |GROUP BY 1, 2, 3
       |ORDER BY 1, 2""".stripMargin
+
+  /** Whether the rejected CSV lines of a load on this connection can be read back. Over Flight SQL
+    * (Quack On Demand) each statement may run in a different remote DuckDB session, so the session
+    * scoped reject tables written by the INSERT are gone by the time they are queried.
+    */
+  def csvRejectsReadable(connection: ConnectionInfo): Boolean =
+    !connection.isFlightSql()
 
   def captureCsvRejects(conn: Connection)(implicit settings: Settings): RejectCapture = {
     val captured = capture(conn, captureCsvRejectsSql, "raw_line") { (rs, rawLine) =>

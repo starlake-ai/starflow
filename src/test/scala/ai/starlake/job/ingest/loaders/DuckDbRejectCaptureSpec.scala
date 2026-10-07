@@ -1,6 +1,8 @@
 package ai.starlake.job.ingest.loaders
 
 import ai.starlake.TestHelper
+import ai.starlake.config.ConnectionInfo
+import ai.starlake.schema.model.ConnectionType
 import ai.starlake.schema.model.{Position, SchemaInfo, TableAttribute}
 import com.typesafe.config.{Config, ConfigFactory}
 
@@ -127,5 +129,16 @@ class DuckDbRejectCaptureSpec extends TestHelper {
         Files.deleteIfExists(csv)
       }
     }
+  }
+
+  // Over Flight SQL (Quack On Demand) each statement may run in another remote session, so the
+  // session scoped reject tables cannot be read back after the INSERT.
+  "csvRejectsReadable" should "be false over Flight SQL and true for a local DuckDB" in {
+    def connection(url: String) =
+      ConnectionInfo(ConnectionType.JDBC, options = Map("url" -> url))
+    DuckDbRejectCapture.csvRejectsReadable(
+      connection("jdbc:arrow-flight-sql://qod.example.com:31338")
+    ) shouldBe false
+    DuckDbRejectCapture.csvRejectsReadable(connection("jdbc:duckdb:/tmp/db.duckdb")) shouldBe true
   }
 }

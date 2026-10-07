@@ -731,6 +731,10 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               // store_rejects makes DuckDB skip and record malformed lines instead of
               // aborting the whole INSERT. The rejected lines are read back below, on this
               // same connection, because reject_errors is a session scoped temp table.
+              // When they cannot be read back (Flight SQL) the lines are not skipped either:
+              // DuckDB parses strictly and a malformed line fails the load.
+              val captureRejects = DuckDbRejectCapture.csvRejectsReadable(sinkConnection)
+              val storeRejects = if (captureRejects) "store_rejects = true," else ""
               val sql = s"""INSERT INTO $domainAndTableName SELECT
              | * FROM read_csv(
              | ${paths},
@@ -738,12 +742,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
              | header = ${mergedMetadata.resolveWithHeader()},
              | quote = '${mergedMetadata.resolveQuote()}',
              | escape = '${mergedMetadata.resolveEscape()}',
-             | store_rejects = true,
+             | $storeRejects
              | $nullstr
              | $extraOptions
              | columns = { $columnsString});""".stripMargin
               JdbcDbUtils.execute(sql, conn)
-              DuckDbRejectCapture.captureCsvRejects(conn)
+              if (captureRejects) DuckDbRejectCapture.captureCsvRejects(conn)
+              else RejectCapture.empty
 
             case Format.POSITION =>
               // Load each line of the fixed-width file as a single VARCHAR column named
