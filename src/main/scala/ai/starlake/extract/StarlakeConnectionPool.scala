@@ -124,6 +124,21 @@ object StarlakeConnectionPool extends LazyLogging {
     hash
   }
 
+  /** A CLI spawned by starlake-api has no session to inject the QoD credential, so the parent hands
+    * it over through SL_QOD_TOKEN. Fills the gap only: an explicit token always wins, and a
+    * connection with a stored password authenticates as its own QoD user (the Flight driver prefers
+    * a token over user/password, so adding one would run it as the session user).
+    */
+  def withQodToken(
+    options: Map[String, String],
+    qodToken: Option[String]
+  ): Map[String, String] = {
+    val isFlightSql = options.get("url").exists(ConnectionInfo.isFlightSqlUrl)
+    if (isFlightSql && !options.contains("token") && !options.contains("password"))
+      qodToken.fold(options)(t => options.updated("token", t))
+    else options
+  }
+
   def getConnection(
     dataBranch: Option[String],
     connectionOptionsIn: Map[String, String]
@@ -136,15 +151,7 @@ object StarlakeConnectionPool extends LazyLogging {
     // happens server-side, never on this JVM (see docs/quack.md isolation model)
     val isFlightSql =
       connectionOptionsIn.get("url").exists(ConnectionInfo.isFlightSqlUrl)
-    // A CLI spawned by starlake-api has no session to inject the QoD credential, so
-    // the parent hands it over through SL_QOD_TOKEN. Fills the gap only: an explicit
-    // token option always wins.
-    val connectionOptions =
-      if (isFlightSql && !connectionOptionsIn.contains("token"))
-        sys.env
-          .get("SL_QOD_TOKEN")
-          .fold(connectionOptionsIn)(t => connectionOptionsIn.updated("token", t))
-      else connectionOptionsIn
+    val connectionOptions = withQodToken(connectionOptionsIn, sys.env.get("SL_QOD_TOKEN"))
     val isAttachBacked =
       !isFlightSql &&
       connectionOptions

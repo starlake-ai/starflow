@@ -29,4 +29,26 @@ class StarlakeConnectionPoolSpec extends AnyFlatSpec with Matchers {
     // only the surviving entry remains in the pool
     StarlakeConnectionPool.clearDuckdbPool(_ => true) shouldBe 1
   }
+
+  "withQodToken" should "add the QoD token to a tokenless Flight SQL connection" in {
+    val flight = Map("url" -> "jdbc:arrow-flight-sql://qod:31338", "pool" -> "bi")
+    StarlakeConnectionPool.withQodToken(flight, Some("t")) shouldBe flight + ("token" -> "t")
+  }
+
+  it should "keep an explicit token" in {
+    val flight = Map("url" -> "jdbc:arrow-flight-sql://qod:31338", "token" -> "own")
+    StarlakeConnectionPool.withQodToken(flight, Some("t")) shouldBe flight
+  }
+
+  it should "leave connections with stored credentials to authenticate as their own user" in {
+    val flight =
+      Map("url" -> "jdbc:arrow-flight-sql://qod:31338", "user" -> "u", "password" -> "p")
+    StarlakeConnectionPool.withQodToken(flight, Some("t")) shouldBe flight
+  }
+
+  it should "ignore non Flight SQL connections and a missing token" in {
+    StarlakeConnectionPool.withQodToken(options("x"), Some("t")) shouldBe options("x")
+    val flight = Map("url" -> "jdbc:arrow-flight-sql://qod:31338")
+    StarlakeConnectionPool.withQodToken(flight, None) shouldBe flight
+  }
 }
