@@ -4,7 +4,7 @@ object Versions {
   val scalatest = "3.2.19"
   // scalacheck-1-18 has no 3.2.20.0 on Maven Central (3.2.19.0 is the last of its line),
   // so scalatest is held at 3.2.19 to move together with it.
-  val scalacheckForScalatest = "3.2.19.0"
+  val scalacheckForScalatest = "3.2.20.0"
   // sparkXML / sparkXML2d0 DELETED: Spark 4 has a built-in xml data source
   val springBoot = "2.0.6.RELEASE"
   val typesafeConfig = "1.4.9"
