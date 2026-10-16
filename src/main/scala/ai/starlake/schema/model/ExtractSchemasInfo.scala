@@ -122,7 +122,7 @@ case class JDBCSchema(
 }
 
 object JDBCSchema {
-  private val defaultTableTypes = List(
+  val defaultTableTypes: List[String] = List(
     "TABLE",
     "VIEW",
     "SYSTEM TABLE",

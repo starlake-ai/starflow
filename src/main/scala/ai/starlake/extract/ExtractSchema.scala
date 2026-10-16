@@ -99,7 +99,11 @@ class ExtractSchema(schemaHandler: SchemaHandler) extends ExtractPathHelper with
           val extractedDomains =
             jdbcSchemas.jdbcSchemas.getOrElse(Nil).flatMap { jdbcSchema =>
               val bigQueryConfig =
-                ExtractBigQuerySchemaCmd.fromExtractSchemaConfig(userConfig, jdbcSchema)
+                ExtractBigQuerySchemaCmd.fromExtractSchemaConfig(
+                  userConfig,
+                  jdbcSchema,
+                  jdbcSchemas.connectionRef
+                )
               ExtractBigQuerySchemaCmd.extract(bigQueryConfig, schemaHandler)
             }
           Some(extractedDomains)

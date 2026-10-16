@@ -218,6 +218,14 @@
         {
           "const": "SYNONYM",
           "description": "Table synonym"
+        },
+        {
+          "const": "EXTERNAL",
+          "description": "BigQuery external table"
+        },
+        {
+          "const": "SNAPSHOT",
+          "description": "BigQuery table snapshot"
         }
       ]
     },
@@ -1556,7 +1564,7 @@
           "description": "Query template used to retrieve all columns' remark of a table. Available variables: catalog, schema, table. Scope: Schema extraction."
         },
         "tableTypes": {
-          "description": "One or many of the predefined table types. Scope: Schema and Data extraction.",
+          "description": "One or many of the predefined table types. Scope: Schema and Data extraction. On BigQuery, one or many of TABLE, VIEW, MATERIALIZED VIEW, EXTERNAL and SNAPSHOT, TABLE only by default.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/TableTypeV1"

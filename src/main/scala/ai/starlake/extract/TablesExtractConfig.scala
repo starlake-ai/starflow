@@ -11,5 +11,6 @@ case class TablesExtractConfig(
   persist: Boolean = false,
   external: Boolean = false,
   accessToken: Option[String] = None,
-  reportFormat: Option[String] = None
+  reportFormat: Option[String] = None,
+  tableTypes: List[String] = Nil
 ) extends ReportFormatConfig

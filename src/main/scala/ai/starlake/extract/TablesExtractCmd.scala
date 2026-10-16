@@ -2,7 +2,7 @@ package ai.starlake.extract
 
 import ai.starlake.job.Cmd
 import ai.starlake.schema.model.WriteMode
-import scopt.OParser
+import scopt.{OParser, OParserBuilder}
 
 trait TablesExtractCmd extends Cmd[TablesExtractConfig] {
 
@@ -18,10 +18,14 @@ trait TablesExtractCmd extends Cmd[TablesExtractConfig] {
     }
   }
 
+  /** Options specific to a command, appended to the common ones */
+  protected def extraOptions(
+    builder: OParserBuilder[TablesExtractConfig]
+  ): List[OParser[_, TablesExtractConfig]] = Nil
+
   val parser: OParser[Unit, TablesExtractConfig] = {
     val builder = OParser.builder[TablesExtractConfig]
-    OParser.sequence(
-      builder.programName(s"$shell $command"),
+    val options = List[OParser[_, TablesExtractConfig]](
       builder.head(shell, command, "[options]"),
       builder.note(""),
       builder
@@ -62,9 +66,10 @@ trait TablesExtractCmd extends Cmd[TablesExtractConfig] {
         .opt[Boolean]("persist")
         .action { (x, c) => c.copy(persist = x) }
         .optional()
-        .text("Persist results ?"),
+        .text("Persist results ?")
+    ) ++ extraOptions(builder) :+
       reportFormatOption(builder)((c, x) => c.copy(reportFormat = x))
-    )
+    OParser.sequence(builder.programName(s"$shell $command"), options: _*)
   }
 
   def parse(args: Seq[String]): Option[TablesExtractConfig] =

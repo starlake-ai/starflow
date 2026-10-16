@@ -935,7 +935,7 @@ object SchemaInfo {
               attributes = x.fields.map(buildAttributeTree).toList,
               comment = obj.getComment()
             )
-          case _ => throw new Exception(s"Unsupported Date type ${obj.dataType} for object $obj ")
+          case _ => throw new Exception(s"Unsupported type ${obj.dataType} for object $obj")
         }
       }
     }
