@@ -4,16 +4,28 @@ import ai.starlake.config.DatasetArea
 import ai.starlake.extract.{ExtractBigQuerySchema, TablesExtractConfig}
 import ai.starlake.integration.IntegrationTestBase
 import ai.starlake.job.Main
-import ai.starlake.schema.model.{Format, Metadata}
+import ai.starlake.schema.model.{
+  AllSinks,
+  DomainInfo,
+  Format,
+  Metadata,
+  TableAttribute,
+  WriteStrategy,
+  WriteStrategyType
+}
 import better.files.File
 import com.google.cloud.bigquery._
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.{Storage, StorageOptions}
 
+import java.util.UUID
 import java.util.regex.Pattern
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 /** A BigQuery table extracted with extract-bq-schema, then loaded by the native loader from its
   * data, gives a table of the same schema and values: DATETIME, TIME, BYTES, BIGNUMERIC, GEOGRAPHY,
-  * INTERVAL, RANGE and JSON columns included.
+  * INTERVAL, RANGE and JSON columns included. The data comes from JSON and CSV files, or from an
+  * `EXPORT DATA` to Parquet files.
   */
 class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
   private val sourceDataset = "starlake_it_bq_roundtrip_source"
@@ -22,6 +34,30 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
   private val view = "all_types_view"
   // BigQuery loads RANGE values from CSV, not from JSON
   private val ranges = "ranges"
+
+  private val parquetDataset = "starlake_it_bq_roundtrip_parquet"
+  // Every type, nullable and required, repeated and nested fields: loaded in two steps
+  private val parquetTypes = "parquet_types"
+  // Nullable fields, arrays and a record: APPEND loads in one step
+  private val parquetLists = "parquet_lists"
+  // The top level columns of parquetTypes, from two local files, loaded by one job each. Their
+  // repeated column is in the files, not in the table, which has a scripted column instead
+  private val parquetLocal = "parquet_local"
+  private val notInParquetLocal = Set("tags", "record", "records")
+
+  // EXPORT DATA writes to Cloud Storage: a bucket, or a bucket and a folder
+  private lazy val (bucket, exportPrefix): (Option[String], String) = {
+    val location = sys.env
+      .get("TEMPORARY_GCS_BUCKET")
+      .map(_.stripPrefix("gs://").stripSuffix("/"))
+      .filter(_.nonEmpty)
+    val folder = location.flatMap(_.split("/", 2).lift(1)).map(_ + "/").getOrElse("")
+    (
+      location.map(_.split("/", 2).head),
+      s"${folder}starlake-it/bq-roundtrip-parquet/${UUID.randomUUID()}"
+    )
+  }
+  private lazy val storage: Storage = StorageOptions.newBuilder().build().getService
 
   private val projectTemplate: File =
     File(getClass.getResource("/integration/bq-roundtrip-types").toURI)
@@ -73,13 +109,125 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
     }
 
   private def fingerprint(dataset: String, name: String): List[String] =
+    fingerprintOf(s"SELECT * FROM `$dataset.$name`")
+
+  /** @return
+    *   the row count and fingerprint of the result of the query
+    */
+  private def fingerprintOf(query: String): List[String] =
     run(
-      s"SELECT COUNT(*), BIT_XOR(FARM_FINGERPRINT(TO_JSON_STRING(t))) FROM `$dataset.$name` t"
+      s"SELECT COUNT(*), BIT_XOR(FARM_FINGERPRINT(TO_JSON_STRING(t))) FROM ($query) t"
     ).iterateAll()
       .asScala
       .map(row => (0 until 2).map(i => row.get(i).getStringValue).toList)
       .toList
       .flatten
+
+  /** @return
+    *   the query exporting parquetTypes to Parquet. EXPORT DATA writes JSON values as strings, and
+    *   the INTERVAL and RANGE values are exported as their canonical text, which the native loader
+    *   reads from Parquet files.
+    */
+  private def parquetExportQuery(
+    filter: String = "TRUE",
+    except: Set[String] = Set.empty,
+    replace: List[String] = Nil
+  ): String = {
+    val excepted =
+      if (except.isEmpty) "" else except.toList.sorted.mkString(" EXCEPT (", ", ", ")")
+    val replaced = replace ++ List("duration", "days", "civils", "instants").map(column =>
+      s"CAST($column AS STRING) AS $column"
+    )
+    s"SELECT *$excepted REPLACE (${replaced.mkString(", ")}) FROM `$sourceDataset.$parquetTypes` WHERE $filter"
+  }
+
+  /** @return
+    *   the URI of the Parquet files written by EXPORT DATA into the folder of this name
+    */
+  private def exportParquet(name: String, query: String, files: String = "part"): String = {
+    val uri = s"gs://${bucket.get}/$exportPrefix/$name/$files-*.parquet"
+    run(s"EXPORT DATA OPTIONS (uri = '$uri', format = 'PARQUET', overwrite = true) AS $query")
+    uri
+  }
+
+  /** @return
+    *   the local copies of the Parquet files exported into the folder of this name
+    */
+  private def download(name: String, dir: File): List[File] =
+    storage
+      .list(bucket.get, Storage.BlobListOption.prefix(s"$exportPrefix/$name/"))
+      .iterateAll()
+      .asScala
+      .toList
+      .map { blob =>
+        val file = dir / s"$name-${blob.getName.split('/').last}"
+        blob.downloadTo(file.path)
+        file
+      }
+
+  private def loadInPlace(table: String, files: String): Boolean =
+    Try(
+      new Main().run(
+        Array("load", "--domains", parquetDataset, "--tables", table, "--files", files, "--inPlace")
+      )
+    ).getOrElse(false)
+
+  /** Writes the Parquet domain from the extracted one, with these write strategies. The types and
+    * lists tables are partitioned by day.
+    */
+  private def writeParquetDomain(
+    extracted: DomainInfo,
+    typesStrategy: WriteStrategyType,
+    listsStrategy: WriteStrategyType
+  ): Unit = {
+    def withStrategy(
+      metadata: Option[Metadata],
+      strategy: WriteStrategyType,
+      partitioned: Boolean = true
+    ) = {
+      val withStrategy = metadata
+        .getOrElse(Metadata())
+        .copy(writeStrategy = Some(WriteStrategy(`type` = Some(strategy))))
+      Some(
+        if (partitioned)
+          withStrategy.copy(sink =
+            Some(withStrategy.sink.getOrElse(AllSinks()).copy(partition = Some(Seq("day"))))
+          )
+        else withStrategy
+      )
+    }
+    val tables = extracted.tables.map(schema => schema.name -> schema).toMap
+    extracted
+      .copy(
+        name = parquetDataset,
+        database = None,
+        metadata = Some(
+          Metadata(
+            format = Some(Format.PARQUET),
+            directory = Some(s"{{root_path}}/incoming/$parquetDataset")
+          )
+        ),
+        tables = List(
+          tables(parquetTypes)
+            .copy(metadata = withStrategy(tables(parquetTypes).metadata, typesStrategy)),
+          tables(parquetLists)
+            .copy(metadata = withStrategy(tables(parquetLists).metadata, listsStrategy)),
+          tables(parquetTypes).copy(
+            name = parquetLocal,
+            pattern = Pattern.compile(s"$parquetLocal-.*\\.parquet"),
+            attributes =
+              tables(parquetTypes).attributes.filterNot(a => notInParquetLocal(a.name)) :+
+              TableAttribute("loaded_from", "string", script = Some("'parquet'")),
+            metadata = withStrategy(
+              tables(parquetTypes).metadata,
+              WriteStrategyType.APPEND,
+              partitioned = false
+            )
+          )
+        )
+      )
+      .writeDomainAsYaml(DatasetArea.load)(settings.storageHandler())
+  }
 
   if (sys.env.getOrElse("SL_REMOTE_TEST", "false").toBoolean) {
     "A BigQuery table extracted then loaded natively" should "keep its schema and values" in {
@@ -217,6 +365,249 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
         List(table, ranges).foreach { name =>
           describe(fields(targetDataset, name)) shouldBe describe(fields(sourceDataset, name))
           fingerprint(targetDataset, name) shouldBe fingerprint(sourceDataset, name)
+        }
+      }
+    }
+  }
+
+  if (sys.env.getOrElse("SL_REMOTE_TEST", "false").toBoolean && bucket.nonEmpty) {
+    "A BigQuery table extracted, exported to Parquet then loaded natively" should "keep its schema and values" in {
+      withEnvs("SL_ROOT" -> project.pathAsString) {
+        try {
+          List(sourceDataset, parquetDataset).foreach { dataset =>
+            if (bigquery.getDataset(dataset) == null)
+              bigquery.create(DatasetInfo.newBuilder(dataset).setLocation("europe-west1").build())
+          }
+          List(parquetTypes, parquetLists, parquetLocal).foreach(name =>
+            bigquery.delete(TableId.of(parquetDataset, name))
+          )
+          run(s"""CREATE OR REPLACE TABLE `$sourceDataset.$parquetTypes` (
+                 |  id INT64 NOT NULL,
+                 |  label STRING NOT NULL,
+                 |  day DATE NOT NULL,
+                 |  created DATETIME NOT NULL,
+                 |  amount BIGNUMERIC NOT NULL,
+                 |  raw BYTES NOT NULL,
+                 |  total INT64,
+                 |  ratio FLOAT64,
+                 |  flag BOOL,
+                 |  price NUMERIC,
+                 |  big BIGNUMERIC,
+                 |  civil DATETIME,
+                 |  wall TIME,
+                 |  instant TIMESTAMP,
+                 |  payload BYTES,
+                 |  area GEOGRAPHY,
+                 |  duration INTERVAL,
+                 |  doc JSON,
+                 |  days RANGE<DATE>,
+                 |  civils RANGE<DATETIME>,
+                 |  instants RANGE<TIMESTAMP>,
+                 |  tags ARRAY<STRING>,
+                 |  record STRUCT<code STRING NOT NULL, civils ARRAY<DATETIME>, amounts ARRAY<NUMERIC>>,
+                 |  records ARRAY<STRUCT<name STRING, day DATE>>
+                 |) PARTITION BY day""".stripMargin)
+          run(s"""INSERT INTO `$sourceDataset.$parquetTypes` VALUES
+                 |(1, 'é€😀', DATE '2019-12-31', DATETIME '2019-12-31 23:59:59.999999',
+                 | BIGNUMERIC '-1234567890123456789012345678901234567.12345678901234567890123456789012345678',
+                 | b'\\x00\\xff', 9223372036854775807, 1.5e300, TRUE,
+                 | NUMERIC '-12345678901234567890123456789.123456789',
+                 | BIGNUMERIC '1234567890123456789012345678901234567.12345678901234567890123456789012345678',
+                 | DATETIME '2019-12-31 23:59:59.999999', TIME '23:59:59.999999',
+                 | TIMESTAMP '2019-12-31 23:59:59.999999 UTC', b'\\x00\\xff\\x10', ST_GEOGPOINT(1, 2),
+                 | INTERVAL '1-2 3 4:5:6.789' YEAR TO SECOND, JSON '{"a": [1, "b"]}',
+                 | RANGE(DATE '2019-01-01', DATE '2019-12-31'),
+                 | RANGE(DATETIME '2019-01-01 10:00:00.5', NULL),
+                 | RANGE(TIMESTAMP '2019-01-01 00:00:00 UTC', TIMESTAMP '2019-12-31 23:59:59.999999 UTC'),
+                 | ['x', 'y'],
+                 | STRUCT('c', [DATETIME '2019-01-01 00:00:00'], [NUMERIC '1.5', NUMERIC '-2']),
+                 | [STRUCT('n', DATE '2019-01-01'), STRUCT(CAST(NULL AS STRING), CAST(NULL AS DATE))]),
+                 |(2, '', DATE '2020-01-01', DATETIME '0001-01-01 00:00:00', BIGNUMERIC '0', b'',
+                 | NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                 | NULL, [], NULL, [])""".stripMargin)
+          run(s"""CREATE OR REPLACE TABLE `$sourceDataset.$parquetLists` (
+                 |  id INT64,
+                 |  day DATE,
+                 |  civil DATETIME,
+                 |  big BIGNUMERIC,
+                 |  payload BYTES,
+                 |  tags ARRAY<STRING>,
+                 |  counts ARRAY<INT64>,
+                 |  record STRUCT<code STRING, days ARRAY<DATE>>
+                 |) PARTITION BY day""".stripMargin)
+          // OVERWRITE_BY_PARTITION does not replace the rows of the NULL partition: none here
+          run(s"""INSERT INTO `$sourceDataset.$parquetLists` VALUES
+                 |(1, DATE '2019-12-31', DATETIME '2019-12-31 23:59:59.999999', BIGNUMERIC '1.5',
+                 | b'\\x00', ['x', 'y'], [1, 2], STRUCT('c', [DATE '2019-01-01'])),
+                 |(2, DATE '2020-01-01', NULL, NULL, NULL, [], [], NULL),
+                 |(3, DATE '2020-01-01', NULL, NULL, NULL, ['z'], [3],
+                 | STRUCT(CAST(NULL AS STRING), ARRAY<DATE>[]))""".stripMargin)
+
+          val extracted = new ExtractBigQuerySchema(
+            TablesExtractConfig(
+              connectionRef = Some("bigquery"),
+              tables = Map(sourceDataset -> List(parquetTypes, parquetLists)),
+              tableTypes = List("TABLE")
+            )
+          ).extractSchemasAndTables(
+            settings.schemaHandler(),
+            Map(sourceDataset -> List(parquetTypes, parquetLists))
+          ).head
+          extracted.tables
+            .find(_.name == parquetTypes)
+            .map(_.attributes.map(a => (a.name, a.`type`, a.resolveRequired()))) shouldBe Some(
+            List(
+              ("id", "long", true),
+              ("label", "string", true),
+              ("day", "date", true),
+              ("created", "datetime", true),
+              ("amount", "bignumeric", true),
+              ("raw", "binary", true),
+              ("total", "long", false),
+              ("ratio", "double", false),
+              ("flag", "boolean", false),
+              ("price", "decimal", false),
+              ("big", "bignumeric", false),
+              ("civil", "datetime", false),
+              ("wall", "time", false),
+              ("instant", "timestamp", false),
+              ("payload", "binary", false),
+              ("area", "geography", false),
+              ("duration", "interval", false),
+              ("doc", "variant", false),
+              ("days", "range_date", false),
+              ("civils", "range_datetime", false),
+              ("instants", "range_timestamp", false),
+              ("tags", "string", false),
+              ("record", "struct", false),
+              ("records", "struct", false)
+            )
+          )
+
+          // How EXPORT DATA writes INTERVAL and RANGE values to Parquet is not documented: they
+          // are exported as strings below. Logged, not checked
+          val directExport = Try(
+            exportParquet(
+              "direct",
+              s"SELECT duration, days, civils, instants FROM `$sourceDataset.$parquetTypes`"
+            )
+          )
+          info(
+            s"EXPORT DATA of INTERVAL and RANGE columns to Parquet: ${directExport
+                .fold(e => s"failed: ${e.getMessage}", _ => "succeeded")}"
+          )
+
+          // Several Cloud Storage files, by two URIs and by a wildcard URI
+          val typesUris = List("a" -> "id = 1", "b" -> "id = 2").map { case (files, filter) =>
+            exportParquet(parquetTypes, parquetExportQuery(filter), files)
+          }
+          val typesUri = s"gs://${bucket.get}/$exportPrefix/$parquetTypes/*.parquet"
+          // With a column that the table does not declare, loaded in one step
+          val listsUri =
+            exportParquet(
+              parquetLists,
+              s"SELECT *, 'undeclared' AS extra FROM `$sourceDataset.$parquetLists`"
+            )
+          // Two local files, with a column that the table does not declare
+          List(1, 2).foreach { id =>
+            exportParquet(
+              s"$parquetLocal-$id",
+              parquetExportQuery(s"id = $id", except = notInParquetLocal - "tags")
+            )
+          }
+          val localDir = (project / "parquet").createDirectories()
+          val localFiles =
+            download(s"$parquetLocal-1", localDir) ++ download(s"$parquetLocal-2", localDir)
+          localFiles.size should be >= 2
+
+          def checkTypesAndLists(): Unit =
+            List(parquetTypes, parquetLists).foreach { name =>
+              withClue(name) {
+                describe(fields(parquetDataset, name)) shouldBe describe(
+                  fields(sourceDataset, name)
+                )
+                fingerprint(parquetDataset, name) shouldBe fingerprint(sourceDataset, name)
+              }
+            }
+
+          // APPEND into new tables
+          writeParquetDomain(extracted, WriteStrategyType.APPEND, WriteStrategyType.APPEND)
+          loadInPlace(parquetTypes, typesUris.mkString(",")) shouldBe true
+          loadInPlace(parquetLists, listsUri) shouldBe true
+          loadInPlace(parquetLocal, localFiles.map(_.uri.toString).mkString(",")) shouldBe true
+          checkTypesAndLists()
+          describe(fields(parquetDataset, parquetLocal)) shouldBe describe(
+            fields(sourceDataset, parquetTypes).filterNot(f => notInParquetLocal(f.getName)) :+
+            Field
+              .newBuilder("loaded_from", StandardSQLTypeName.STRING)
+              .setMode(Field.Mode.NULLABLE)
+              .build()
+          )
+          fingerprint(parquetDataset, parquetLocal) shouldBe fingerprintOf(
+            s"SELECT * EXCEPT (${notInParquetLocal.toList.sorted
+                .mkString(", ")}), 'parquet' AS loaded_from FROM `$sourceDataset.$parquetTypes`"
+          )
+
+          // A null value of a required column fails the load, which changes nothing
+          val nullLabelUri = exportParquet(
+            "null_label",
+            parquetExportQuery(replace = List("CAST(NULL AS STRING) AS label"))
+          )
+          loadInPlace(parquetTypes, nullLabelUri) shouldBe false
+          fingerprint(parquetDataset, parquetTypes) shouldBe fingerprint(
+            sourceDataset,
+            parquetTypes
+          )
+
+          // OVERWRITE replaces the rows, APPEND adds them again
+          writeParquetDomain(extracted, WriteStrategyType.OVERWRITE, WriteStrategyType.APPEND)
+          loadInPlace(parquetTypes, typesUri) shouldBe true
+          loadInPlace(parquetLists, listsUri) shouldBe true
+          describe(fields(parquetDataset, parquetTypes)) shouldBe describe(
+            fields(sourceDataset, parquetTypes)
+          )
+          fingerprint(parquetDataset, parquetTypes) shouldBe fingerprint(
+            sourceDataset,
+            parquetTypes
+          )
+          val sourceCount = fingerprint(sourceDataset, parquetLists).head.toLong
+          fingerprint(parquetDataset, parquetLists).head.toLong shouldBe 2 * sourceCount
+
+          // OVERWRITE_BY_PARTITION replaces the partitions of the loaded rows, and keeps the others
+          run(
+            s"INSERT INTO `$parquetDataset.$parquetLists` (id, day) VALUES (99, DATE '2021-01-01')"
+          )
+          writeParquetDomain(
+            extracted,
+            WriteStrategyType.OVERWRITE_BY_PARTITION,
+            WriteStrategyType.OVERWRITE_BY_PARTITION
+          )
+          loadInPlace(parquetTypes, typesUri) shouldBe true
+          loadInPlace(parquetLists, listsUri) shouldBe true
+          describe(fields(parquetDataset, parquetTypes)) shouldBe describe(
+            fields(sourceDataset, parquetTypes)
+          )
+          fingerprint(parquetDataset, parquetTypes) shouldBe fingerprint(
+            sourceDataset,
+            parquetTypes
+          )
+          describe(fields(parquetDataset, parquetLists)) shouldBe describe(
+            fields(sourceDataset, parquetLists)
+          )
+          fingerprintOf(
+            s"SELECT * FROM `$parquetDataset.$parquetLists` WHERE id != 99"
+          ) shouldBe fingerprint(sourceDataset, parquetLists)
+          fingerprintOf(
+            s"SELECT * FROM `$parquetDataset.$parquetLists` WHERE id = 99"
+          ).head shouldBe "1"
+        } finally {
+          Try(
+            storage
+              .list(bucket.get, Storage.BlobListOption.prefix(exportPrefix))
+              .iterateAll()
+              .asScala
+              .foreach(blob => storage.delete(blob.getBlobId))
+          )
         }
       }
     }

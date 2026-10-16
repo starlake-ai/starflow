@@ -11,6 +11,7 @@ import ai.starlake.schema.model.{
   TransformInput
 }
 import com.typesafe.config.ConfigFactory
+import org.apache.hadoop.fs.Path
 
 import java.util.regex.Pattern
 
@@ -68,10 +69,30 @@ class LoadEngineSpec extends TestHelper {
       IngestionJob.selectLoader(metadata, Nil, "domain.table", Nil) shouldBe "spark"
     }
 
-    "a native PARQUET load to BigQuery" should "fall back to spark" in {
+    "a native PARQUET load to BigQuery" should "use the bigquery loader" in {
       val metadata =
         Metadata(format = Some(Format.PARQUET), loader = Some("native"), sink = bqSink)
-      IngestionJob.selectLoader(metadata, Nil, "domain.table", Nil) shouldBe "spark"
+      IngestionJob.selectLoader(metadata, Nil, "domain.table", Nil) shouldBe "bigquery"
+    }
+
+    it should "fall back to spark for array attributes in local files" in {
+      val metadata =
+        Metadata(format = Some(Format.PARQUET), loader = Some("native"), sink = bqSink)
+      val attributes = List(TableAttribute(name = "tags", `type` = "string", array = Some(true)))
+      IngestionJob.selectLoader(
+        metadata,
+        attributes,
+        "domain.table",
+        Nil,
+        paths = List(new Path("file:/tmp/incoming/table.parquet"))
+      ) shouldBe "spark"
+      IngestionJob.selectLoader(
+        metadata,
+        attributes,
+        "domain.table",
+        Nil,
+        paths = List(new Path("gs://bucket/incoming/table.parquet"))
+      ) shouldBe "bigquery"
     }
 
     "a DSV load to DuckDB with loader native on the connection" should "use the duckdb loader" in {
@@ -135,8 +156,19 @@ class LoadEngineSpec extends TestHelper {
       )
       IngestionJob.loadRequiresSpark(domain, table) shouldBe false
 
-      val sparkTable = table.copy(metadata = Some(Metadata(format = Some(Format.PARQUET))))
+      val sparkTable = table.copy(metadata = Some(Metadata(format = Some(Format.XML))))
       IngestionJob.loadRequiresSpark(domain, sparkTable) shouldBe true
+
+      // A BigQuery load job does not apply default values
+      val parquetTable = table.copy(
+        metadata = Some(Metadata(format = Some(Format.PARQUET))),
+        attributes = List(TableAttribute(name = "amount", `type` = "long", default = Some("0")))
+      )
+      IngestionJob.loadRequiresSpark(domain, parquetTable) shouldBe true
+      IngestionJob.loadRequiresSpark(
+        domain,
+        parquetTable.copy(attributes = parquetTable.attributes.map(_.copy(default = None)))
+      ) shouldBe false
     }
 
     it should "require Spark for a table with a non-SQL privacy, which native loaders do not apply" in {

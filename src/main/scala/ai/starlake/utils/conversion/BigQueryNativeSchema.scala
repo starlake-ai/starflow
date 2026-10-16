@@ -255,6 +255,39 @@ object BigQueryNativeSchema extends LazyLogging {
       }
     }
 
+  /** @param text
+    *   the SQL of a string holding the canonical text of a RANGE, `[lower, upper)`, whose unbounded
+    *   bounds are `UNBOUNDED` or `NULL`, as `CAST(range AS STRING)` writes it
+    * @param elementType
+    *   the type of the bounds: DATE, DATETIME or TIMESTAMP
+    * @param safe
+    *   true to give NULL for a malformed text, as SAFE_CAST does, instead of failing the query
+    * @return
+    *   the SQL of the RANGE value. It is built from its bounds: JSqlParser, which parses the second
+    *   step SQL of the loads, cannot parse a CAST to `RANGE<T>`.
+    */
+  def rangeFromText(text: String, elementType: String, safe: Boolean): String = {
+    val trimmed = s"TRIM($text)"
+    // An unbounded bound is UNBOUNDED or NULL, in any case
+    def bound(regex: String): String = {
+      val text = s"TRIM(REGEXP_EXTRACT($trimmed, '$regex'))"
+      s"IF(UPPER($text) IN ('UNBOUNDED', 'NULL'), NULL, $text)"
+    }
+    val lower = bound("^[[]([^,]+),")
+    val upper = bound(",([^,]+)[)]$")
+    val wellFormed = s"REGEXP_CONTAINS($trimmed, '^[[][^,]+,[^,]+[)]$$')"
+    if (safe) {
+      def cast(bound: String) = s"SAFE_CAST($bound AS $elementType)"
+      def castable(bound: String) = s"($bound IS NULL OR ${cast(bound)} IS NOT NULL)"
+      // RANGE fails when its lower bound is not before its upper bound
+      val ordered = s"($lower IS NULL OR $upper IS NULL OR ${cast(lower)} < ${cast(upper)})"
+      s"CASE WHEN $wellFormed AND ${castable(lower)} AND ${castable(
+          upper
+        )} AND $ordered THEN RANGE(${cast(lower)}, ${cast(upper)}) END"
+    } else
+      s"CASE WHEN $text IS NULL THEN NULL WHEN $wellFormed THEN RANGE(CAST($lower AS $elementType), CAST($upper AS $elementType)) ELSE ERROR(CONCAT('Invalid RANGE<$elementType> value: ', $text)) END"
+  }
+
   /** @return
     *   the type of each top-level leaf attribute whose column type in the target schema differs
     *   from its raw `ddlMapping.bigquery`, by attribute name: the column kept its type or the

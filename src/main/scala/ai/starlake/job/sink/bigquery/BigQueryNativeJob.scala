@@ -7,6 +7,7 @@ import ai.starlake.schema.model.{
   FieldPartitionInfo,
   Format,
   Materialization,
+  Metadata,
   SchemaInfo,
   TableInfo as SLTableInfo
 }
@@ -109,10 +110,15 @@ class BigQueryNativeJob(
                         throw e
                       }
                       BqLoadInfo(
-                        stats.getOutputRows,
-                        stats.getBadRecords,
+                        scala.Option(stats.getOutputRows).map(_.longValue).getOrElse(0L),
+                        // Parquet loads set no maximum of bad records
+                        scala.Option(stats.getBadRecords).map(_.longValue).getOrElse(0L),
                         sourceURIList,
-                        BigQueryJobResult(None, stats.getInputBytes, Some(jobResult))
+                        BigQueryJobResult(
+                          None,
+                          scala.Option(stats.getInputBytes).map(_.longValue).getOrElse(0L),
+                          Some(jobResult)
+                        )
                       )
                     } else
                       throw new Exception(
@@ -216,7 +222,8 @@ class BigQueryNativeJob(
         ).asJava
       )
     }
-    if (!settings.appConfig.rejectAllOnError)
+    val format = cliConfig.starlakeSchema.flatMap(_.metadata).map(_.resolveFormat())
+    if (!settings.appConfig.rejectAllOnError && format.forall(BigQueryNativeJob.supportsBadRecords))
       loadConfig.setMaxBadRecords(settings.appConfig.rejectMaxRecords)
 
     cliConfig.outputPartition match {
@@ -246,44 +253,11 @@ class BigQueryNativeJob(
     loadConfig
   }
 
-  private def bqLoadFormatOptions(): FormatOptions = {
-    val formatOptions = cliConfig.starlakeSchema.flatMap(_.metadata) match {
-      case Some(metadata) =>
-        metadata.resolveFormat() match {
-          case Format.DSV =>
-            val formatOptions =
-              CsvOptions.newBuilder.setAllowQuotedNewLines(true).setAllowJaggedRows(true)
-            if (metadata.resolveWithHeader())
-              formatOptions.setSkipLeadingRows(1).build
-            formatOptions.setEncoding(metadata.resolveEncoding())
-            formatOptions.setFieldDelimiter(metadata.resolveSeparator())
-            metadata.quote.map(quote => formatOptions.setQuote(quote))
-            formatOptions.setAllowJaggedRows(true)
-            formatOptions.build()
-          case Format.JSON | Format.JSON_FLAT =>
-            FormatOptions.json()
-          case Format.POSITION =>
-            // Load each line of the fixed-width file as a single VARCHAR column named `value`.
-            // The field delimiter is set to SOH () — a control char vanishingly unlikely
-            // to appear in fixed-width data, so each line becomes one field.
-            // Quote is disabled (empty) so any `"` in the data is treated as a literal byte.
-            val formatOptions = CsvOptions.newBuilder
-              .setFieldDelimiter("")
-              .setQuote("")
-              .setAllowJaggedRows(true)
-              .setAllowQuotedNewLines(false)
-              .setEncoding(metadata.resolveEncoding())
-            if (metadata.resolveWithHeader())
-              formatOptions.setSkipLeadingRows(1)
-            formatOptions.build()
-          case _ =>
-            throw new Exception(s"Should never happen: ${metadata.resolveFormat()}")
-        }
-      case None =>
-        throw new Exception("Should never happen")
+  private def bqLoadFormatOptions(): FormatOptions =
+    cliConfig.starlakeSchema.flatMap(_.metadata) match {
+      case Some(metadata) => BigQueryNativeJob.loadFormatOptions(metadata)
+      case None           => throw new Exception("Should never happen")
     }
-    formatOptions
-  }
 
   def runBigQueryJob(
     thisSql: scala.Option[String] = None,
@@ -649,4 +623,58 @@ class BigQueryNativeJob(
       }
     }
   }
+}
+
+object BigQueryNativeJob {
+
+  /** @return
+    *   the options of a BigQuery load job reading files of this metadata format
+    */
+  def loadFormatOptions(metadata: Metadata): FormatOptions =
+    metadata.resolveFormat() match {
+      case Format.DSV =>
+        val formatOptions =
+          CsvOptions.newBuilder.setAllowQuotedNewLines(true).setAllowJaggedRows(true)
+        if (metadata.resolveWithHeader())
+          formatOptions.setSkipLeadingRows(1).build
+        formatOptions.setEncoding(metadata.resolveEncoding())
+        formatOptions.setFieldDelimiter(metadata.resolveSeparator())
+        metadata.quote.map(quote => formatOptions.setQuote(quote))
+        formatOptions.setAllowJaggedRows(true)
+        formatOptions.build()
+      case Format.JSON | Format.JSON_FLAT =>
+        FormatOptions.json()
+      case Format.POSITION =>
+        // Load each line of the fixed-width file as a single VARCHAR column named `value`.
+        // The field delimiter is set to SOH () — a control char vanishingly unlikely
+        // to appear in fixed-width data, so each line becomes one field.
+        // Quote is disabled (empty) so any `"` in the data is treated as a literal byte.
+        val formatOptions = CsvOptions.newBuilder
+          .setFieldDelimiter("")
+          .setQuote("")
+          .setAllowJaggedRows(true)
+          .setAllowQuotedNewLines(false)
+          .setEncoding(metadata.resolveEncoding())
+        if (metadata.resolveWithHeader())
+          formatOptions.setSkipLeadingRows(1)
+        formatOptions.build()
+      case Format.PARQUET =>
+        // Parquet columns are matched by name with the explicit schema of the load. List
+        // inference loads Parquet LIST columns, as written by EXPORT DATA or Spark, as REPEATED
+        // fields instead of records of `list.element`, and ENUM columns are strings, not bytes.
+        // Only load jobs reading Cloud Storage URIs send these options: local uploads lose them.
+        ParquetOptions.newBuilder().setEnableListInference(true).setEnumAsString(true).build()
+      case format =>
+        throw new Exception(s"Should never happen: $format")
+    }
+
+  /** @return
+    *   true if BigQuery can skip bad records of this format: it only can for CSV and JSON files,
+    *   any invalid row fails the load of the other formats
+    */
+  def supportsBadRecords(format: Format): Boolean =
+    format match {
+      case Format.DSV | Format.JSON | Format.JSON_FLAT | Format.POSITION => true
+      case _                                                             => false
+    }
 }

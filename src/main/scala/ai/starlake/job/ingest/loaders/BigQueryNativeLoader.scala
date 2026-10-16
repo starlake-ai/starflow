@@ -11,12 +11,21 @@ import ai.starlake.job.sink.bigquery.{
   BigQueryNativeJob
 }
 import ai.starlake.job.transform.BigQueryAutoTask
+import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model._
 import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryUtils}
 import ai.starlake.utils.{IngestionCounters, JobResult, Utils}
 import com.google.cloud.bigquery
-import com.google.cloud.bigquery.{Field, JobInfo, StandardSQLTypeName, TableDefinition, TableId}
+import com.google.cloud.bigquery.{
+  Field,
+  FieldList,
+  JobInfo,
+  StandardSQLTypeName,
+  TableDefinition,
+  TableId
+}
 import com.typesafe.scalalogging.LazyLogging
+import org.apache.hadoop.fs.Path
 
 import java.time.Duration
 import scala.jdk.CollectionConverters._
@@ -67,6 +76,47 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       case None => originalTableId
     }
   }
+
+  private lazy val format: Format = mergedMetadata.resolveFormat()
+
+  override protected def requireTwoSteps(schema: SchemaInfo): Boolean =
+    super.requireTwoSteps(schema) || format == Format.PARQUET && (
+      // Local files are uploaded through a single stream per load job: the first step loads
+      // them one by one, since their concatenation is not a Parquet file
+      BigQueryNativeLoader.requiresOneLoadPerFile(format, path) ||
+      // The first step reads every column as nullable, and the second step writes into the
+      // target table, which fails on a null value of a required attribute
+      BigQueryNativeLoader.hasRequiredAttributes(schema.attributes) ||
+      // Run by the second step, as Spark ran them: a load in one step does not
+      schema.presql.nonEmpty || schema.postsql.nonEmpty ||
+      // The first step reads them as strings, that the second step converts. The target table
+      // is not read yet: one of its columns can keep a mapped type even when the mappings are
+      // disabled, so they are applied
+      BigQueryNativeLoader
+        .parquetConversions(
+          BigQueryNativeLoader.firstStepSchema(
+            schema,
+            None,
+            schemaHandler,
+            fromDdlMapping = true,
+            log = false
+          )
+        )
+        .nonEmpty
+    )
+
+  private def firstStepSchema(
+    schema: SchemaInfo,
+    existingTargetSchema: Option[bigquery.Schema],
+    log: Boolean
+  ): bigquery.Schema =
+    BigQueryNativeLoader.firstStepSchema(
+      schema,
+      existingTargetSchema,
+      schemaHandler,
+      settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
+      log
+    )
 
   def run(): Try[List[IngestionCounters]] = {
     Try {
@@ -123,7 +173,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                 val firstStepBigqueryJob = new BigQueryNativeJob(firstStepConfig, "")
                 // For POSITION format the first step loads each line as a single VARCHAR
                 // column named `value`; the second step slices it via SUBSTR.
-                val isPosition = mergedMetadata.resolveFormat() == Format.POSITION
+                val isPosition = format == Format.POSITION
                 val toBQSchema: SchemaInfo => bigquery.Schema =
                   if (isPosition)
                     _ =>
@@ -134,25 +184,18 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                           .build()
                       )
                   else
-                    schema =>
-                      BigQueryNativeSchema.patch(
-                        schema
-                          .bigquerySchemaWithIgnoreAndScript(schemaHandler, withFinalName = false),
-                        // The raw values of the ignored, transformed and scripted attributes are not
-                        // loaded into the target: they keep their derived type, except the decimals
-                        // wider than Spark, whose derived type would not hold them
-                        schema.attributes.filterNot(attribute =>
-                          (attribute
-                            .resolveIgnore() || attribute.transform.isDefined || attribute.script.isDefined) &&
-                          !BigQueryNativeSchema.isWideDecimal(attribute, schemaHandler)
-                        ),
-                        _.name,
-                        existingTargetSchema,
-                        schemaHandler,
-                        settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
-                        // Logged once per load, before the first load job
-                        log = index == 0
-                      )
+                    schema => {
+                      val patched =
+                        firstStepSchema(
+                          schema,
+                          existingTargetSchema,
+                          // Logged once per load, before the first load job
+                          log = index == 0
+                        )
+                      if (format == Format.PARQUET)
+                        BigQueryNativeLoader.parquetFirstStepSchema(patched)
+                      else patched
+                    }
                 val firstStepTableInfo = firstStepBigqueryJob.getTableInfo(
                   firstStepTempTable,
                   toBQSchema
@@ -353,8 +396,15 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       // Logged by the first step
       log = false
     )
+    // The values that the first step of a Parquet load reads as strings
+    val conversions =
+      if (format == Format.PARQUET)
+        BigQueryNativeLoader.parquetConversions(
+          firstStepSchema(schemaWithMergedMetadata, existingTargetSchema, log = false)
+        )
+      else Nil
     val task = this.secondStepSQLTask(
-      firstStepTempTableTableNames,
+      firstStepTempTableTableNames.map(BigQueryNativeLoader.withConversions(_, conversions)),
       BigQueryNativeSchema.castTypes(incomingSchema, starlakeSchema.attributes, schemaHandler)
     )
     val bqTask = task.asInstanceOf[BigQueryAutoTask]
@@ -386,4 +436,141 @@ object BigQueryNativeLoader {
       table,
       sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
     )
+
+  /** @return
+    *   the schema of the temporary table of the first step, with the source names of the attributes
+    *   and the types of the target columns
+    */
+  def firstStepSchema(
+    schema: SchemaInfo,
+    existingTargetSchema: Option[bigquery.Schema],
+    schemaHandler: SchemaHandler,
+    fromDdlMapping: Boolean,
+    log: Boolean
+  ): bigquery.Schema =
+    BigQueryNativeSchema.patch(
+      schema.bigquerySchemaWithIgnoreAndScript(schemaHandler, withFinalName = false),
+      // The raw values of the ignored, transformed and scripted attributes are not
+      // loaded into the target: they keep their derived type, except the decimals
+      // wider than Spark, whose derived type would not hold them
+      schema.attributes.filterNot(attribute =>
+        (attribute
+          .resolveIgnore() || attribute.transform.isDefined || attribute.script.isDefined) &&
+        !BigQueryNativeSchema.isWideDecimal(attribute, schemaHandler)
+      ),
+      _.name,
+      existingTargetSchema,
+      schemaHandler,
+      fromDdlMapping,
+      log
+    )
+
+  /** @return
+    *   true if each file must be loaded by its own load job: local files are uploaded through a
+    *   single stream per job, and the concatenation of Parquet files is not a Parquet file
+    */
+  def requiresOneLoadPerFile(format: Format, paths: List[Path]): Boolean =
+    // Same test of local files as BigQueryNativeJob.loadPathsToBQ
+    format == Format.PARQUET && paths.size > 1 && paths.exists(_.toString.startsWith("file:"))
+
+  /** @return
+    *   true if an attribute is required, at any nesting level
+    */
+  def hasRequiredAttributes(attributes: List[TableAttribute]): Boolean =
+    attributes.exists(attribute =>
+      attribute.resolveRequired() || hasRequiredAttributes(attribute.attributes)
+    )
+
+  /** @return
+    *   the schema of the first step of a Parquet load, whose columns are matched by name with it.
+    *   It is always explicit, so that the types of the YAML schema are kept, where a schema-less
+    *   load would infer them from the files (a `DATETIME` as a `TIMESTAMP`, a `BIGNUMERIC` as a
+    *   `NUMERIC`). Its fields are nullable: a column of the files can be optional while its
+    *   attribute is required. Its top level `JSON`, `INTERVAL` and `RANGE` fields are strings,
+    *   converted by the second step (see [[parquetConversions]]).
+    */
+  def parquetFirstStepSchema(schema: bigquery.Schema): bigquery.Schema = {
+    def nullable(field: Field): Field = {
+      val builder = field.toBuilder
+      if (field.getMode == Field.Mode.REQUIRED)
+        builder.setMode(Field.Mode.NULLABLE)
+      Option(field.getSubFields).foreach { subFields =>
+        builder.setType(
+          field.getType.getStandardType,
+          FieldList.of(subFields.asScala.map(nullable).asJava)
+        )
+      }
+      builder.build()
+    }
+    val converted = parquetConversions(schema).map { case (name, _) => name }.toSet
+    bigquery.Schema.of(
+      schema.getFields.asScala.map { field =>
+        if (converted.contains(field.getName))
+          Field
+            .newBuilder(field.getName, StandardSQLTypeName.STRING)
+            .setMode(Field.Mode.NULLABLE)
+            .setDescription(field.getDescription)
+            .build()
+        else nullable(field)
+      }.asJava
+    )
+  }
+
+  /** @return
+    *   the top level, non repeated fields of the first step schema that a Parquet load reads as
+    *   strings, with the SQL that converts their value: `EXPORT DATA` writes `JSON` values as
+    *   strings, and BigQuery does not read `JSON`, `INTERVAL` and `RANGE` values from Parquet
+    *   files. An invalid value fails the second step.
+    */
+  def parquetConversions(schema: bigquery.Schema): List[(String, String)] =
+    schema.getFields.asScala.toList
+      .filter(_.getMode != Field.Mode.REPEATED)
+      .flatMap { field =>
+        val column = s"`${field.getName}`"
+        Option(field.getType.getStandardType).collect {
+          case StandardSQLTypeName.JSON =>
+            field.getName -> s"PARSE_JSON($column)"
+          case StandardSQLTypeName.INTERVAL =>
+            field.getName -> s"CAST($column AS INTERVAL)"
+          case StandardSQLTypeName.RANGE if field.getRangeElementType != null =>
+            field.getName -> BigQueryNativeSchema.rangeFromText(
+              column,
+              field.getRangeElementType.getType,
+              safe = false
+            )
+        }
+      }
+
+  /** @return
+    *   the paths of the nested or repeated `JSON`, `INTERVAL` and `RANGE` fields of the first step
+    *   schema: a Parquet load does not convert them from strings, and BigQuery may not read them
+    *   from Parquet files
+    */
+  def unconvertedParquetFields(schema: bigquery.Schema): List[String] = {
+    def unconverted(field: Field): Boolean =
+      Option(field.getType.getStandardType).exists(
+        Set(StandardSQLTypeName.JSON, StandardSQLTypeName.INTERVAL, StandardSQLTypeName.RANGE)
+      )
+    def subFields(field: Field, path: String): List[String] =
+      Option(field.getSubFields).toList.flatMap(_.asScala).flatMap { subField =>
+        val subPath = s"$path.${subField.getName}"
+        (if (unconverted(subField)) List(subPath) else Nil) ++ subFields(subField, subPath)
+      }
+    schema.getFields.asScala.toList.flatMap { field =>
+      (if (field.getMode == Field.Mode.REPEATED && unconverted(field)) List(field.getName)
+       else Nil) ++ subFields(field, field.getName)
+    }
+  }
+
+  /** @return
+    *   the temporary table of the first step, with the values that it holds as strings converted to
+    *   the type of their column, so that the scripts, transforms and filter of the second step see
+    *   them as in the other formats
+    */
+  def withConversions(table: String, conversions: List[(String, String)]): String =
+    if (conversions.isEmpty) table
+    else
+      s"(SELECT * REPLACE (${conversions
+          .map { case (name, sql) => s"$sql AS `$name`" }
+          .mkString(", ")}) FROM $table)"
 }
