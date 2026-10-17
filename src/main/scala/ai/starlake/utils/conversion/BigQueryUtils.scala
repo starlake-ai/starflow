@@ -1,11 +1,13 @@
 package ai.starlake.utils.conversion
 
 import ai.starlake.utils.repackaged.BigQuerySchemaConverters
-import com.google.cloud.bigquery.{FieldValue, LegacySQLTypeName, Schema => BQSchema, TableId}
+import com.google.cloud.bigquery.{Field, FieldValue, LegacySQLTypeName, Schema => BQSchema, TableId}
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions.{col, date_format}
 import org.apache.spark.sql.types._
 import org.threeten.extra.PeriodDuration
+
+import scala.jdk.CollectionConverters._
 
 /** [X] whatever Conversion between [X] Schema and BigQuery Schema
   */
@@ -84,6 +86,30 @@ object BigQueryUtils {
       }
     }
     incomingSchema.copy(fields = incomingFields)
+  }
+
+  /** The incoming schema made compatible with the existing one at BigQuery level: a column that is
+    * nullable in the existing schema stays nullable. Same rule as `normalizeCompatibleSchema`,
+    * without converting the existing schema to Spark, which cannot represent every BigQuery type.
+    */
+  def compatibleSchema(incomingSchema: BQSchema, existingSchema: BQSchema): BQSchema = {
+    val existingFields =
+      Option(existingSchema.getFields)
+        .map(_.asScala.toList)
+        .getOrElse(Nil)
+        .map(f => f.getName -> f)
+        .toMap
+    val fields =
+      Option(incomingSchema.getFields).map(_.asScala.toList).getOrElse(Nil).map { field =>
+        existingFields.get(field.getName) match {
+          case Some(existingField)
+              if field.getMode == Field.Mode.REQUIRED && existingField.getMode != Field.Mode.REQUIRED =>
+            field.toBuilder.setMode(Field.Mode.NULLABLE).build()
+          case _ =>
+            field
+        }
+      }
+    BQSchema.of(fields.asJava)
   }
 
   def computePartitionsToUpdateAfterMerge(

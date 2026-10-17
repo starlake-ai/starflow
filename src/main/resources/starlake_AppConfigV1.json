@@ -910,6 +910,10 @@
       "type": "boolean",
       "description": "Enable table archiving before overwrite operations. Default is false"
     },
+    "bigqueryNativeSchemaFromDdlMapping": {
+      "type": "boolean",
+      "description": "When true, the columns of the tables that the native loader creates in BigQuery take the BigQuery type of the ddlMapping of their attribute type (DATETIME, TIME, JSON, GEOGRAPHY, STRING(n)...) when it differs from the type derived from its primitive type. Existing columns keep the derived or mapped type they have, except in a load that replaces the table. Default is true"
+    },
     "version": {
       "$ref": "#/definitions/ConvertibleToString",
       "description": "Application configuration version for compatibility tracking"

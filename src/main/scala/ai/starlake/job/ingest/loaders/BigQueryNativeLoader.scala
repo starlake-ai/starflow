@@ -12,10 +12,10 @@ import ai.starlake.job.sink.bigquery.{
 }
 import ai.starlake.job.transform.BigQueryAutoTask
 import ai.starlake.schema.model._
-import ai.starlake.utils.conversion.BigQueryUtils
+import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryUtils}
 import ai.starlake.utils.{IngestionCounters, JobResult, Utils}
 import com.google.cloud.bigquery
-import com.google.cloud.bigquery.{Field, JobInfo, StandardSQLTypeName, TableId}
+import com.google.cloud.bigquery.{Field, JobInfo, StandardSQLTypeName, TableDefinition, TableId}
 import com.typesafe.scalalogging.LazyLogging
 
 import java.time.Duration
@@ -92,6 +92,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           outputDatabase = schemaHandler.getDatabase(domain),
           accessToken = accessToken
         )
+      // Read once: the types of its existing columns are kept by every step
+      val existingTargetSchema = targetSchema(targetConfig)
       if (twoSteps) {
         val (loadResults, tempTableIds, tableInfos) =
           ParUtils
@@ -132,7 +134,23 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                           .build()
                       )
                   else
-                    _.bigquerySchemaWithIgnoreAndScript(schemaHandler, withFinalName = false)
+                    schema =>
+                      BigQueryNativeSchema.patch(
+                        schema
+                          .bigquerySchemaWithIgnoreAndScript(schemaHandler, withFinalName = false),
+                        // The raw values of the ignored, transformed and scripted attributes are not
+                        // loaded into the target: they keep their derived type
+                        schema.attributes.filterNot(attribute =>
+                          attribute
+                            .resolveIgnore() || attribute.transform.isDefined || attribute.script.isDefined
+                        ),
+                        _.name,
+                        existingTargetSchema,
+                        schemaHandler,
+                        settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
+                        // Logged once per load, before the first load job
+                        log = index == 0
+                      )
                 val firstStepTableInfo = firstStepBigqueryJob.getTableInfo(
                   firstStepTempTable,
                   toBQSchema
@@ -187,6 +205,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         val output: Try[List[BqLoadInfo]] =
           applyBigQuerySecondStep(
             targetConfig,
+            existingTargetSchema,
             List(
               BigQueryJobBase.extractProjectDatasetAndTable(
                 schemaHandler.getDatabase(domain),
@@ -225,7 +244,17 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
             bigqueryJob
               .getTableInfo(
                 targetTableId,
-                _.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true)
+                schema =>
+                  BigQueryNativeSchema.patch(
+                    schema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
+                    schema.attributes.filterNot(_.resolveIgnore()),
+                    _.getFinalName(),
+                    // A load that replaces the table can change the type of its columns
+                    if (writeDisposition == JobInfo.WriteDisposition.WRITE_TRUNCATE.name()) None
+                    else existingTargetSchema,
+                    schemaHandler,
+                    settings.appConfig.bigqueryNativeSchemaFromDdlMapping
+                  )
               )
           )
           .map(List(_))
@@ -269,8 +298,19 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     }
   }
 
+  /** @return
+    *   the schema of the target table, if it exists
+    */
+  private def targetSchema(targetConfig: BigQueryLoadConfig): Option[bigquery.Schema] = {
+    // A failure to read the table fails the load: its column types would be ignored otherwise.
+    // BigQuery returns null when the table does not exist.
+    Option(new BigQueryNativeJob(targetConfig, "").getTable(targetTableId).get)
+      .flatMap(table => Option(table.getDefinition[TableDefinition]().getSchema))
+  }
+
   private def applyBigQuerySecondStep(
     targetConfig: BigQueryLoadConfig,
+    existingTargetSchema: Option[bigquery.Schema],
     firstStepTempTable: List[TableId],
     firstStepResult: Try[List[BqLoadInfo]]
   ): Try[List[BqLoadInfo]] = {
@@ -282,7 +322,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           targetBigqueryJob.cliConfig.outputTableId
             .map { _ =>
               applyBigQuerySecondStepSQL(
-                firstStepTempTable.map(t => BigQueryUtils.tableIdToTableName(t))
+                firstStepTempTable.map(t => BigQueryUtils.tableIdToTableName(t)),
+                existingTargetSchema
               )
             }
             .getOrElse(throw new IllegalStateException("Should never happen"))
@@ -297,14 +338,26 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
   }
 
   private def applyBigQuerySecondStepSQL(
-    firstStepTempTableTableNames: List[String]
+    firstStepTempTableTableNames: List[String],
+    existingTargetSchema: Option[bigquery.Schema]
   ): Try[JobResult] = {
-    val task = this.secondStepSQLTask(firstStepTempTableTableNames)
+    val incomingSchema = BigQueryNativeSchema.patch(
+      starlakeSchema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
+      starlakeSchema.attributes.filterNot(_.resolveIgnore()),
+      _.getFinalName(),
+      existingTargetSchema,
+      schemaHandler,
+      settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
+      // Logged by the first step
+      log = false
+    )
+    val task = this.secondStepSQLTask(
+      firstStepTempTableTableNames,
+      BigQueryNativeSchema.castTypes(incomingSchema, starlakeSchema.attributes, schemaHandler)
+    )
     val bqTask = task.asInstanceOf[BigQueryAutoTask]
-    val incomingSparkSchema =
-      starlakeSchema.sparkSchemaWithoutIgnore(schemaHandler, withFinalName = true)
-    bqTask.updateBigQueryTableSchema(
-      incomingSparkSchema = Some(incomingSparkSchema),
+    bqTask.updateBigQueryTableSchemaWith(
+      incomingSchema = Some(incomingSchema),
       createIfAbsent = true
     )
     val jobResult = bqTask.run()

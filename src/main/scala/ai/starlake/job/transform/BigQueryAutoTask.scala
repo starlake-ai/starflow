@@ -15,7 +15,6 @@ import ai.starlake.schema.model.*
 import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.Formatter.RichFormatter
 import ai.starlake.utils.conversion.BigQueryUtils
-import ai.starlake.utils.repackaged.BigQuerySchemaConverters
 import ai.starlake.utils.{JobResult, Utils}
 import com.google.cloud.bigquery.{
   Field,
@@ -864,6 +863,22 @@ class BigQueryAutoTask(
     incomingSparkSchema: Option[StructType],
     createIfAbsent: Boolean,
     sharding: Option[String] = None
+  ): Unit =
+    updateBigQueryTableSchemaWith(
+      incomingSparkSchema.map(BigQueryUtils.bqSchema),
+      createIfAbsent,
+      sharding
+    )
+
+  /** Updates the schema of the target table to the incoming one, or creates the table.
+    * @param incomingSchema
+    *   the BigQuery schema of the incoming data. An existing column that is nullable stays
+    *   nullable.
+    */
+  def updateBigQueryTableSchemaWith(
+    incomingSchema: Option[BQSchema],
+    createIfAbsent: Boolean,
+    sharding: Option[String] = None
   ): Unit = {
 
     val bigqueryJob = bqNativeJob(bigQuerySinkConfig, "ignore sql")
@@ -880,26 +895,21 @@ class BigQueryAutoTask(
           )
 
         val tableExists = bigqueryJob.tableExists(tableId)
-        incomingSparkSchema.foreach { incomingSparkSchema =>
+        incomingSchema.foreach { incomingSchema =>
           if (tableExists) {
             val bqTable = bigqueryJob.getTable(tableId)
             bqTable
               .map { table =>
-                // This will raise an exception if schemas are not compatible.
-                val existingSchema = BigQuerySchemaConverters.toSpark(
+                val finalSchema = BigQueryUtils.compatibleSchema(
+                  incomingSchema,
                   table.getDefinition[StandardTableDefinition].getSchema
                 )
-
-                // val incomingSchema = BigQueryUtils.normalizeSchema(schema.sparkSchemaWithoutIgnore(schemaHandler))
-                // MergeUtils.computeCompatibleSchema(existingSchema, incomingSchema)
-                val finalSparkSchema =
-                  BigQueryUtils.normalizeCompatibleSchema(incomingSparkSchema, existingSchema)
                 logger.whenInfoEnabled {
                   logger.info("Final target table schema")
-                  logger.info(finalSparkSchema.toString)
+                  logger.info(finalSchema.toString)
                 }
 
-                val newBqSchema = bqSchemaWithSCD2(BigQueryUtils.bqSchema(finalSparkSchema))
+                val newBqSchema = bqSchemaWithSCD2(finalSchema)
                 val updatedTableDefinition =
                   table
                     .getDefinition[StandardTableDefinition]
@@ -911,7 +921,6 @@ class BigQueryAutoTask(
                 updatedTable.update()
               }
           } else if (createIfAbsent) {
-            val bqSchema = BigQueryUtils.bqSchema(incomingSparkSchema)
             val sink = bqSink
 
             val partitionField = sink.getPartitionColumn().map { partitionField =>
@@ -924,7 +933,7 @@ class BigQueryAutoTask(
             val clusteringFields = sink.clustering.flatMap { fields =>
               Some(ClusteringInfo(fields.toList))
             }
-            val newSchema = bqSchemaWithSCD2(bqSchema)
+            val newSchema = bqSchemaWithSCD2(incomingSchema)
             val tableInfo = TableInfo(
               tableId,
               taskDesc.comment,

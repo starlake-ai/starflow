@@ -1,0 +1,1 @@
+{"id": 1, "civil": "2026-01-02 03:04:05", "wall": "12:34:56", "payload": {"a": 1}, "area": "POINT(1 2)", "code": "abc", "amount": 12.5, "tags": ["x", "y"], "dropped": "x"}

@@ -1,0 +1,5 @@
+version: 1
+load:
+  name: "starlake_it_bq_native_types"
+  metadata:
+    directory: "{{root_path}}/incoming/starlake_it_bq_native_types"

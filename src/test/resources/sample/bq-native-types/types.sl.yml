@@ -1,0 +1,53 @@
+---
+version: 1
+types:
+  - name: "civil_datetime"
+    primitiveType: "timestamp"
+    pattern: "yyyy-MM-dd HH:mm:ss"
+    ddlMapping:
+      bigquery: "DATETIME"
+  - name: "wall_time"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "TIME"
+  - name: "json_text"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "json"
+  - name: "area"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "GEOGRAPHY"
+  - name: "code10"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "STRING(10)"
+  - name: "day_range"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "RANGE<DATE>"
+  - name: "small_int"
+    primitiveType: "long"
+    pattern: "[-|\\+|0-9][0-9]*"
+    ddlMapping:
+      bigquery: "INT"
+  - name: "odd_struct"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "STRUCT<a INT64>"
+  - name: "money"
+    primitiveType: "decimal"
+    pattern: "-?\\d*\\.{0,1}\\d+"
+    ddlMapping:
+      bigquery: "NUMERIC(10,2)"
+  - name: "my_json"
+    primitiveType: "variant"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "JSON"
