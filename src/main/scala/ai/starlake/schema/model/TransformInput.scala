@@ -55,9 +55,10 @@ sealed case class TransformInput(value: String, sql: Boolean) {
     * @return
     */
   def cryptUDF(transformAlgo: TransformEngine, transformParams: List[String]) = {
+    // A failing engine, or one returning null, gives null: Some(null) cannot be encoded by Spark
     udf((column: String) =>
-      Option(column).map(c =>
-        Try(transformAlgo.crypt(c, Map.empty, transformParams)).getOrElse(null)
+      Option(column).flatMap(c =>
+        Try(transformAlgo.crypt(c, Map.empty, transformParams)).toOption.flatMap(Option(_))
       )
     ).withName("crypt_it") // TODO: remove colMap
   }

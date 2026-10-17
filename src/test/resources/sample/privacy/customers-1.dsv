@@ -1,0 +1,4 @@
+id;email;name;phone;city;nickname;fullname;code;score;amount;token
+1;alice@example.com;Alice;0102030405;Paris;ally;Alice Martin; secret ;12;1000;10
+2;bob@example.com;Bob;;Lyon;bobby; Bob Stone;other;34;2000;20
+3;carl@example.com;Carl;0607080910;Nice;cc;Carl Lee;x;56;3000;abc

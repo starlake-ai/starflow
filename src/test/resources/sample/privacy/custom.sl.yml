@@ -1,0 +1,15 @@
+---
+version: 1
+table:
+  name: "custom"
+  pattern: "custom.*.dsv"
+  metadata:
+    format: "DSV"
+    withHeader: true
+    separator: ";"
+  attributes:
+    - name: "id"
+      type: "long"
+    - name: "secret"
+      type: "string"
+      privacy: "HIDE3STAR"

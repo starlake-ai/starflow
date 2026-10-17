@@ -35,10 +35,9 @@ trait IngestionJob
   val scheduledDate: Option[String]
   private def loadGenericValidator(validatorClass: String): GenericRowValidator = {
     val validatorClassName = loader.toLowerCase() match {
-      case "native" =>
-        logger.warn(s"Unexpected '$loader' loader !!!")
-        validatorClass
-      case "spark" => validatorClass
+      // A table configured with the native loader is loaded with Spark when its engine, format or
+      // attributes cannot be loaded natively
+      case "native" | "spark" => validatorClass
       case _ =>
         throw new Exception(s"Unexpected '$loader' loader !!!")
     }
@@ -181,6 +180,15 @@ trait IngestionJob
       // https://cloud.google.com/bigquery/docs/loading-data-cloud-storage-csv
       val arrayOk = dbName != "bigquery" || !mergedMetadata.resolveArray()
       nativeSupportedFormats.get(dbName).exists(_.contains(format)) && arrayOk
+    } && {
+      // The native loaders only apply SQL privacy, computed by the SQL of the load
+      val privacyAttributes = IngestionJob.nonSqlPrivacyAttributes(schema.attributes)
+      if (privacyAttributes.nonEmpty)
+        logger.warn(
+          s"Loading $targetTableName with Spark instead of the native loader, which does not apply the privacy of ${privacyAttributes
+              .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
+        )
+      privacyAttributes.isEmpty
     }
   }
 
@@ -189,6 +197,13 @@ trait IngestionJob
       orchestrator == "snowflake",
       s"buildListOfSQLStatementsAsMap only supports snowflake, got $orchestrator"
     )
+    // The SQL runs in the orchestrator, where Spark cannot apply the privacy instead
+    val privacyAttributes = IngestionJob.nonSqlPrivacyAttributes(schema.attributes)
+    if (privacyAttributes.nonEmpty)
+      throw new IllegalArgumentException(
+        s"$targetTableName cannot be loaded by the $orchestrator orchestrator, which only applies SQL privacy, because of the privacy of ${privacyAttributes
+            .mkString(", ")}. Use a SQL privacy (privacy: \"SQL: ...\") or another orchestrator template"
+      )
     new NativeLoader(this, None).buildSQLStatements()
   }
 
@@ -293,4 +308,26 @@ trait IngestionJob
         Failure(exception)
     }
   }
+}
+
+object IngestionJob {
+
+  /** @return
+    *   the paths of the loaded leaf attributes, at every nesting level, whose privacy is not SQL.
+    *   Ignored attributes are not loaded, and the privacy of scripted ones is not applied by any
+    *   loader.
+    */
+  def nonSqlPrivacyAttributes(attributes: List[TableAttribute], prefix: String = ""): List[String] =
+    attributes
+      .filterNot(attribute => attribute.resolveIgnore() || attribute.script.nonEmpty)
+      .flatMap { attribute =>
+        val path = prefix + attribute.name
+        val privacy = attribute.resolvePrivacy()
+        if (attribute.attributes.nonEmpty)
+          nonSqlPrivacyAttributes(attribute.attributes, path + ".")
+        else if (privacy != TransformInput.None && !privacy.sql)
+          List(path)
+        else
+          Nil
+      }
 }

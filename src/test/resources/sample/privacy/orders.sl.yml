@@ -1,0 +1,30 @@
+---
+version: 1
+table:
+  name: "orders"
+  pattern: "orders.*.json"
+  metadata:
+    format: "JSON"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "customer"
+      type: "struct"
+      attributes:
+        - name: "email"
+          type: "string"
+          privacy: "SHA256"
+        - name: "city"
+          type: "string"
+    - name: "cards"
+      type: "string"
+      array: true
+      privacy: "MD5"
+    - name: "payload"
+      type: "variant"
+      privacy: "SHA256"
+    - name: "channel"
+      type: "string"
+      default: "web"
+      privacy: "SHA256"
