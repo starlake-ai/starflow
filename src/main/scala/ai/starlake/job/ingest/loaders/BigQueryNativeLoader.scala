@@ -363,28 +363,86 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       case Success(loadFileResult) =>
         logger.info(s"First step result: ${loadFileResult.map(_.toString).mkString(", ")}")
         val targetBigqueryJob = new BigQueryNativeJob(targetConfig, "")
-        val secondStepResult =
-          targetBigqueryJob.cliConfig.outputTableId
+        val tempTableNames = firstStepTempTable.map(t => BigQueryUtils.tableIdToTableName(t))
+        // The first step of a Parquet load reads every column as nullable: the rows without a
+        // value for a required attribute are rejected by the second step
+        val requiredCondition =
+          if (format == Format.PARQUET)
+            BigQueryNativeLoader.requiredValuesCondition(starlakeSchema.attributes)
+          else None
+        val result = for {
+          rejectedByFile <- requiredCondition
+            .map(condition =>
+              rejectRowsWithoutRequiredValues(targetBigqueryJob, tempTableNames, condition)
+            )
+            .getOrElse(Success(Map.empty[Int, Long]))
+          _ <- targetBigqueryJob.cliConfig.outputTableId
             .map { _ =>
-              applyBigQuerySecondStepSQL(
-                firstStepTempTable.map(t => BigQueryUtils.tableIdToTableName(t)),
-                existingTargetSchema
-              )
+              applyBigQuerySecondStepSQL(tempTableNames, existingTargetSchema, requiredCondition)
             }
             .getOrElse(throw new IllegalStateException("Should never happen"))
-
-        secondStepResult
-          .flatMap { _ =>
-            firstStepResult
-          }
+        } yield BigQueryNativeLoader.withRejectedRows(loadFileResult, rejectedByFile)
+        result
       case res @ Failure(_) =>
         res
     }
   }
 
+  /** @param tempTableNames
+    *   the wildcard name of the temporary tables of the first step, whose suffix is the index of
+    *   their file in the load
+    * @return
+    *   the number of rows of the first step without a value for a required attribute, by index of
+    *   their file. They are rejected as BigQuery rejects the bad records of the other formats, or
+    *   the load fails (see [[BigQueryNativeLoader.rejectedRowsError]]).
+    */
+  private def rejectRowsWithoutRequiredValues(
+    job: BigQueryNativeJob,
+    tempTableNames: List[String],
+    condition: String
+  ): Try[Map[Int, Long]] =
+    job
+      .runBigQueryJob(
+        Some(
+          tempTableNames
+            .map(table =>
+              s"SELECT _TABLE_SUFFIX AS suffix, COUNT(*) AS rejected FROM $table WHERE NOT ($condition) GROUP BY 1"
+            )
+            .mkString(" UNION ALL ")
+        )
+      )
+      .map { result =>
+        val rejectedByFile = result.tableResult.toList
+          .flatMap(_.iterateAll().asScala)
+          .map(row => row.get(0).getStringValue.toInt -> row.get(1).getLongValue)
+          .toMap
+        val rejected = rejectedByFile.values.sum
+        if (rejected > 0) {
+          val files = rejectedByFile.toList.sorted.map { case (index, count) =>
+            s"${path.lift(index).map(_.toString).getOrElse(index.toString)} ($count)"
+          }
+          val message =
+            s"$rejected rows of $targetFullTableName have no value for one of its required attributes (${BigQueryNativeLoader
+                .requiredAttributePaths(starlakeSchema.attributes)
+                .mkString(", ")}), in ${files.take(10).mkString(", ")}${if (files.size > 10)
+                s" and ${files.size - 10} other files"
+              else ""}"
+          BigQueryNativeLoader.rejectedRowsError(
+            rejected,
+            settings.appConfig.rejectAllOnError,
+            settings.appConfig.rejectMaxRecords
+          ) match {
+            case Some(error) => throw new IllegalArgumentException(s"$message. $error")
+            case None        => logger.warn(s"$message. They are rejected")
+          }
+        }
+        rejectedByFile
+      }
+
   private def applyBigQuerySecondStepSQL(
     firstStepTempTableTableNames: List[String],
-    existingTargetSchema: Option[bigquery.Schema]
+    existingTargetSchema: Option[bigquery.Schema],
+    requiredCondition: Option[String]
   ): Try[JobResult] = {
     val incomingSchema = BigQueryNativeSchema.patch(
       starlakeSchema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
@@ -404,7 +462,9 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         )
       else Nil
     val task = this.secondStepSQLTask(
-      firstStepTempTableTableNames.map(BigQueryNativeLoader.withConversions(_, conversions)),
+      firstStepTempTableTableNames.map(
+        BigQueryNativeLoader.withConversions(_, conversions, requiredCondition)
+      ),
       BigQueryNativeSchema.castTypes(incomingSchema, starlakeSchema.attributes, schemaHandler)
     )
     val bqTask = task.asInstanceOf[BigQueryAutoTask]
@@ -567,10 +627,114 @@ object BigQueryNativeLoader {
     *   the type of their column, so that the scripts, transforms and filter of the second step see
     *   them as in the other formats
     */
-  def withConversions(table: String, conversions: List[(String, String)]): String =
-    if (conversions.isEmpty) table
-    else
-      s"(SELECT * REPLACE (${conversions
-          .map { case (name, sql) => s"$sql AS `$name`" }
-          .mkString(", ")}) FROM $table)"
+  def withConversions(
+    table: String,
+    conversions: List[(String, String)],
+    condition: Option[String] = None
+  ): String =
+    if (conversions.isEmpty && condition.isEmpty) table
+    else {
+      val replace =
+        if (conversions.isEmpty) ""
+        else
+          conversions
+            .map { case (name, sql) => s"$sql AS `$name`" }
+            .mkString(" REPLACE (", ", ", ")")
+      s"(SELECT *$replace FROM $table${condition.map(" WHERE " + _).getOrElse("")})"
+    }
+
+  /** @return
+    *   why the load fails with these rejected rows, if it does: as BigQuery with the bad records of
+    *   the other formats, when every record is rejected on error (`rejectAllOnError`), or when
+    *   there are more than `rejectMaxRecords` of them, over the files of the load
+    */
+  def rejectedRowsError(
+    rejected: Long,
+    rejectAllOnError: Boolean,
+    rejectMaxRecords: Int
+  ): Option[String] =
+    if (rejected == 0) None
+    else if (rejectAllOnError) Some("No row is loaded: rejectAllOnError is true")
+    else if (rejected > rejectMaxRecords)
+      Some(s"No row is loaded: rejectMaxRecords is $rejectMaxRecords")
+    else None
+
+  /** @param rejectedByFile
+    *   the number of rejected rows by index of their file, the index of its load info
+    * @return
+    *   the load infos of the files, with their rejected rows counted as rejected instead of
+    *   accepted
+    */
+  def withRejectedRows(
+    loadInfos: List[BqLoadInfo],
+    rejectedByFile: Map[Int, Long]
+  ): List[BqLoadInfo] = {
+    rejectedByFile.keys.find(index => !loadInfos.indices.contains(index)).foreach { index =>
+      throw new IllegalStateException(
+        s"Rejected rows counted for the file $index of a load of ${loadInfos.size} files"
+      )
+    }
+    loadInfos.zipWithIndex.map { case (loadInfo, index) =>
+      val rejected = rejectedByFile.getOrElse(index, 0L)
+      loadInfo.copy(
+        totalAcceptedRows = loadInfo.totalAcceptedRows - rejected,
+        totalRejectedRows = loadInfo.totalRejectedRows + rejected
+      )
+    }
+  }
+
+  /** @return
+    *   the paths of the required attributes that a load checks, at every level: neither ignored nor
+    *   scripted, and not repeated, since a repeated field cannot be null
+    */
+  def requiredAttributePaths(attributes: List[TableAttribute], prefix: String = ""): List[String] =
+    attributes.filterNot(a => a.resolveIgnore() || a.script.nonEmpty).flatMap { attribute =>
+      val path = prefix + attribute.name
+      (if (attribute.resolveRequired() && !attribute.resolveArray()) List(path) else Nil) ++
+      requiredAttributePaths(attribute.attributes, path + ".")
+    }
+
+  /** @return
+    *   the SQL condition, on the columns of the first step, of the rows with a value for every
+    *   required attribute, at any level, if any: a required field of a null record has no value to
+    *   check, and every element of a repeated record is checked. Ignored attributes are not loaded,
+    *   and scripted ones are not in the files.
+    */
+  def requiredValuesCondition(attributes: List[TableAttribute]): Option[String] = {
+    // The conditions on the attributes of `parent`, the SQL of a record, or of the row if None
+    def conditions(
+      attributes: List[TableAttribute],
+      parent: Option[String],
+      depth: Int
+    ): List[String] =
+      attributes.filterNot(a => a.resolveIgnore() || a.script.nonEmpty).flatMap { attribute =>
+        val column = parent.map(_ + ".").getOrElse("") + s"`${attribute.name}`"
+        val own =
+          if (attribute.resolveRequired() && !attribute.resolveArray())
+            List(
+              parent
+                .map(p => s"($p IS NULL OR $column IS NOT NULL)")
+                .getOrElse(s"$column IS NOT NULL")
+            )
+          else Nil
+        val nested =
+          if (attribute.attributes.isEmpty) Nil
+          else if (attribute.resolveArray()) {
+            val element = s"sl_element_$depth"
+            conditions(attribute.attributes, Some(element), depth + 1) match {
+              case Nil => Nil
+              case elementConditions =>
+                List(
+                  s"NOT EXISTS (SELECT 1 FROM UNNEST($column) AS $element WHERE NOT (${elementConditions
+                      .mkString(" AND ")}))"
+                )
+            }
+          } else conditions(attribute.attributes, Some(column), depth + 1)
+        own ++ nested
+      }
+    conditions(attributes, None, 0) match {
+      case Nil        => None
+      case conditions => Some(conditions.mkString(" AND "))
+    }
+  }
 }

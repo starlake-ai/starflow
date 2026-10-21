@@ -2,8 +2,8 @@ package ai.starlake.job.ingest.loaders
 
 import ai.starlake.TestHelper
 import ai.starlake.config.{DatasetArea, Settings}
-import ai.starlake.job.ingest.IngestionJob
-import ai.starlake.job.sink.bigquery.BigQueryNativeJob
+import ai.starlake.job.ingest.{BqLoadInfo, IngestionJob}
+import ai.starlake.job.sink.bigquery.{BigQueryJobResult, BigQueryNativeJob}
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.{Format, Metadata, SchemaInfo, TableAttribute, Trim}
 import ai.starlake.sql.SQLUtils
@@ -169,6 +169,103 @@ class BigQueryNativeParquetSpec extends TestHelper {
     BigQueryNativeLoader.requiresOneLoadPerFile(Format.DSV, localFiles) shouldBe false
   }
 
+  "requiredValuesCondition" should "keep the rows with a value for every required attribute, at any level" in {
+    BigQueryNativeLoader.requiredValuesCondition(List(TableAttribute("a"))) shouldBe None
+    val attributes = List(
+      TableAttribute("id", "long", required = Some(true), rename = Some("identifier")),
+      TableAttribute("name", "string"),
+      TableAttribute(
+        "address",
+        "struct",
+        attributes = List(
+          TableAttribute("city", "string", required = Some(true)),
+          TableAttribute(
+            "geo",
+            "struct",
+            required = Some(true),
+            attributes = List(TableAttribute("lat", "double", required = Some(true)))
+          )
+        )
+      ),
+      TableAttribute(
+        "lines",
+        "struct",
+        array = Some(true),
+        required = Some(true),
+        attributes = List(
+          TableAttribute("text", "string", required = Some(true)),
+          TableAttribute(
+            "words",
+            "struct",
+            array = Some(true),
+            attributes = List(TableAttribute("w", "string", required = Some(true)))
+          )
+        )
+      ),
+      // A repeated field cannot be null
+      TableAttribute("tags", "string", array = Some(true), required = Some(true)),
+      // Not loaded, or not in the files
+      TableAttribute("ignored", "string", required = Some(true), ignore = Some(true)),
+      TableAttribute("computed", "string", required = Some(true), script = Some("'x'"))
+    )
+    val condition = BigQueryNativeLoader.requiredValuesCondition(attributes)
+    condition shouldBe Some(
+      List(
+        // Source names: the second step renames
+        "`id` IS NOT NULL",
+        "(`address` IS NULL OR `address`.`city` IS NOT NULL)",
+        "(`address` IS NULL OR `address`.`geo` IS NOT NULL)",
+        "(`address`.`geo` IS NULL OR `address`.`geo`.`lat` IS NOT NULL)",
+        "NOT EXISTS (SELECT 1 FROM UNNEST(`lines`) AS sl_element_0 WHERE NOT ((sl_element_0 IS NULL OR sl_element_0.`text` IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM UNNEST(sl_element_0.`words`) AS sl_element_1 WHERE NOT ((sl_element_1 IS NULL OR sl_element_1.`w` IS NOT NULL)))))"
+      ).mkString(" AND ")
+    )
+    BigQueryNativeLoader.requiredAttributePaths(attributes) shouldBe List(
+      "id",
+      "address.city",
+      "address.geo",
+      "address.geo.lat",
+      "lines.text",
+      "lines.words.w"
+    )
+    // The second step reads the first step through this condition, and parses it
+    val table = BigQueryNativeLoader.withConversions("`p`.`d`.`t_*`", Nil, condition)
+    table shouldBe s"(SELECT * FROM `p`.`d`.`t_*` WHERE ${condition.get})"
+    SQLUtils.extractColumnNames(
+      SchemaInfo("t", Pattern.compile("t"), attributes, metadata = Some(parquet))
+        .buildSecondStepSqlSelectOnLoad(table)
+    ) should contain("identifier")
+  }
+
+  "rejectedRowsError" should "fail the load as BigQuery does with the bad records of the other formats" in {
+    BigQueryNativeLoader.rejectedRowsError(0, rejectAllOnError = true, 0) shouldBe None
+    BigQueryNativeLoader.rejectedRowsError(3, rejectAllOnError = false, 3) shouldBe None
+    BigQueryNativeLoader.rejectedRowsError(1, rejectAllOnError = true, 10) shouldBe Some(
+      "No row is loaded: rejectAllOnError is true"
+    )
+    BigQueryNativeLoader.rejectedRowsError(4, rejectAllOnError = false, 3) shouldBe Some(
+      "No row is loaded: rejectMaxRecords is 3"
+    )
+  }
+
+  "withRejectedRows" should "count the rejected rows of each file as rejected" in {
+    def loadInfo(path: String, accepted: Long) =
+      BqLoadInfo(accepted, 0, List(path), BigQueryJobResult(None, 0, None))
+    // The same file twice: the index of the file tells its rows apart
+    val loadInfos =
+      List(loadInfo("gs://b/a", 10), loadInfo("gs://b/b", 5), loadInfo("gs://b/a", 10))
+    BigQueryNativeLoader
+      .withRejectedRows(loadInfos, Map(0 -> 2L, 2 -> 10L))
+      .map(info => (info.totalAcceptedRows, info.totalRejectedRows, info.totalRows)) shouldBe List(
+      (8, 2, 10),
+      (5, 0, 5),
+      (0, 10, 10)
+    )
+    an[IllegalStateException] should be thrownBy BigQueryNativeLoader.withRejectedRows(
+      loadInfos,
+      Map(3 -> 1L)
+    )
+  }
+
   "hasRequiredAttributes" should "find required attributes at any level" in {
     BigQueryNativeLoader.hasRequiredAttributes(
       List(TableAttribute("a"), TableAttribute("b", required = Some(false)))
@@ -285,10 +382,15 @@ class BigQueryNativeParquetSpec extends TestHelper {
 
       val table = "`project`.`dataset`.`parquet_table_*`"
       BigQueryNativeLoader.withConversions(table, Nil) shouldBe table
-      val tableWithConversions = BigQueryNativeLoader.withConversions(table, conversions)
+      val required = BigQueryNativeLoader.requiredValuesCondition(everyType.attributes)
+      required shouldBe Some(
+        "`id` IS NOT NULL AND (`address` IS NULL OR `address`.`city` IS NOT NULL)"
+      )
+      val tableWithConversions =
+        BigQueryNativeLoader.withConversions(table, conversions, required)
       tableWithConversions shouldBe conversions
         .map { case (name, sql) => s"$sql AS `$name`" }
-        .mkString("(SELECT * REPLACE (", ", ", s") FROM $table)")
+        .mkString("(SELECT * REPLACE (", ", ", s") FROM $table WHERE ${required.get})")
 
       // The second step SQL is parsed, then its references are substituted
       val secondStepSql = everyType.buildSecondStepSqlSelectOnLoad(
@@ -320,6 +422,7 @@ class BigQueryNativeParquetSpec extends TestHelper {
       )
       conversions.foreach { case (_, sql) => substituted should include(sql) }
       substituted should include("REPLACE")
+      substituted should include(required.get)
     }
   }
 }

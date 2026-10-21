@@ -405,7 +405,7 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
                  |  instants RANGE<TIMESTAMP>,
                  |  tags ARRAY<STRING>,
                  |  record STRUCT<code STRING NOT NULL, civils ARRAY<DATETIME>, amounts ARRAY<NUMERIC>>,
-                 |  records ARRAY<STRUCT<name STRING, day DATE>>
+                 |  records ARRAY<STRUCT<name STRING NOT NULL, day DATE>>
                  |) PARTITION BY day""".stripMargin)
           run(s"""INSERT INTO `$sourceDataset.$parquetTypes` VALUES
                  |(1, 'é€😀', DATE '2019-12-31', DATETIME '2019-12-31 23:59:59.999999',
@@ -421,7 +421,7 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
                  | RANGE(TIMESTAMP '2019-01-01 00:00:00 UTC', TIMESTAMP '2019-12-31 23:59:59.999999 UTC'),
                  | ['x', 'y'],
                  | STRUCT('c', [DATETIME '2019-01-01 00:00:00'], [NUMERIC '1.5', NUMERIC '-2']),
-                 | [STRUCT('n', DATE '2019-01-01'), STRUCT(CAST(NULL AS STRING), CAST(NULL AS DATE))]),
+                 | [STRUCT('n', DATE '2019-01-01'), STRUCT('m', CAST(NULL AS DATE))]),
                  |(2, '', DATE '2020-01-01', DATETIME '0001-01-01 00:00:00', BIGNUMERIC '0', b'',
                  | NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                  | NULL, [], NULL, [])""".stripMargin)
@@ -548,16 +548,34 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
                 .mkString(", ")}), 'parquet' AS loaded_from FROM `$sourceDataset.$parquetTypes`"
           )
 
-          // A null value of a required column fails the load, which changes nothing
-          val nullLabelUri = exportParquet(
-            "null_label",
-            parquetExportQuery(replace = List("CAST(NULL AS STRING) AS label"))
+          // The rows without a value for a required attribute, top level, nested or in a repeated
+          // record, are rejected, and the others are loaded
+          val nullsUri = exportParquet(
+            "nulls",
+            List(
+              parquetExportQuery("id = 1"),
+              parquetExportQuery("id = 2", replace = List("CAST(NULL AS STRING) AS label")),
+              parquetExportQuery(
+                "id = 1",
+                replace = List(
+                  "STRUCT(CAST(NULL AS STRING) AS code, record.civils AS civils, record.amounts AS amounts) AS record"
+                )
+              ),
+              parquetExportQuery(
+                "id = 1",
+                replace = List(
+                  "ARRAY(SELECT STRUCT(IF(o = 1, CAST(NULL AS STRING), r.name) AS name, r.day AS day) FROM UNNEST(records) r WITH OFFSET o ORDER BY o) AS records"
+                )
+              )
+            ).map(query => s"($query)").mkString(" UNION ALL ")
           )
-          loadInPlace(parquetTypes, nullLabelUri) shouldBe false
-          fingerprint(parquetDataset, parquetTypes) shouldBe fingerprint(
-            sourceDataset,
-            parquetTypes
-          )
+          loadInPlace(parquetTypes, nullsUri) shouldBe true
+          fingerprintOf(
+            s"SELECT * FROM `$parquetDataset.$parquetTypes` WHERE id = 2"
+          ) shouldBe fingerprintOf(s"SELECT * FROM `$sourceDataset.$parquetTypes` WHERE id = 2")
+          fingerprintOf(
+            s"SELECT * FROM `$parquetDataset.$parquetTypes` WHERE id = 1"
+          ).head shouldBe "2"
 
           // OVERWRITE replaces the rows, APPEND adds them again
           writeParquetDomain(extracted, WriteStrategyType.OVERWRITE, WriteStrategyType.APPEND)
