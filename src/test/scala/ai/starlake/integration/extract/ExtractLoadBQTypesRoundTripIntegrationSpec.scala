@@ -124,9 +124,10 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
       .flatten
 
   /** @return
-    *   the query exporting parquetTypes to Parquet. EXPORT DATA writes JSON values as strings, and
-    *   the INTERVAL and RANGE values are exported as their canonical text, which the native loader
-    *   reads from Parquet files.
+    *   the query exporting parquetTypes to Parquet. EXPORT DATA does not export JSON and INTERVAL
+    *   columns to Parquet ("Type JSON is not currently supported for parquet exports"): the JSON
+    *   values are exported as their JSON text, and the INTERVAL and RANGE values as their canonical
+    *   text, which the native loader reads from Parquet files.
     */
   private def parquetExportQuery(
     filter: String = "TRUE",
@@ -135,9 +136,12 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
   ): String = {
     val excepted =
       if (except.isEmpty) "" else except.toList.sorted.mkString(" EXCEPT (", ", ", ")")
-    val replaced = replace ++ List("duration", "days", "civils", "instants").map(column =>
-      s"CAST($column AS STRING) AS $column"
-    )
+    val replaced = replace ++ ("TO_JSON_STRING(doc) AS doc" :: List(
+      "duration",
+      "days",
+      "civils",
+      "instants"
+    ).map(column => s"CAST($column AS STRING) AS $column"))
     s"SELECT *$excepted REPLACE (${replaced.mkString(", ")}) FROM `$sourceDataset.$parquetTypes` WHERE $filter"
   }
 
@@ -484,16 +488,16 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
             )
           )
 
-          // How EXPORT DATA writes INTERVAL and RANGE values to Parquet is not documented: they
-          // are exported as strings below. Logged, not checked
+          // EXPORT DATA refuses JSON and INTERVAL columns in Parquet; RANGE columns are not
+          // documented. They are all exported as strings below. Logged, not checked
           val directExport = Try(
             exportParquet(
               "direct",
-              s"SELECT duration, days, civils, instants FROM `$sourceDataset.$parquetTypes`"
+              s"SELECT days, civils, instants FROM `$sourceDataset.$parquetTypes`"
             )
           )
           info(
-            s"EXPORT DATA of INTERVAL and RANGE columns to Parquet: ${directExport
+            s"EXPORT DATA of RANGE columns to Parquet: ${directExport
                 .fold(e => s"failed: ${e.getMessage}", _ => "succeeded")}"
           )
 

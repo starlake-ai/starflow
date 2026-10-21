@@ -578,9 +578,9 @@ object BigQueryNativeLoader {
 
   /** @return
     *   the top level, non repeated fields of the first step schema that a Parquet load reads as
-    *   strings, with the SQL that converts their value: `EXPORT DATA` writes `JSON` values as
-    *   strings, and BigQuery does not read `JSON`, `INTERVAL` and `RANGE` values from Parquet
-    *   files. An invalid value fails the second step.
+    *   strings, with the SQL that converts their value: `EXPORT DATA` does not export `JSON` and
+    *   `INTERVAL` columns to Parquet, so they are exported as strings, and BigQuery documents no
+    *   conversion to these types in Parquet loads. An invalid value fails the second step.
     */
   def parquetConversions(schema: bigquery.Schema): List[(String, String)] =
     schema.getFields.asScala.toList
