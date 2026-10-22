@@ -284,8 +284,13 @@ object BigQueryNativeSchema extends LazyLogging {
       s"CASE WHEN $wellFormed AND ${castable(lower)} AND ${castable(
           upper
         )} AND $ordered THEN RANGE(${cast(lower)}, ${cast(upper)}) END"
-    } else
-      s"CASE WHEN $text IS NULL THEN NULL WHEN $wellFormed THEN RANGE(CAST($lower AS $elementType), CAST($upper AS $elementType)) ELSE ERROR(CONCAT('Invalid RANGE<$elementType> value: ', $text)) END"
+    } else {
+      // No CASE ... ELSE ERROR(...): BigQuery fails on it with "Function is not implemented. id:
+      // cast_range_to_range". A malformed text is cast as a bound instead, which fails the query
+      // with its value
+      def strictBound(bound: String) = s"CAST(IF($wellFormed, $bound, $text) AS $elementType)"
+      s"IF($text IS NULL, NULL, RANGE(${strictBound(lower)}, ${strictBound(upper)}))"
+    }
   }
 
   /** @return

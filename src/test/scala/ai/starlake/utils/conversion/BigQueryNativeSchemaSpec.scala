@@ -402,10 +402,13 @@ class BigQueryNativeSchemaSpec extends TestHelper {
       val text = s"TRIM(REGEXP_EXTRACT($trimmed, '$regex'))"
       s"IF(UPPER($text) IN ('UNBOUNDED', 'NULL'), NULL, $text)"
     }
+    val wellFormed = s"REGEXP_CONTAINS($trimmed, '^[[][^,]+,[^,]+[)]$$')"
+    // A malformed text is cast as a bound, which fails. No ERROR(): BigQuery does not implement it there
     strict shouldBe
-    s"CASE WHEN `days` IS NULL THEN NULL WHEN REGEXP_CONTAINS($trimmed, '^[[][^,]+,[^,]+[)]$$') THEN RANGE(CAST(${bound(
-        "^[[]([^,]+),"
-      )} AS DATE), CAST(${bound(",([^,]+)[)]$")} AS DATE)) ELSE ERROR(CONCAT('Invalid RANGE<DATE> value: ', `days`)) END"
+    s"IF(`days` IS NULL, NULL, RANGE(CAST(IF($wellFormed, ${bound("^[[]([^,]+),")}, `days`) AS DATE), CAST(IF($wellFormed, ${bound(
+        ",([^,]+)[)]$"
+      )}, `days`) AS DATE)))"
+    strict should not include "ERROR("
     val safe = BigQueryNativeSchema.rangeFromText("SUBSTR(value, 1, 30)", "TIMESTAMP", safe = true)
     // A malformed text, a bound that is not a timestamp or bounds out of order give NULL
     safe should startWith("CASE WHEN REGEXP_CONTAINS(TRIM(SUBSTR(value, 1, 30)), ")
