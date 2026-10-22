@@ -214,7 +214,13 @@ class BigQueryNativeJob(
       .setCreateDisposition(JobInfo.CreateDisposition.valueOf(cliConfig.createDisposition))
       .setWriteDisposition(JobInfo.WriteDisposition.valueOf(cliConfig.writeDisposition))
       .setSchema(bqSchema)
-    if (cliConfig.writeDisposition == JobInfo.WriteDisposition.WRITE_APPEND.toString) {
+    val format = cliConfig.starlakeSchema.flatMap(_.metadata).map(_.resolveFormat())
+    // ALLOW_FIELD_ADDITION and ignoreUnknownValues cannot both be set for self-describing formats:
+    // the native loader adds and relaxes the columns of the target of a Parquet load itself
+    if (
+      cliConfig.writeDisposition == JobInfo.WriteDisposition.WRITE_APPEND.toString &&
+      !format.contains(Format.PARQUET)
+    ) {
       loadConfig.setSchemaUpdateOptions(
         List(
           SchemaUpdateOption.ALLOW_FIELD_ADDITION,
@@ -222,7 +228,6 @@ class BigQueryNativeJob(
         ).asJava
       )
     }
-    val format = cliConfig.starlakeSchema.flatMap(_.metadata).map(_.resolveFormat())
     if (!settings.appConfig.rejectAllOnError && format.forall(BigQueryNativeJob.supportsBadRecords))
       loadConfig.setMaxBadRecords(settings.appConfig.rejectMaxRecords)
 

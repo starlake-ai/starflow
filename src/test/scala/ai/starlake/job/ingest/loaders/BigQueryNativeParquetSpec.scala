@@ -8,7 +8,7 @@ import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.{Format, Metadata, SchemaInfo, TableAttribute, Trim}
 import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.conversion.BigQueryNativeSchema
-import com.google.cloud.bigquery.{Field, FieldList, ParquetOptions}
+import com.google.cloud.bigquery.{Field, FieldList, ParquetOptions, Schema, StandardSQLTypeName}
 import org.apache.hadoop.fs.Path
 
 import java.util.regex.Pattern
@@ -263,6 +263,39 @@ class BigQueryNativeParquetSpec extends TestHelper {
     an[IllegalStateException] should be thrownBy BigQueryNativeLoader.withRejectedRows(
       loadInfos,
       Map(3 -> 1L)
+    )
+  }
+
+  "schemaForParquetAppend" should "add the missing fields and relax the required ones of the target" in {
+    def field(name: String, mode: Field.Mode = Field.Mode.NULLABLE) =
+      Field.newBuilder(name, StandardSQLTypeName.STRING).setMode(mode).build()
+    def record(name: String, subFields: Field*) =
+      Field.newBuilder(name, StandardSQLTypeName.STRUCT, subFields: _*).build()
+    val existing = Schema.of(
+      field("id", Field.Mode.REQUIRED),
+      field("code", Field.Mode.REQUIRED),
+      record("address", field("city")),
+      // Kept: a load cannot drop a column
+      field("legacy")
+    )
+    BigQueryNativeLoader.schemaForParquetAppend(existing, existing) shouldBe None
+    BigQueryNativeLoader.schemaForParquetAppend(
+      existing,
+      Schema.of(
+        field("ID", Field.Mode.REQUIRED),
+        field("code"),
+        record("address", field("city"), field("zip")),
+        field("added", Field.Mode.REQUIRED)
+      )
+    ) shouldBe Some(
+      Schema.of(
+        field("id", Field.Mode.REQUIRED),
+        field("code"),
+        record("address", field("city"), field("zip")),
+        field("legacy"),
+        // BigQuery adds no required field to an existing table
+        field("added")
+      )
     )
   }
 

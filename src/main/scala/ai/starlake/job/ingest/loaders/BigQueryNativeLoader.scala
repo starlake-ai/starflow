@@ -21,6 +21,7 @@ import com.google.cloud.bigquery.{
   FieldList,
   JobInfo,
   StandardSQLTypeName,
+  StandardTableDefinition,
   TableDefinition,
   TableId
 }
@@ -284,25 +285,41 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       } else {
         // Single step ingestion
         val bigqueryJob = new BigQueryNativeJob(targetConfig, "")
-        bigqueryJob
-          .loadPathsToBQ(
-            bigqueryJob
-              .getTableInfo(
-                targetTableId,
-                schema =>
-                  BigQueryNativeSchema.patch(
-                    schema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
-                    schema.attributes.filterNot(_.resolveIgnore()),
-                    _.getFinalName(),
-                    // A load that replaces the table can change the type of its columns
-                    if (writeDisposition == JobInfo.WriteDisposition.WRITE_TRUNCATE.name()) None
-                    else existingTargetSchema,
-                    schemaHandler,
-                    settings.appConfig.bigqueryNativeSchemaFromDdlMapping
-                  )
+        val tableInfo = bigqueryJob
+          .getTableInfo(
+            targetTableId,
+            schema =>
+              BigQueryNativeSchema.patch(
+                schema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
+                schema.attributes.filterNot(_.resolveIgnore()),
+                _.getFinalName(),
+                // A load that replaces the table can change the type of its columns
+                if (writeDisposition == JobInfo.WriteDisposition.WRITE_TRUNCATE.name()) None
+                else existingTargetSchema,
+                schemaHandler,
+                settings.appConfig.bigqueryNativeSchemaFromDdlMapping
               )
           )
-          .map(List(_))
+        // A Parquet load job neither adds nor relaxes columns: the target table gets them first
+        if (
+          format == Format.PARQUET &&
+          writeDisposition == JobInfo.WriteDisposition.WRITE_APPEND.name()
+        )
+          for {
+            existing <- existingTargetSchema
+            incoming <- tableInfo.maybeSchema
+            aligned  <- BigQueryNativeLoader.schemaForParquetAppend(existing, incoming)
+          } {
+            logger.info(s"Adding or relaxing the columns of $targetTableId before the load")
+            val table = bigqueryJob.getTable(targetTableId).get
+            table.toBuilder
+              .setDefinition(
+                table.getDefinition[StandardTableDefinition].toBuilder.setSchema(aligned).build()
+              )
+              .build()
+              .update()
+          }
+        bigqueryJob.loadPathsToBQ(tableInfo).map(List(_))
       }
     }.map {
       case Success(results) =>
@@ -532,6 +549,57 @@ object BigQueryNativeLoader {
   def requiresOneLoadPerFile(format: Format, paths: List[Path]): Boolean =
     // Same test of local files as BigQueryNativeJob.loadPathsToBQ
     format == Format.PARQUET && paths.size > 1 && paths.exists(_.toString.startsWith("file:"))
+
+  /** @return
+    *   the schema of an existing table, with the fields of the incoming schema that it lacks, at
+    *   any level, and with its required fields that the incoming schema makes nullable relaxed, if
+    *   this changes it. A Parquet load job can neither add nor relax fields: `ALLOW_FIELD_ADDITION`
+    *   and `ignoreUnknownValues` cannot both be set for self-describing formats.
+    */
+  def schemaForParquetAppend(
+    existing: bigquery.Schema,
+    incoming: bigquery.Schema
+  ): Option[bigquery.Schema] = {
+    def key(field: Field): String = field.getName.toLowerCase(java.util.Locale.ROOT)
+    def merge(existing: List[Field], incoming: List[Field]): List[Field] = {
+      val incomingByName = incoming.map(field => key(field) -> field).toMap
+      val existingNames = existing.map(key).toSet
+      existing.map { field =>
+        incomingByName.get(key(field)) match {
+          case Some(incomingField) =>
+            val builder = field.toBuilder
+            if (
+              field.getMode == Field.Mode.REQUIRED && incomingField.getMode != Field.Mode.REQUIRED
+            )
+              builder.setMode(Field.Mode.NULLABLE)
+            (Option(field.getSubFields), Option(incomingField.getSubFields)) match {
+              case (Some(subFields), Some(incomingSubFields)) =>
+                builder.setType(
+                  field.getType.getStandardType,
+                  FieldList.of(
+                    merge(subFields.asScala.toList, incomingSubFields.asScala.toList).asJava
+                  )
+                )
+              case _ =>
+            }
+            builder.build()
+          case None => field
+        }
+      } ++ incoming.filterNot(field => existingNames(key(field))).map { field =>
+        // BigQuery adds no required field to an existing table
+        if (field.getMode == Field.Mode.REQUIRED)
+          field.toBuilder.setMode(Field.Mode.NULLABLE).build()
+        else field
+      }
+    }
+    val aligned = bigquery.Schema.of(
+      merge(
+        Option(existing.getFields).map(_.asScala.toList).getOrElse(Nil),
+        Option(incoming.getFields).map(_.asScala.toList).getOrElse(Nil)
+      ).asJava
+    )
+    if (aligned == existing) None else Some(aligned)
+  }
 
   /** @return
     *   true if an attribute is required, at any nesting level
