@@ -119,6 +119,8 @@ case class TransformContext(
     * }}}
     *
     * ==Engine Selection Logic==
+    *   - Engine.BQ with an FsSink writing Parquet, Avro or JSON files to a Cloud Storage path →
+    *     BigQueryExportTask (EXPORT DATA)
     *   - Engine.BQ with BigQuerySink or interactive mode → BigQueryAutoTask
     *   - Engine.JDBC with JdbcSink matching run connection → JdbcAutoTask
     *   - FsSink with export mode → SparkExportTask
@@ -135,6 +137,11 @@ case class TransformContext(
     val sinkConfig = taskDesc.getSinkConfig()
     val runConnectionRef = taskDesc.getRunConnectionRef()
     engine match {
+      case Engine.BQ
+          if interactive.isEmpty && taskDesc.python.isEmpty && BigQueryExportTask
+            .nativeExportPath(sinkConfig, schemaHandler.activeEnvVars() ++ commandParameters)
+            .isDefined =>
+        TransformContext.createBigQueryExportTask(this)
       case Engine.BQ if sinkConfig.isInstanceOf[BigQuerySink] || interactive.isDefined =>
         TransformContext.createBigQueryTask(this)
       case Engine.JDBC
@@ -164,6 +171,7 @@ case class TransformContext(
   *   - `forExecution()` - Creates context for batch/scheduled execution
   *   - `forInteractive()` - Creates context for interactive queries (no materialization)
   *   - `createBigQueryTask()` - Creates BigQueryAutoTask from context
+  *   - `createBigQueryExportTask()` - Creates BigQueryExportTask from context
   *   - `createJdbcTask()` - Creates JdbcAutoTask from context
   *   - `createSparkTask()` - Creates SparkAutoTask from context
   *   - `createSparkExportTask()` - Creates SparkExportTask from context
@@ -265,6 +273,26 @@ object TransformContext {
       dryRun = context.dryRun,
       scheduledDate = context.scheduledDate,
       syncSchema = context.syncSchema
+    )(context.settings, context.storageHandler, context.schemaHandler)
+  }
+
+  /** Creates a BigQueryExportTask from a TransformContext: a BigQuery transform writing its files
+    * with an EXPORT DATA statement.
+    */
+  def createBigQueryExportTask(context: TransformContext): BigQueryExportTask = {
+    new BigQueryExportTask(
+      appId = context.appId,
+      taskDesc = context.taskDesc,
+      commandParameters = context.commandParameters,
+      interactive = context.interactive,
+      truncate = context.truncate,
+      test = context.test,
+      logExecution = context.logExecution,
+      accessToken = context.accessToken,
+      resultPageSize = context.resultPageSize,
+      resultPageNumber = context.resultPageNumber,
+      dryRun = context.dryRun,
+      scheduledDate = context.scheduledDate
     )(context.settings, context.storageHandler, context.schemaHandler)
   }
 

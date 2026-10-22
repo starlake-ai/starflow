@@ -189,9 +189,18 @@ case class AutoTaskInfo(
         Right(true)
       }
     }
+    val exportErrors = ai.starlake.job.transform.BigQueryExportTask.checkValidity(this)
+
     // merge all errors
     val allErrors =
-      List(sinkErrors, freshnessErrors, writeStrategyErrors, scheduleErrors, dagRefErrors)
+      List(
+        sinkErrors,
+        freshnessErrors,
+        writeStrategyErrors,
+        scheduleErrors,
+        dagRefErrors,
+        exportErrors
+      )
     val errorList = allErrors.collect { case Left(errors) => errors }.flatten
     if (errorList.isEmpty)
       Right(true)

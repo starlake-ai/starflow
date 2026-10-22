@@ -618,9 +618,10 @@ abstract class AutoTask(
     start: Timestamp,
     end: Timestamp,
     jobResultCount: Long,
-    test: Boolean
+    test: Boolean,
+    message: String = "success"
   ): Unit = {
-    val log = auditLog(start, end, jobResultCount, success = true, "success", test)
+    val log = auditLog(start, end, jobResultCount, success = true, message, test)
     log.foreach(al => AuditLog.sink(List(al), accessToken))
   }
 
@@ -916,6 +917,7 @@ object AutoTask extends LazyLogging {
     *      JdbcSink) 3. Whether the task is interactive or batch
     *
     * ==Selection Logic==
+    *   - Engine.BQ + FsSink of Parquet, Avro or JSON files on Cloud Storage -> BigQueryExportTask
     *   - Engine.BQ + BigQuerySink -> BigQueryAutoTask
     *   - Engine.JDBC + JdbcSink (same connection) -> JdbcAutoTask
     *   - FsSink with export flag -> SparkExportTask

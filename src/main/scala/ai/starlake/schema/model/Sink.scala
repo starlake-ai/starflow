@@ -163,7 +163,8 @@ final case class AllSinks(
   // clustering: Option[Seq[String]] = None,
   partition: Option[Seq[String]] = None,
   coalesce: Option[Boolean] = None,
-  options: Option[Map[String, String]] = None
+  options: Option[Map[String, String]] = None,
+  path: Option[String] = None
   // JDBC
   // partition: Option[List[String]] = None, // Only one column allowed
 
@@ -334,7 +335,8 @@ final case class AllSinks(
       sharding = child.sharding.orElse(this.sharding),
       partition = child.partition.orElse(this.partition),
       coalesce = child.coalesce.orElse(this.coalesce),
-      options = child.options.orElse(this.options)
+      options = child.options.orElse(this.options),
+      path = child.path.orElse(this.path)
     )
   }
   def toAllSinks(): AllSinks = this
@@ -499,7 +501,9 @@ case class FsSink(
       .orElse(this.getOptions().get("delimiter"))
       .orElse(this.getOptions().get("separator"))
 
-  val finalPath: Option[String] = path.orElse(xlsOptions.get("path")).orElse(csvOptions.get("path"))
+  // The path is the Cloud Storage folder or URI of the files that BigQuery exports (#1834): the csv
+  // and xls exports keep the file of their own options
+  val finalPath: Option[String] = xlsOptions.get("path").orElse(csvOptions.get("path"))
 
   def getStorageFormat()(implicit settings: Settings): String = {
     if (isExport())
@@ -552,7 +556,8 @@ case class FsSink(
       clustering = clustering,
       partition = partition,
       coalesce = coalesce,
-      options = options
+      options = options,
+      path = path
     )
   }
 }
@@ -631,7 +636,8 @@ object FsSink {
       clustering = allSinks.clustering,
       partition = allSinks.partition,
       coalesce = allSinks.coalesce,
-      options = allSinks.options
+      options = allSinks.options,
+      path = allSinks.path
     )
   }
 }
