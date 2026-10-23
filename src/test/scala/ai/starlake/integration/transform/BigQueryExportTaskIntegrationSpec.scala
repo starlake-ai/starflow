@@ -304,12 +304,13 @@ class BigQueryExportTaskIntegrationSpec extends IntegrationTestBase {
             s"SELECT COUNT(*), COUNTIF(days = '[2019-01-01, 2019-12-31)') FROM `$targetDataset.items_avro`"
           ) shouldBe List("6", "3")
 
-          // A dry run writes nothing
+          // A dry run writes nothing. JSON files hold every type of the source, the RANGE values
+          // as text
           def jsonFiles(): List[String] =
             objects(domainFolder).filter(_.startsWith("items_json-"))
           writeTask(
             "items_json",
-            s"SELECT id, label, amount, day, instant, tags, record FROM `$sourceDataset.$itemsView`",
+            s"SELECT * FROM `$sourceDataset.$itemsView`",
             "json",
             s"gs://${bucket.get}/$exportPrefix",
             WriteStrategyType.OVERWRITE
@@ -318,26 +319,12 @@ class BigQueryExportTaskIntegrationSpec extends IntegrationTestBase {
           jsonFiles() shouldBe empty
           transform("items_json") shouldBe true
           runIds(jsonFiles(), "items_json-", "\\.json") should have size 1
-          // Probe: the documentation does not say whether JSON exports write RANGE values
-          writeTask(
-            "ranges_json",
-            s"SELECT id, days FROM `$sourceDataset.$items`",
-            "json",
-            s"gs://${bucket.get}/$exportPrefix",
-            WriteStrategyType.OVERWRITE
-          )
-          info(s"EXPORT DATA writes RANGE values to JSON files: ${transform("ranges_json")}")
-          // Probe: nor whether they write the other types of the source
-          writeTask(
-            "all_types_json",
-            s"SELECT * EXCEPT (days) FROM `$sourceDataset.$items`",
-            "json",
-            s"gs://${bucket.get}/$exportPrefix",
-            WriteStrategyType.OVERWRITE
-          )
-          info(
-            s"EXPORT DATA writes BIGNUMERIC, DATETIME, TIME, BYTES, GEOGRAPHY, JSON and INTERVAL values to JSON files: ${transform("all_types_json")}"
-          )
+          val jsonLines = jsonFiles()
+            .map(name =>
+              new String(storage.readAllBytes(BlobId.of(bucket.get, domainFolder + name)))
+            )
+            .mkString
+          jsonLines should include("\"[2019-01-01, 2019-12-31)\"")
 
           // The error of BigQuery fails the task
           writeTask(

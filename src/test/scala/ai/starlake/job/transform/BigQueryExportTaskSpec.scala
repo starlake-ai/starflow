@@ -148,7 +148,7 @@ class BigQueryExportTaskSpec extends TestHelper {
       "days"     -> "CAST(`days` AS STRING)"
     )
     textColumns("AVRO", schema) shouldBe List("days" -> "CAST(`days` AS STRING)")
-    textColumns("JSON", schema) shouldBe Nil
+    textColumns("JSON", schema) shouldBe List("days" -> "CAST(`days` AS STRING)")
     selectWithTextColumns("SELECT * FROM t", textColumns("AVRO", schema)) shouldBe
     "SELECT * REPLACE (CAST(`days` AS STRING) AS `days`) FROM (\nSELECT * FROM t\n)"
     selectWithTextColumns("SELECT * FROM t", Nil) shouldBe "SELECT * FROM t"

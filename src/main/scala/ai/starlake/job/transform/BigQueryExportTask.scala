@@ -415,7 +415,8 @@ object BigQueryExportTask {
   )
 
   /** The types that EXPORT DATA refuses in each format: "Type JSON is not currently supported for
-    * parquet exports", and RANGE "not supported in Avro export"
+    * parquet exports", RANGE "not supported in Avro export", and "Unsupported type for JSON export:
+    * RANGE<DATE>"
     */
   private val refusedTypes: Map[String, Set[StandardSQLTypeName]] = Map(
     "PARQUET" -> Set(
@@ -423,7 +424,8 @@ object BigQueryExportTask {
       StandardSQLTypeName.INTERVAL,
       StandardSQLTypeName.RANGE
     ),
-    "AVRO" -> Set(StandardSQLTypeName.RANGE)
+    "AVRO" -> Set(StandardSQLTypeName.RANGE),
+    "JSON" -> Set(StandardSQLTypeName.RANGE)
   )
 
   private val formatsRefusingTypes: Set[String] = refusedTypes.keySet
