@@ -687,8 +687,12 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
           )
           // One per bad value, with the message of BigQuery
           csvRejected should have size 2
-          List("'x'", "'y'").foreach { value =>
-            csvRejected.count(_._1.contains(value)) shouldBe 1
+          // As BigQuery writes them: "Unable to parse; line_number: 3 ... column_name: "id"
+          // column_type: INT64 value: "x""
+          List(3 -> "x", 5 -> "y").foreach { case (line, value) =>
+            csvRejected.count { case (error, _) =>
+              error.contains(s"line_number: $line ") && error.contains(s"""value: "$value"""")
+            } shouldBe 1
           }
           csvRejected.foreach { case (error, _) =>
             error should startWith("ERR -> \n")
