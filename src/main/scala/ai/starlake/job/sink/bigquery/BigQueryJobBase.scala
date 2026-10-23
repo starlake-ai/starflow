@@ -131,6 +131,30 @@ trait BigQueryJobBase extends LazyLogging {
     }
   }
 
+  /** The Cloud Storage client of the connection, or of the access token of the run when there is
+    * one, as the BigQuery client of the job
+    */
+  def storageClient(accessToken: scala.Option[String])(implicit settings: Settings): Storage =
+    accessToken match {
+      case Some(token) =>
+        StorageOptions
+          .newBuilder()
+          .setProjectId(
+            BigQueryJobBase.projectId(connectionOptions.get("projectId"), cliConfig.outputDatabase)
+          )
+          .setCredentials(
+            GcsGoogleCredentials.create(
+              new com.google.cloud.hadoop.repackaged.gcs.com.google.auth.oauth2.AccessToken(
+                token,
+                null
+              )
+            )
+          )
+          .build()
+          .getService
+      case None => gcsStorage()
+    }
+
   private var _bigquery: scala.Option[BigQuery] = None
 
   private def applyRLS(forceApply: Boolean)(implicit settings: Settings): Try[Unit] = {

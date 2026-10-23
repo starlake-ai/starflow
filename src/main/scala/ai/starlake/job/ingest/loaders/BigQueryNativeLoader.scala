@@ -1,13 +1,14 @@
 package ai.starlake.job.ingest.loaders
 
-import ai.starlake.config.{CometColumns, Settings}
+import ai.starlake.config.{CometColumns, DatasetArea, Settings}
 import ai.starlake.extract.ParUtils
-import ai.starlake.job.ingest.{BqLoadInfo, IngestionJob}
+import ai.starlake.job.ingest.{BqLoadInfo, IngestionJob, IngestionUtil, RejectedRecord}
 import ai.starlake.job.sink.bigquery.{
   BigQueryBranchHandler,
   BigQueryJobBase,
   BigQueryJobResult,
   BigQueryLoadConfig,
+  BigQueryLoadJobException,
   BigQueryNativeJob
 }
 import ai.starlake.job.transform.BigQueryAutoTask
@@ -17,6 +18,7 @@ import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryUtils}
 import ai.starlake.utils.{IngestionCounters, JobResult, Utils}
 import com.google.cloud.bigquery
 import com.google.cloud.bigquery.{
+  BigQueryError,
   Field,
   FieldList,
   JobInfo,
@@ -25,12 +27,15 @@ import com.google.cloud.bigquery.{
   TableDefinition,
   TableId
 }
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.Storage
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 
-import java.time.Duration
+import java.time.{Duration, Instant, ZoneId}
+import java.time.format.DateTimeFormatter
+import java.util.UUID
 import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success, Try, Using}
 
 class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(implicit
   settings: Settings
@@ -248,6 +253,9 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           }
         }
 
+        keepBadRecordsOfFailedJobs(loadResults.collect {
+          case Failure(exception: BigQueryLoadJobException) => exception
+        })
         val output: Try[List[BqLoadInfo]] =
           applyBigQuerySecondStep(
             targetConfig,
@@ -319,7 +327,11 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
               .build()
               .update()
           }
-        bigqueryJob.loadPathsToBQ(tableInfo).map(List(_))
+        bigqueryJob.loadPathsToBQ(tableInfo).map(List(_)).recoverWith {
+          case exception: BigQueryLoadJobException =>
+            keepBadRecordsOfFailedJobs(List(exception))
+            Failure(exception)
+        }
       }
     }.map {
       case Success(results) =>
@@ -328,6 +340,16 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
             errors.forEach(err => logger.error(f"${err.getReason} - ${err.getMessage}"))
           }
         }
+        // The bad records that a one-step load job skipped, known once it loaded the others: a
+        // failure to keep them does not fail the load, whose rows are written. Two-step loads keep
+        // them before their second step.
+        if (!twoSteps)
+          Try(sinkRejected(results.flatMap(badRecordsOf))).failed.foreach { exception =>
+            logger.error(
+              s"Could not write the rejected records of $targetFullTableName to the audit",
+              exception
+            )
+          }
         val bqLoadInfoOutput = if (settings.appConfig.audit.detailedLoadAudit) {
           results
         } else {
@@ -388,6 +410,10 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
             BigQueryNativeLoader.requiredValuesCondition(starlakeSchema.attributes)
           else None
         val result = for {
+          // The bad records that the first step skipped, as BigQuery reports them, before
+          // anything is loaded into the target: a failure to keep them fails the load, as with
+          // Spark
+          _ <- Try(sinkRejected(loadFileResult.flatMap(badRecordsOf)))
           rejectedByFile <- requiredCondition
             .map(condition =>
               rejectRowsWithoutRequiredValues(targetBigqueryJob, tempTableNames, condition)
@@ -444,17 +470,188 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                 .mkString(", ")}), in ${files.take(10).mkString(", ")}${if (files.size > 10)
                 s" and ${files.size - 10} other files"
               else ""}"
-          BigQueryNativeLoader.rejectedRowsError(
+          val error = BigQueryNativeLoader.rejectedRowsError(
             rejected,
             settings.appConfig.rejectAllOnError,
             settings.appConfig.rejectMaxRecords
-          ) match {
-            case Some(error) => throw new IllegalArgumentException(s"$message. $error")
-            case None        => logger.warn(s"$message. They are rejected")
-          }
+          )
+          logger.warn(s"$message. ${error.getOrElse("They are rejected")}")
+          // As the Spark loads, the rejected rows are kept before the load fails because of them
+          keepRowsWithoutRequiredValues(job, tempTableNames, condition)
+          error.foreach(error => throw new IllegalArgumentException(s"$message. $error"))
         }
         rejectedByFile
       }
+
+  /** Writes the rejected records of the load to the audit `rejected` table: a failure to write them
+    * fails the load, as with Spark
+    */
+  private def sinkRejected(records: List[RejectedRecord]): Unit =
+    IngestionUtil
+      .sinkRejectedRecords(
+        ingestionJob.applicationId(),
+        records,
+        path,
+        scheduledDate,
+        accessToken,
+        ingestionJob.session
+      )(settings, storageHandler, schemaHandler)
+      .get
+
+  private def rejectedRecord(errors: List[String], file: String, value: Option[String]) =
+    RejectedRecord(
+      ingestionJob.applicationId(),
+      ingestionJob.now,
+      domain.name,
+      starlakeSchema.name,
+      RejectedRecord.errorText(errors, file, value),
+      RejectedRecord.limited(path.map(_.toString).mkString(","))
+    )
+
+  /** The bad records that a load job skipped, as BigQuery reports them, without their rows (#1857).
+    * They hold the bad values in BigQuery's words, whatever `rejectWithValue`.
+    */
+  private def badRecords(job: bigquery.Job, paths: List[String]): List[RejectedRecord] =
+    BigQueryNativeLoader
+      .badRecords(
+        paths,
+        Option(job.getStatus.getExecutionErrors).map(_.asScala.toList).getOrElse(Nil),
+        Option(job.getStatus.getError)
+      )
+      .map { case (file, message) => rejectedRecord(List(message), file, None) }
+
+  private def badRecordsOf(loadInfo: BqLoadInfo): List[RejectedRecord] =
+    loadInfo.jobResult.job.toList.flatMap(badRecords(_, loadInfo.paths))
+
+  /** Keeps the bad records of the load jobs that failed because of them, as Spark keeps the
+    * rejected rows of a load that fails: the load fails anyway, with the error of its job
+    */
+  private def keepBadRecordsOfFailedJobs(failures: List[BigQueryLoadJobException]): Unit =
+    if (failures.nonEmpty)
+      Try(sinkRejected(failures.flatMap(failure => badRecords(failure.job, failure.paths)))).failed
+        .foreach { exception =>
+          logger.error(
+            s"Could not write the rejected records of $targetFullTableName to the audit",
+            exception
+          )
+        }
+
+  /** Keeps the rows of the first step without a value for a required attribute, as the Spark loads
+    * keep their rejected rows: the first `audit.maxErrors` of them in the audit `rejected` table,
+    * and all of them in replay files with `sinkReplayToFile`
+    */
+  private def keepRowsWithoutRequiredValues(
+    job: BigQueryNativeJob,
+    tempTableNames: List[String],
+    condition: String
+  ): Unit = {
+    val withValue = settings.appConfig.rejectWithValue
+    val maxErrors = settings.appConfig.audit.maxErrors
+    if (maxErrors > 0) {
+      val sql = BigQueryNativeLoader.rejectedRowsSql(
+        tempTableNames,
+        condition,
+        BigQueryNativeLoader.requiredValueTerms(starlakeSchema.attributes),
+        if (withValue) Some(BigQueryNativeLoader.hiddenValuePaths(starlakeSchema.attributes))
+        else None,
+        maxErrors
+      )
+      val records = job
+        .runBigQueryJob(Some(sql))
+        .get
+        .tableResult
+        .toList
+        .flatMap(_.iterateAll().asScala)
+        .map { row =>
+          def text(index: Int): Option[String] =
+            Option(row.get(index)).filterNot(_.isNull).map(_.getStringValue)
+          val (errors, file, value) = BigQueryNativeLoader.rejectedRowFields(
+            text(0),
+            text(1),
+            if (withValue) text(2) else None
+          )
+          rejectedRecord(errors, file, value)
+        }
+      sinkRejected(records)
+    }
+    if (settings.appConfig.sinkReplayToFile)
+      writeReplayFiles(job, tempTableNames, condition)
+  }
+
+  /** Writes all the rejected rows to Parquet replay files of the replay area of the domain, as the
+    * Spark loads write theirs. BigQuery exports them to Cloud Storage only: when the replay area is
+    * elsewhere, they are exported to the temporary bucket of the connection, then moved.
+    */
+  private def writeReplayFiles(
+    job: BigQueryNativeJob,
+    tempTableNames: List[String],
+    condition: String
+  ): Unit = {
+    val replayArea = DatasetArea.replay(domain.name)
+    val timestamp = DateTimeFormatter
+      .ofPattern("yyyyMMddHHmmss")
+      .withZone(ZoneId.systemDefault())
+      .format(Instant.now())
+    // Unique, so that two loads of the table in the same second keep their files
+    val name =
+      s"${domain.name}.${starlakeSchema.name}.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
+    val onCloudStorage = replayArea.toString.startsWith("gs://")
+    val exportFolder =
+      if (onCloudStorage) Some(replayArea.toString.stripSuffix("/") + "/")
+      else
+        BigQueryNativeLoader
+          .temporaryBucket(
+            sinkConnection.options,
+            settings.appConfig.internal.flatMap(_.temporaryGcsBucket)
+          )
+          .map(bucket => s"gs://$bucket/starlake-replay/${UUID.randomUUID()}/")
+    exportFolder match {
+      case None =>
+        logger.warn(
+          s"The replay files of the rejected rows of $targetFullTableName are not written: BigQuery exports them to Cloud Storage only, and the replay area $replayArea is not on Cloud Storage, nor is there a temporaryGcsBucket or gcsBucket in the connection, or a TEMPORARY_GCS_BUCKET"
+        )
+      case Some(folder) =>
+        job
+          .runBigQueryJob(
+            Some(
+              BigQueryNativeLoader.replayExportSql(
+                s"$folder$name-*.parquet",
+                tempTableNames,
+                condition,
+                // Not in the input files
+                starlakeSchema.attributes.filter(_.script.nonEmpty).map(_.name)
+              )
+            )
+          )
+          .get
+        if (onCloudStorage) logger.info(s"Replay files of $targetFullTableName written to $folder")
+        else {
+          val storage = job.storageClient(accessToken)
+          val Array(bucket, prefix) = folder.stripPrefix("gs://").split("/", 2)
+          def exported() =
+            storage.list(bucket, Storage.BlobListOption.prefix(prefix)).iterateAll().asScala.toList
+          try {
+            storageHandler.mkdirs(replayArea)
+            exported().foreach { blob =>
+              val target = new Path(replayArea, blob.getName.split('/').last)
+              Try(Using.resource(storageHandler.output(target))(blob.downloadTo(_))) match {
+                case Success(_) =>
+                  logger.info(s"Replay file of $targetFullTableName written to $target")
+                case Failure(exception) =>
+                  Try(storageHandler.delete(target))
+                  throw exception
+              }
+            }
+          } finally {
+            // The exported files are temporary
+            Try(exported().foreach(blob => storage.delete(blob.getBlobId))).failed.foreach {
+              exception =>
+                logger.warn(s"Could not delete the temporary replay files of $folder", exception)
+            }
+          }
+        }
+    }
+  }
 
   private def applyBigQuerySecondStepSQL(
     firstStepTempTableTableNames: List[String],
@@ -805,4 +1002,175 @@ object BigQueryNativeLoader {
       case conditions => Some(conditions.mkString(" AND "))
     }
   }
+
+  /** @return
+    *   for each required attribute that a load checks, its path and the SQL condition, on the
+    *   columns of the first step, of the rows with a value for it: their conjunction is
+    *   [[requiredValuesCondition]]
+    */
+  def requiredValueTerms(attributes: List[TableAttribute]): List[(String, String)] = {
+    def terms(
+      attributes: List[TableAttribute],
+      parent: Option[String],
+      prefix: String,
+      depth: Int
+    ): List[(String, String)] =
+      attributes.filterNot(a => a.resolveIgnore() || a.script.nonEmpty).flatMap { attribute =>
+        val column = parent.map(_ + ".").getOrElse("") + s"`${attribute.name}`"
+        val path = prefix + attribute.name
+        val own =
+          if (attribute.resolveRequired() && !attribute.resolveArray())
+            List(
+              path -> parent
+                .map(p => s"($p IS NULL OR $column IS NOT NULL)")
+                .getOrElse(s"$column IS NOT NULL")
+            )
+          else Nil
+        val nested =
+          if (attribute.attributes.isEmpty) Nil
+          else if (attribute.resolveArray()) {
+            val element = s"sl_element_$depth"
+            terms(attribute.attributes, Some(element), path + ".", depth + 1).map {
+              case (elementPath, condition) =>
+                elementPath -> s"NOT EXISTS (SELECT 1 FROM UNNEST($column) AS $element WHERE NOT ($condition))"
+            }
+          } else terms(attribute.attributes, Some(column), path + ".", depth + 1)
+        own ++ nested
+      }
+    terms(attributes, None, "", 0)
+  }
+
+  /** A BigQuery string literal, double quoted: the apostrophes of the messages need no escape */
+  def bigQueryLiteral(value: String): String =
+    "\"" + value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+      .replace("\n", "\\n")
+      .replace("\r", "\\r") + "\""
+
+  /** @return
+    *   the query of the first `limit` rows of the first step without a value for a required
+    *   attribute: their file, their errors, one line per attribute without a value as the Spark
+    *   validators write them, and with `withValue` the row as JSON
+    */
+  def rejectedRowsSql(
+    tempTableNames: List[String],
+    condition: String,
+    terms: List[(String, String)],
+    hiddenPaths: Option[List[String]],
+    limit: Int
+  ): String = {
+    val file = CometColumns.cometInputFileNameColumn
+    val row = "sl_rejected_row"
+    val errors = terms
+      .map { case (path, term) =>
+        s"IF($term, '', ${bigQueryLiteral(s"`$path`  can't be null\n")})"
+      }
+      .mkString("CONCAT(", ", ", ")")
+    // Wide numbers as strings, as TO_JSON_STRING writes them: TO_JSON fails on them otherwise
+    val value = hiddenPaths
+      .map { paths =>
+        val removed = (s"""$$."$file"""" :: paths).map(path => s"'$path'").mkString(", ")
+        s", TO_JSON_STRING(JSON_REMOVE(TO_JSON($row, stringify_wide_numbers => TRUE), $removed)) AS row_json"
+      }
+      .getOrElse("")
+    val selects = tempTableNames.map(table =>
+      s"SELECT $row.`$file` AS file, $errors AS errors$value FROM $table AS $row WHERE NOT ($condition)"
+    )
+    s"SELECT * FROM (${selects.mkString(" UNION ALL ")}) LIMIT $limit"
+  }
+
+  /** @return
+    *   the JSON paths of the values that a rejected row does not show: those of the ignored
+    *   attributes and of the attributes with a privacy, still in clear in the first step, or of the
+    *   repeated record that holds them
+    */
+  def hiddenValuePaths(attributes: List[TableAttribute], prefix: String = "$"): List[String] = {
+    def hidden(attribute: TableAttribute): Boolean =
+      attribute.resolveIgnore() || attribute.resolvePrivacy() != TransformInput.None
+    def holdsHidden(attribute: TableAttribute): Boolean =
+      hidden(attribute) || attribute.attributes.exists(holdsHidden)
+    attributes.flatMap { attribute =>
+      val path = s"""$prefix."${attribute.name}""""
+      if (hidden(attribute) || (attribute.resolveArray() && holdsHidden(attribute))) List(path)
+      else if (holdsHidden(attribute)) hiddenValuePaths(attribute.attributes, path)
+      else Nil
+    }
+  }
+
+  /** @return
+    *   the errors, the file and the value of a rejected row that [[rejectedRowsSql]] read
+    */
+  def rejectedRowFields(
+    file: Option[String],
+    errors: Option[String],
+    value: Option[String]
+  ): (List[String], String, Option[String]) =
+    (
+      errors
+        .map(_.split("\n").toList.filter(_.nonEmpty))
+        .filter(_.nonEmpty)
+        .getOrElse(List("A required attribute has no value")),
+      file.getOrElse(""),
+      value
+    )
+
+  /** @return
+    *   the statement exporting to Parquet files all the rows of the first step without a value for
+    *   a required attribute, with the columns of the input files, so that the table loads them
+    *   again
+    */
+  def replayExportSql(
+    uri: String,
+    tempTableNames: List[String],
+    condition: String,
+    excluded: List[String] = Nil
+  ): String = {
+    val columns = (CometColumns.cometInputFileNameColumn :: excluded).map(c => s"`$c`")
+    val selects = tempTableNames.map(table =>
+      s"SELECT * EXCEPT (${columns.mkString(", ")}) FROM $table WHERE NOT ($condition)"
+    )
+    s"EXPORT DATA OPTIONS (uri = ${bigQueryLiteral(uri)}, format = 'PARQUET', compression = 'SNAPPY', overwrite = true) AS\n${selects
+        .mkString("\nUNION ALL\n")}"
+  }
+
+  /** @return
+    *   the bucket, and its optional folder, where a load exports the files that BigQuery writes to
+    *   Cloud Storage only: the temporary bucket of the connection, or its bucket, or the temporary
+    *   bucket of the application
+    */
+  def temporaryBucket(
+    connectionOptions: Map[String, String],
+    applicationBucket: Option[String]
+  ): Option[String] =
+    List(
+      connectionOptions.get("temporaryGcsBucket"),
+      connectionOptions.get("gcsBucket"),
+      applicationBucket
+    ).flatten
+      .map(_.trim.stripPrefix("gs://").stripSuffix("/"))
+      .find(_.nonEmpty)
+
+  /** The messages of a load job that summarize its bad records */
+  private val jobSummary = "(?i)encountered too many errors|errors\\[\\] collection".r
+
+  /** @return
+    *   the file and the message of each bad record that a load job skipped, as BigQuery reports
+    *   them: the error of a failed job, and its summary of the bad records, are not about a record
+    */
+  def badRecords(
+    paths: List[String],
+    executionErrors: List[BigQueryError],
+    jobError: Option[BigQueryError]
+  ): List[(String, String)] =
+    executionErrors
+      .filterNot(error =>
+        jobError.contains(error) ||
+        Option(error.getMessage).exists(message => jobSummary.findFirstIn(message).isDefined)
+      )
+      .map { error =>
+        val file =
+          Option(error.getLocation).filter(_.contains("://")).getOrElse(paths.mkString(","))
+        file -> Option(error.getMessage).filter(_.nonEmpty).getOrElse(error.getReason)
+      }
 }

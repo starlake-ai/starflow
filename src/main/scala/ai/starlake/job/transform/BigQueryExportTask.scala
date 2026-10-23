@@ -2,7 +2,7 @@ package ai.starlake.job.transform
 
 import ai.starlake.config.Settings
 import ai.starlake.job.metrics.{BigQueryExpectationAssertionHandler, ExpectationAssertionHandler}
-import ai.starlake.job.sink.bigquery.{BigQueryJobBase, BigQueryLoadConfig, BigQueryNativeJob}
+import ai.starlake.job.sink.bigquery.{BigQueryLoadConfig, BigQueryNativeJob}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.{
   AutoTaskInfo,
@@ -25,15 +25,7 @@ import com.google.cloud.bigquery.{
   StandardSQLTypeName,
   TableId
 }
-import com.google.cloud.hadoop.repackaged.gcs.com.google.auth.oauth2.{
-  AccessToken as GcsAccessToken,
-  GoogleCredentials as GcsGoogleCredentials
-}
-import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.{
-  BlobId,
-  Storage,
-  StorageOptions
-}
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.{BlobId, Storage}
 
 import java.sql.Timestamp
 import java.time.format.DateTimeFormatter
@@ -227,22 +219,6 @@ class BigQueryExportTask(
       )
   }
 
-  /** The Cloud Storage client of the run connection, or of the access token of the run */
-  private def storage(job: BigQueryNativeJob): Storage =
-    accessToken match {
-      case Some(token) =>
-        StorageOptions
-          .newBuilder()
-          .setProjectId(
-            BigQueryJobBase
-              .projectId(job.connectionOptions.get("projectId"), bqConfig.outputDatabase)
-          )
-          .setCredentials(GcsGoogleCredentials.create(new GcsAccessToken(token, null)))
-          .build()
-          .getService
-      case None => job.gcsStorage()
-    }
-
   /** @return
     *   the files of the target folder that the exports to this target wrote, by name
     */
@@ -360,13 +336,13 @@ class BigQueryExportTask(
       val jobResult = job.runBigQueryJob(dryRun = dryRun) match {
         case Success(jobResult) => jobResult
         case Failure(e) =>
-          if (!dryRun) deleteFilesOfFailedRun(storage(job))
+          if (!dryRun) deleteFilesOfFailedRun(job.storageClient(accessToken))
           throw e
       }
       if (dryRun)
         Utils.printOut(s"Dry run of $name: ${jobResult.totalBytesProcessed} bytes processed")
       else {
-        deleteReplacedFiles(storage(job))
+        deleteReplacedFiles(job.storageClient(accessToken))
         if (logExecution) {
           val statistics = Try {
             jobResult.job

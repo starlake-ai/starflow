@@ -9,13 +9,18 @@ import ai.starlake.schema.model.{
   DomainInfo,
   Format,
   Metadata,
+  SchemaInfo,
   TableAttribute,
   WriteStrategy,
   WriteStrategyType
 }
 import better.files.File
 import com.google.cloud.bigquery._
-import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.{Storage, StorageOptions}
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.{
+  BlobInfo,
+  Storage,
+  StorageOptions
+}
 
 import java.util.UUID
 import java.util.regex.Pattern
@@ -169,12 +174,32 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
         file
       }
 
-  private def loadInPlace(table: String, files: String): Boolean =
+  private def loadInPlace(table: String, files: String, domain: String = parquetDataset): Boolean =
     Try(
       new Main().run(
-        Array("load", "--domains", parquetDataset, "--tables", table, "--files", files, "--inPlace")
+        Array("load", "--domains", domain, "--tables", table, "--files", files, "--inPlace")
       )
     ).getOrElse(false)
+
+  /** @return
+    *   the error and the path of the rows of the audit rejected table that the loads of the files
+    *   of the table wrote since this time: the files of the test have names of their own
+    */
+  private def rejectedSince(
+    domain: String,
+    table: String,
+    since: Long,
+    path: String
+  ): List[(String, String)] =
+    run(
+      s"""SELECT error, path FROM `audit.rejected`
+         |WHERE domain = '$domain' AND schema = '$table' AND timestamp >= TIMESTAMP_MILLIS($since)
+         |AND path = '$path'
+         |ORDER BY error""".stripMargin
+    ).iterateAll()
+      .asScala
+      .map(row => row.get(0).getStringValue -> row.get(1).getStringValue)
+      .toList
 
   /** Writes the Parquet domain from the extracted one, with these write strategies. The types and
     * lists tables are partitioned by day.
@@ -376,7 +401,12 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
 
   if (sys.env.getOrElse("SL_REMOTE_TEST", "false").toBoolean && bucket.nonEmpty) {
     "A BigQuery table extracted, exported to Parquet then loaded natively" should "keep its schema and values" in {
-      withEnvs("SL_ROOT" -> project.pathAsString) {
+      withEnvs(
+        "SL_ROOT" -> project.pathAsString,
+        // The rejected rows are kept with their value, and in replay files
+        "SL_REJECT_WITH_VALUE"   -> "true",
+        "SL_SINK_REPLAY_TO_FILE" -> "true"
+      ) {
         try {
           List(sourceDataset, parquetDataset).foreach { dataset =>
             if (bigquery.getDataset(dataset) == null)
@@ -573,6 +603,7 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
               )
             ).map(query => s"($query)").mkString(" UNION ALL ")
           )
+          val nullsLoad = System.currentTimeMillis()
           loadInPlace(parquetTypes, nullsUri) shouldBe true
           fingerprintOf(
             s"SELECT * FROM `$parquetDataset.$parquetTypes` WHERE id = 2"
@@ -580,6 +611,89 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
           fingerprintOf(
             s"SELECT * FROM `$parquetDataset.$parquetTypes` WHERE id = 1"
           ).head shouldBe "2"
+
+          // The rejected rows are kept as the Spark loads keep them (#1856): in the audit rejected
+          // table, with one error line per attribute without a value, their file and their value
+          val nullsRejected = rejectedSince(parquetDataset, parquetTypes, nullsLoad, nullsUri)
+          nullsRejected.map(_._1.split("\n").lift(1)) shouldBe List(
+            "`label`  can't be null",
+            "`record.code`  can't be null",
+            "`records.name`  can't be null"
+          ).map(Some(_))
+          nullsRejected.foreach { case (error, _) =>
+            error should startWith("ERR -> \n")
+            error should include(s"\n\nFILE -> $nullsUri")
+            error should include("\n\nROW -> {")
+            error should not include "sl_input_file_name"
+          }
+          // and all of them in Parquet replay files, which the same table loads again
+          val replayFiles = settings
+            .storageHandler()
+            .list(DatasetArea.replay(parquetDataset), recursive = false)
+            .map(_.path)
+            .filter(
+              _.getName
+                .matches(
+                  s"$parquetDataset\\.$parquetTypes\\.\\d{14}\\.replay-[0-9a-f]{8}-\\d{12}\\.parquet"
+                )
+            )
+          replayFiles should not be empty
+          replayFiles.foreach { replayFile =>
+            storage.create(
+              BlobInfo
+                .newBuilder(bucket.get, s"$exportPrefix/replay/${replayFile.getName}")
+                .build(),
+              java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(replayFile.toUri))
+            )
+          }
+          val replayLoad = System.currentTimeMillis()
+          val replayUri = s"gs://${bucket.get}/$exportPrefix/replay/*.parquet"
+          loadInPlace(parquetTypes, replayUri) shouldBe true
+          rejectedSince(parquetDataset, parquetTypes, replayLoad, replayUri).map(
+            _._1.split("\n").lift(1)
+          ) shouldBe nullsRejected.map(_._1.split("\n").lift(1))
+
+          // The bad records that a CSV load skips are kept with the message of BigQuery
+          val csvDomain = s"${parquetDataset}_csv"
+          DomainInfo(
+            name = csvDomain,
+            metadata = Some(
+              Metadata(
+                format = Some(Format.DSV),
+                withHeader = Some(true),
+                separator = Some(","),
+                directory = Some(s"{{root_path}}/incoming/$csvDomain")
+              )
+            ),
+            tables = List(
+              SchemaInfo(
+                "bad_lines",
+                Pattern.compile("bad_lines.*\\.csv"),
+                attributes = List(TableAttribute("id", "long"), TableAttribute("label", "string"))
+              )
+            )
+          ).writeDomainAsYaml(DatasetArea.load)(settings.storageHandler())
+          bigquery.delete(TableId.of(csvDomain, "bad_lines"))
+          val csvFile = project / "incoming" / csvDomain / "bad_lines.csv"
+          csvFile.parent.createDirectories()
+          csvFile.overwrite("id,label\n1,one\nx,two\n3,three\ny,four\n")
+          val csvLoad = System.currentTimeMillis()
+          loadInPlace("bad_lines", csvFile.uri.toString, csvDomain) shouldBe true
+          fingerprintOf(s"SELECT * FROM `$csvDomain.bad_lines`").head shouldBe "2"
+          val csvPath = new org.apache.hadoop.fs.Path(csvFile.uri.toString).toString
+          val csvRejected = rejectedSince(csvDomain, "bad_lines", csvLoad, csvPath)
+          info(
+            s"Rejected CSV records: ${csvRejected.map(_._1.replace("\n", " | ")).mkString("; ")}"
+          )
+          // One per bad value, with the message of BigQuery
+          csvRejected should have size 2
+          List("'x'", "'y'").foreach { value =>
+            csvRejected.count(_._1.contains(value)) shouldBe 1
+          }
+          csvRejected.foreach { case (error, _) =>
+            error should startWith("ERR -> \n")
+            error should include("\n\nFILE -> ")
+          }
 
           // OVERWRITE replaces the rows, APPEND adds them again
           writeParquetDomain(extracted, WriteStrategyType.OVERWRITE, WriteStrategyType.APPEND)

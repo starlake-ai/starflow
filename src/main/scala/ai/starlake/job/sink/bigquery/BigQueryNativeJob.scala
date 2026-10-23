@@ -29,6 +29,14 @@ import java.util.UUID
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try, Using}
 
+/** A load job that BigQuery ran and that failed: its execution errors may report bad records
+  *
+  * @param paths
+  *   the files that the job loaded
+  */
+class BigQueryLoadJobException(message: String, val job: Job, val paths: List[String])
+    extends Exception(message)
+
 class BigQueryNativeJob(
   override val cliConfig: BigQueryLoadConfig,
   sql: String,
@@ -121,9 +129,11 @@ class BigQueryNativeJob(
                         )
                       )
                     } else
-                      throw new Exception(
+                      throw new BigQueryLoadJobException(
                         "BigQuery was unable to load into the table due to an error:" + jobResult.getStatus
-                          .getError()
+                          .getError(),
+                        jobResult,
+                        sourceURIList
                       )
                   }
               case Right(_) =>
@@ -264,11 +274,15 @@ class BigQueryNativeJob(
       case None           => throw new Exception("Should never happen")
     }
 
+  /** @param queryParameters
+    *   the named parameters of the statement (`@name`), whose values need no SQL escaping
+    */
   def runBigQueryJob(
     thisSql: scala.Option[String] = None,
     pageSize: scala.Option[Long] = None,
     queryJobTimeoutMs: scala.Option[Long] = None,
-    dryRun: Boolean = false
+    dryRun: Boolean = false,
+    queryParameters: Map[String, QueryParameterValue] = Map.empty
   ): Try[BigQueryJobResult] = {
     val targetSQL = thisSql.getOrElse(sql).trim()
     if (targetSQL.startsWith("DESCRIBE")) {
@@ -304,6 +318,7 @@ class BigQueryNativeJob(
         .format(targetSQL, JSQLFormatter.OutputFormat.PLAIN)
       logger.info(s"running BigQuery statement with Id $sqlId: $formattedSQL")
 
+      if (queryParameters.nonEmpty) queryConfig.setNamedParameters(queryParameters.asJava)
       val queryConfigWithUDF = addUDFToQueryConfig(queryConfig)
       val finalConfiguration =
         queryConfigWithUDF.setPriority(Priority.INTERACTIVE).setDryRun(dryRun).build()
