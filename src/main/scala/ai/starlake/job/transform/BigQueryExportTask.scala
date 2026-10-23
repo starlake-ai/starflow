@@ -22,7 +22,8 @@ import com.google.cloud.bigquery.{
   Job,
   QueryJobConfiguration,
   Schema as BQSchema,
-  StandardSQLTypeName
+  StandardSQLTypeName,
+  TableId
 }
 import com.google.cloud.hadoop.repackaged.gcs.com.google.auth.oauth2.{
   AccessToken as GcsAccessToken,
@@ -121,8 +122,12 @@ class BigQueryExportTask(
 
   lazy val fullTableName: String = s"${taskDesc.domain}.${taskDesc.table}"
 
-  private lazy val bqConfig = BigQueryLoadConfig(
+  /** The jobs of the run connection. A BigQuery job is named after a table: the export has none,
+    * the name of the task stands for it.
+    */
+  private[transform] lazy val bqConfig = BigQueryLoadConfig(
     connectionRef = Some(taskDesc.getRunConnectionRef()),
+    outputTableId = Some(TableId.of(taskDesc.domain, taskDesc.table)),
     outputDatabase = taskDesc.getDatabase(),
     accessToken = accessToken
   )

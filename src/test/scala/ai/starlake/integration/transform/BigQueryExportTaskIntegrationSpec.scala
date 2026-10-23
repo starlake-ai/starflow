@@ -244,7 +244,7 @@ class BigQueryExportTaskIntegrationSpec extends IntegrationTestBase {
                 )
               ),
               tables = extracted.tables.map(table =>
-                table.copy(pattern = Pattern.compile(s"${table.name}-.*\\.parquet"))
+                table.copy(pattern = Pattern.compile("items_parquet-.*\\.parquet"))
               )
             )
             .writeDomainAsYaml(DatasetArea.load)(settings.storageHandler())
@@ -309,7 +309,7 @@ class BigQueryExportTaskIntegrationSpec extends IntegrationTestBase {
             objects(domainFolder).filter(_.startsWith("items_json-"))
           writeTask(
             "items_json",
-            s"SELECT * EXCEPT (days) FROM `$sourceDataset.$itemsView`",
+            s"SELECT id, label, amount, day, instant, tags, record FROM `$sourceDataset.$itemsView`",
             "json",
             s"gs://${bucket.get}/$exportPrefix",
             WriteStrategyType.OVERWRITE
@@ -327,6 +327,17 @@ class BigQueryExportTaskIntegrationSpec extends IntegrationTestBase {
             WriteStrategyType.OVERWRITE
           )
           info(s"EXPORT DATA writes RANGE values to JSON files: ${transform("ranges_json")}")
+          // Probe: nor whether they write the other types of the source
+          writeTask(
+            "all_types_json",
+            s"SELECT * EXCEPT (days) FROM `$sourceDataset.$items`",
+            "json",
+            s"gs://${bucket.get}/$exportPrefix",
+            WriteStrategyType.OVERWRITE
+          )
+          info(
+            s"EXPORT DATA writes BIGNUMERIC, DATETIME, TIME, BYTES, GEOGRAPHY, JSON and INTERVAL values to JSON files: ${transform("all_types_json")}"
+          )
 
           // The error of BigQuery fails the task
           writeTask(

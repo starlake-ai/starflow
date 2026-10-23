@@ -226,6 +226,14 @@ class BigQueryExportTaskSpec extends TestHelper {
       task(withSink(_.copy(format = Some("avro")))) shouldBe a[BigQueryExportTask]
     }
 
+    it should "name its BigQuery jobs after the task, which has no table" in {
+      val job = new ai.starlake.job.sink.bigquery.BigQueryNativeJob(
+        task(exportTask).asInstanceOf[BigQueryExportTask].bqConfig,
+        ""
+      )
+      job.name should include("sales.orders")
+    }
+
     it should "keep the other transforms on their task" in {
       task(withSink(_.copy(format = Some("csv")))) shouldBe a[SparkExportTask]
       task(withSink(_.copy(path = Some("/tmp/exports")))) shouldBe a[SparkAutoTask]
