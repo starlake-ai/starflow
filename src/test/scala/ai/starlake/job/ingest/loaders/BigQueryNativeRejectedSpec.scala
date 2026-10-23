@@ -132,15 +132,19 @@ class BigQueryNativeRejectedSpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  "replayExportSql" should "export all the rejected rows with the columns of the files" in {
+  "replayExportSql" should "export all the rejected rows of the temporary tables, with the columns of the files" in {
     BigQueryNativeLoader.replayExportSql(
       "gs://bucket/replay/d.t.20261023101500.replay-*.parquet",
-      List("`p`.`d`.`t_*`"),
+      List("`p`.`d`.`t_0`", "`p`.`d`.`t_1`"),
       "`id` IS NOT NULL",
       List("computed")
     ) shouldBe
     """EXPORT DATA OPTIONS (uri = "gs://bucket/replay/d.t.20261023101500.replay-*.parquet", format = 'PARQUET', compression = 'SNAPPY', overwrite = true) AS
-      |SELECT * EXCEPT (`sl_input_file_name`, `computed`) FROM `p`.`d`.`t_*` WHERE NOT (`id` IS NOT NULL)""".stripMargin
+      |SELECT * EXCEPT (`sl_input_file_name`, `computed`) FROM (
+      |SELECT * FROM `p`.`d`.`t_0`
+      |UNION ALL
+      |SELECT * FROM `p`.`d`.`t_1`
+      |) WHERE NOT (`id` IS NOT NULL)""".stripMargin
   }
 
   "temporaryBucket" should "be the temporary bucket of the connection, its bucket, then the one of the application" in {

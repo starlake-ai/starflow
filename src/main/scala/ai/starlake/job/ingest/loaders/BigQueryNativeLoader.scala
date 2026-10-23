@@ -270,6 +270,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   .orElse(settings.appConfig.getDefaultDatabase())
               )
             ),
+            tempTableIds,
             tryListSequence(loadResults)
           )
 
@@ -396,6 +397,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     targetConfig: BigQueryLoadConfig,
     existingTargetSchema: Option[bigquery.Schema],
     firstStepTempTable: List[TableId],
+    firstStepTables: List[TableId],
     firstStepResult: Try[List[BqLoadInfo]]
   ): Try[List[BqLoadInfo]] = {
     firstStepResult match {
@@ -416,7 +418,12 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           _ <- Try(sinkRejected(loadFileResult.flatMap(badRecordsOf)))
           rejectedByFile <- requiredCondition
             .map(condition =>
-              rejectRowsWithoutRequiredValues(targetBigqueryJob, tempTableNames, condition)
+              rejectRowsWithoutRequiredValues(
+                targetBigqueryJob,
+                tempTableNames,
+                firstStepTables.map(BigQueryUtils.tableIdToTableName),
+                condition
+              )
             )
             .getOrElse(Success(Map.empty[Int, Long]))
           _ <- targetBigqueryJob.cliConfig.outputTableId
@@ -442,6 +449,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
   private def rejectRowsWithoutRequiredValues(
     job: BigQueryNativeJob,
     tempTableNames: List[String],
+    tables: List[String],
     condition: String
   ): Try[Map[Int, Long]] =
     job
@@ -477,7 +485,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           )
           logger.warn(s"$message. ${error.getOrElse("They are rejected")}")
           // As the Spark loads, the rejected rows are kept before the load fails because of them
-          keepRowsWithoutRequiredValues(job, tempTableNames, condition)
+          keepRowsWithoutRequiredValues(job, tempTableNames, tables, condition)
           error.foreach(error => throw new IllegalArgumentException(s"$message. $error"))
         }
         rejectedByFile
@@ -543,6 +551,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
   private def keepRowsWithoutRequiredValues(
     job: BigQueryNativeJob,
     tempTableNames: List[String],
+    tables: List[String],
     condition: String
   ): Unit = {
     val withValue = settings.appConfig.rejectWithValue
@@ -575,16 +584,19 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       sinkRejected(records)
     }
     if (settings.appConfig.sinkReplayToFile)
-      writeReplayFiles(job, tempTableNames, condition)
+      writeReplayFiles(job, tables, condition)
   }
 
   /** Writes all the rejected rows to Parquet replay files of the replay area of the domain, as the
     * Spark loads write theirs. BigQuery exports them to Cloud Storage only: when the replay area is
     * elsewhere, they are exported to the temporary bucket of the connection, then moved.
     */
+  /** @param tables
+    *   the temporary tables of the first step: EXPORT DATA does not read wildcard tables
+    */
   private def writeReplayFiles(
     job: BigQueryNativeJob,
-    tempTableNames: List[String],
+    tables: List[String],
     condition: String
   ): Unit = {
     val replayArea = DatasetArea.replay(domain.name)
@@ -616,7 +628,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
             Some(
               BigQueryNativeLoader.replayExportSql(
                 s"$folder$name-*.parquet",
-                tempTableNames,
+                tables,
                 condition,
                 // Not in the input files
                 starlakeSchema.attributes.filter(_.script.nonEmpty).map(_.name)
@@ -1118,20 +1130,24 @@ object BigQueryNativeLoader {
   /** @return
     *   the statement exporting to Parquet files all the rows of the first step without a value for
     *   a required attribute, with the columns of the input files, so that the table loads them
-    *   again
+    *   again. EXPORT DATA does not read wildcard tables ("cannot reference meta tables"): the
+    *   tables are the temporary tables of the first step.
     */
   def replayExportSql(
     uri: String,
-    tempTableNames: List[String],
+    tables: List[String],
     condition: String,
     excluded: List[String] = Nil
   ): String = {
     val columns = (CometColumns.cometInputFileNameColumn :: excluded).map(c => s"`$c`")
-    val selects = tempTableNames.map(table =>
-      s"SELECT * EXCEPT (${columns.mkString(", ")}) FROM $table WHERE NOT ($condition)"
-    )
-    s"EXPORT DATA OPTIONS (uri = ${bigQueryLiteral(uri)}, format = 'PARQUET', compression = 'SNAPPY', overwrite = true) AS\n${selects
-        .mkString("\nUNION ALL\n")}"
+    // The tables have the same columns, in the same order
+    val rows = tables.map(table => s"SELECT * FROM $table").mkString("\nUNION ALL\n")
+    s"""EXPORT DATA OPTIONS (uri = ${bigQueryLiteral(
+        uri
+      )}, format = 'PARQUET', compression = 'SNAPPY', overwrite = true) AS
+       |SELECT * EXCEPT (${columns.mkString(", ")}) FROM (
+       |$rows
+       |) WHERE NOT ($condition)""".stripMargin
   }
 
   /** @return
