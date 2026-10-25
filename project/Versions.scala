@@ -50,7 +50,7 @@ object Versions {
   val duckdb = "2.0.0.0"
   val bigQueue = "0.7.0"
   val redshiftJDBC = "2.2.8"
-  val scalaParallelCollections = "1.2.0" // matches Spark 4.1.3
+  val scalaParallelCollections = "1.3.0" // matches Spark 4.1.3
   val derbyVersion =
     "10.15.2.0" // last version compatible with Java 11, see https://db.apache.org/derby/derby_downloads.html
   // jSqlParser must match the version jsqltranspiler's pom pins
