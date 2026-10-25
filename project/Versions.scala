@@ -59,7 +59,7 @@ object Versions {
   val starlakejdbc = "0.7"
   val airflowTemplates = "0.6.17"
   val jSqlFormatter = "5.4.3"
-  val dagsterTemplates = "0.5.9"
+  val dagsterTemplates = "0.5.10"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
   val starlakeStreaming =
