@@ -60,7 +60,7 @@ object Versions {
   val airflowTemplates = "0.6.17"
   val jSqlFormatter = "5.4.3"
   val dagsterTemplates = "0.5.9"
-  val orchestrationTemplates = "0.5.6.1"
+  val orchestrationTemplates = "0.5.7"
   val snowflakeTemplates = "0.4.1"
   val starlakeStreaming =
     "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
