@@ -17,7 +17,7 @@ object Versions {
   // jackson-annotations dropped patch versioning at jackson-bom 2.20 (kept as "2.21", not "2.21.2");
   // see jackson-bom's own pom comment on <jackson.version.annotations>. No 2.21.2 artifact exists.
   val jacksonAnnotationsForSpark4 = "2.21"
-  val pureConfig = "0.17.10"
+  val pureConfig = "0.17.11"
   // elasticsearch-spark has no Spark 4 build yet (merged upstream 2026-07, not released).
   // Re-enable esSpark212 in build.sbt when elasticsearch-spark-41_2.13 ships.
   val esSpark = "8.16.6"
