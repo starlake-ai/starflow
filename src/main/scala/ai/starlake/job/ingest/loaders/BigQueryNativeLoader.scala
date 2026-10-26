@@ -14,6 +14,7 @@ import ai.starlake.job.sink.bigquery.{
 import ai.starlake.job.transform.BigQueryAutoTask
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model._
+import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryUtils}
 import ai.starlake.utils.{IngestionCounters, JobResult, Utils}
 import com.google.cloud.bigquery
@@ -31,9 +32,13 @@ import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.storage.Storage
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 
+import java.io.{BufferedWriter, OutputStreamWriter, Writer}
+import java.nio.charset.Charset
 import java.time.{Duration, Instant, ZoneId}
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try, Using}
 
@@ -207,21 +212,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   toBQSchema
                 )
 
-                val enrichedTableInfo = firstStepTableInfo.copy(
-                  maybeSchema = firstStepTableInfo.maybeSchema.map((schema: bigquery.Schema) =>
-                    bigquery.Schema.of(
-                      (schema.getFields.asScala :+
-                      Field
-                        .newBuilder(
-                          CometColumns.cometInputFileNameColumn,
-                          StandardSQLTypeName.STRING
-                        )
-                        .setDefaultValueExpression(s"'${sourceUri.replace("'", "\\\\'")}'")
-                        .build()).asJava
-                    )
-                  ),
-                  maybeDurationMs = Some(Duration.ofHours(24).toMillis)
-                )
+                val enrichedTableInfo = withInputFileName(firstStepTableInfo, sourceUri)
 
                 // TODO What if type is changed by transform ? we need to use safe_cast to have the same behavior as in SPARK.
                 val firstStepResult =
@@ -328,11 +319,25 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
               .build()
               .update()
           }
-        bigqueryJob.loadPathsToBQ(tableInfo).map(List(_)).recoverWith {
-          case exception: BigQueryLoadJobException =>
+        bigqueryJob
+          .loadPathsToBQ(tableInfo)
+          .map { loadInfo =>
+            // The bad records that a one-step load job skipped, known once it loaded the others: a
+            // failure to keep them does not fail the load, whose rows are written. Two-step loads
+            // keep them before their second step.
+            Try(keepBadRecords(targetConfig, tableInfo.maybeSchema, List(loadInfo))).failed
+              .foreach { exception =>
+                logger.error(
+                  s"Could not write the rejected records of $targetFullTableName to the audit",
+                  exception
+                )
+              }
+            List(loadInfo)
+          }
+          .recoverWith { case exception: BigQueryLoadJobException =>
             keepBadRecordsOfFailedJobs(List(exception))
             Failure(exception)
-        }
+          }
       }
     }.map {
       case Success(results) =>
@@ -341,16 +346,6 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
             errors.forEach(err => logger.error(f"${err.getReason} - ${err.getMessage}"))
           }
         }
-        // The bad records that a one-step load job skipped, known once it loaded the others: a
-        // failure to keep them does not fail the load, whose rows are written. Two-step loads keep
-        // them before their second step.
-        if (!twoSteps)
-          Try(sinkRejected(results.flatMap(badRecordsOf))).failed.foreach { exception =>
-            logger.error(
-              s"Could not write the rejected records of $targetFullTableName to the audit",
-              exception
-            )
-          }
         val bqLoadInfoOutput = if (settings.appConfig.audit.detailedLoadAudit) {
           results
         } else {
@@ -415,7 +410,13 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           // The bad records that the first step skipped, as BigQuery reports them, before
           // anything is loaded into the target: a failure to keep them fails the load, as with
           // Spark
-          _ <- Try(sinkRejected(loadFileResult.flatMap(badRecordsOf)))
+          _ <- Try(
+            keepBadRecords(
+              targetConfig,
+              Some(firstStepSchema(schemaWithMergedMetadata, existingTargetSchema, log = false)),
+              loadFileResult
+            )
+          )
           rejectedByFile <- requiredCondition
             .map(condition =>
               rejectRowsWithoutRequiredValues(
@@ -544,6 +545,332 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           )
         }
 
+  /** @return
+    *   the table info of a load of one file, whose table has a column with the name of the file
+    */
+  private def withInputFileName(tableInfo: TableInfo, sourceUri: String): TableInfo =
+    tableInfo.copy(
+      maybeSchema = tableInfo.maybeSchema.map((schema: bigquery.Schema) =>
+        bigquery.Schema.of(
+          (schema.getFields.asScala :+
+          Field
+            .newBuilder(CometColumns.cometInputFileNameColumn, StandardSQLTypeName.STRING)
+            .setDefaultValueExpression(
+              s"'${sourceUri.replace("\\", "\\\\").replace("'", "\\'")}'"
+            )
+            .build()).asJava
+        )
+      ),
+      maybeDurationMs = Some(Duration.ofHours(24).toMillis)
+    )
+
+  /** Keeps the bad records that the load jobs skipped: the rejected rows of CSV and JSON files,
+    * found by [[findRejectedRows]] (#1857), or else the bad records that BigQuery reports. A
+    * failure to write them to the audit deletes their replay file.
+    *
+    * @param loadSchema
+    *   the schema of the load jobs
+    */
+  private def keepBadRecords(
+    targetConfig: BigQueryLoadConfig,
+    loadSchema: => Option[bigquery.Schema],
+    loadInfos: List[BqLoadInfo]
+  ): Unit = {
+    val withBadRecords = loadInfos.filter(_.totalRejectedRows > 0)
+    val found =
+      if (
+        withBadRecords.nonEmpty && BigQueryRejectedRows.supports(format) &&
+        (settings.appConfig.audit.maxErrors > 0 || settings.appConfig.sinkReplayToFile)
+      )
+        loadSchema.flatMap { schema =>
+          Try(findRejectedRows(targetConfig, schema, withBadRecords)) match {
+            case Success(found) => Some(found)
+            case Failure(exception) =>
+              logger.warn(
+                s"Could not find the rejected rows of $targetFullTableName: the bad records that BigQuery reports are kept instead",
+                exception
+              )
+              None
+          }
+        }
+      else None
+    found match {
+      case Some(found) =>
+        try sinkRejected(found.records)
+        catch {
+          case exception: Exception =>
+            found.replay.foreach(path => Try(storageHandler.delete(path)))
+            throw exception
+        }
+      case None => sinkRejected(loadInfos.flatMap(badRecordsOf))
+    }
+  }
+
+  /** The rejected rows of load jobs, found by [[findRejectedRows]]
+    *
+    * @param records
+    *   the records to write to the audit
+    * @param replay
+    *   their replay file, if written
+    */
+  private case class FoundRows(records: List[RejectedRecord], replay: Option[Path])
+
+  /** Finds the rejected rows of load jobs of CSV or JSON files, to keep them as the Spark loads
+    * keep theirs. The files are loaded again into diagnostic tables, every CSV value or JSON line
+    * as a string, which are queried with the rules of the load jobs for the types of the load
+    * schema, then dropped.
+    *
+    * The rejected rows of a load job are exact when there are as many as its bad records that the
+    * diagnostic loads did not reject, whose errors are structural. The records are the first
+    * `audit.maxErrors` rejected rows, then the bad records of the diagnostic loads as BigQuery
+    * reports them, and for the load jobs whose rows are not exact, their own bad records as
+    * BigQuery reports them. With `sinkReplayToFile`, all the rejected rows are written to a replay
+    * file, as lines of the input files, when the rows of every load job are exact: so that no
+    * loaded row is loaded again.
+    *
+    * @param loadInfos
+    *   the load jobs, with bad records
+    */
+  private def findRejectedRows(
+    targetConfig: BigQueryLoadConfig,
+    loadSchema: bigquery.Schema,
+    loadInfos: List[BqLoadInfo]
+  ): FoundRows = {
+    val withValue = settings.appConfig.rejectWithValue
+    val maxErrors = settings.appConfig.audit.maxErrors
+    val diagnosticMetadata = BigQueryRejectedRows.diagnosticMetadata(mergedMetadata)
+    val diagnosticSchema = BigQueryRejectedRows.diagnosticSchema(format, loadSchema)
+    val name = SQLUtils.temporaryTableName(starlakeSchema.finalName)
+    // In the dataset of the target, the dataset of its branch included
+    def tableId(suffix: String): TableId =
+      Option(targetTableId.getProject)
+        .map(TableId.of(_, targetTableId.getDataset, s"${name}_$suffix"))
+        .getOrElse(TableId.of(targetTableId.getDataset, s"${name}_$suffix"))
+    val files = loadInfos.zipWithIndex.flatMap { case (loadInfo, job) =>
+      loadInfo.paths.map(job -> _)
+    }
+    val tableIds = files.indices.toList.map(index => tableId(index.toString))
+    try {
+      val diagnosticLoads =
+        ParUtils
+          .runInParallel(files.zip(tableIds), Some(settings.appConfig.maxParTask)) {
+            case ((job, file), tableId) =>
+              val diagnosticJob = new BigQueryNativeJob(
+                targetConfig.copy(
+                  source = Left(file),
+                  outputTableId = Some(tableId),
+                  outputTableDesc =
+                    Some("Temporary table created to find the rejected rows of a load."),
+                  createDisposition = JobInfo.CreateDisposition.CREATE_IF_NEEDED.name(),
+                  writeDisposition = JobInfo.WriteDisposition.WRITE_APPEND.name(),
+                  outputPartition = None,
+                  outputClustering = Nil,
+                  days = None,
+                  requirePartitionFilter = false,
+                  // A row access policy would hide rows from the query. The column-level security
+                  // of the attributes still protects their raw values
+                  rls = Nil,
+                  acl = Nil,
+                  starlakeSchema =
+                    Some(schemaWithMergedMetadata.copy(metadata = Some(diagnosticMetadata)))
+                ),
+                ""
+              )
+              val tableInfo = diagnosticJob.getTableInfo(tableId, _ => diagnosticSchema)
+              job -> diagnosticJob
+                .loadPathsToBQ(tableInfo, Some(withInputFileName(tableInfo, file)))
+                .get
+          }
+          .toList
+      // Rows for the audit only
+      val limited = !settings.appConfig.sinkReplayToFile
+      val sql = BigQueryRejectedRows.rejectedRowsSql(
+        BigQueryUtils.tableIdToTableName(tableId("*")),
+        files.map { case (job, _) => job },
+        format,
+        loadSchema,
+        withValue,
+        effectiveSchema.attributes,
+        if (limited) Some(maxErrors) else None
+      )
+      val rows = new BigQueryNativeJob(targetConfig, "")
+        .runBigQueryJob(Some(sql), pageSize = Some(1000))
+        .get
+        .tableResult
+        .getOrElse(throw new IllegalStateException(s"No result for $sql"))
+      val names = loadSchema.getFields.asScala.toList.map(_.getName)
+      // Not in the input files
+      val scripted =
+        effectiveSchema.attributes.filter(_.script.nonEmpty).map(_.name.toLowerCase).toSet
+      val hidden = effectiveSchema.attributes
+        .filter(a => a.resolveIgnore() || a.resolvePrivacy() != TransformInput.None)
+        .flatMap(a => List(a.name, a.getFinalName()))
+        .map(_.toLowerCase)
+        .toSet ++ scripted
+      val replayColumns =
+        names.zipWithIndex.filterNot { case (name, _) => scripted(name.toLowerCase) }.map(_._2)
+      val replay =
+        if (settings.appConfig.sinkReplayToFile) Some(new ReplayFile(replayColumns.map(names)))
+        else None
+      val records = ListBuffer.empty[RejectedRecord]
+      val counts = mutable.Map.empty[Int, Long].withDefaultValue(0L)
+      try {
+        rows.iterateAll().forEach { fieldValues =>
+          val row = BigQueryRejectedRows.rejectedRow(
+            fieldValues,
+            format,
+            names,
+            hidden,
+            withValue,
+            counted = limited
+          )
+          counts(row.job) = row.jobCount.getOrElse(counts(row.job) + 1)
+          if (records.size < maxErrors) records += rejectedRecord(row.errors, row.file, row.value)
+          replay.foreach { file =>
+            if (format == Format.DSV) {
+              val values = row.values.toVector
+              file.write(replayColumns.map(values))
+            } else file.write(row.values)
+          }
+        }
+      } catch {
+        case exception: Exception =>
+          replay.foreach(_.abort())
+          throw exception
+      }
+      val structural = diagnosticLoads.groupMapReduce(_._1)(_._2.totalRejectedRows)(_ + _)
+      val inexact = loadInfos.zipWithIndex.flatMap { case (loadInfo, job) =>
+        val count = counts(job)
+        val structuralCount = structural.getOrElse(job, 0L)
+        val files = loadInfo.paths.mkString(", ")
+        if (loadInfo.totalRejectedRows - structuralCount == count) {
+          logger.info(
+            s"Found the $count rows of $files rejected by the load of $targetFullTableName" +
+            (if (structuralCount > 0)
+               s", and $structuralCount other bad records with structural errors"
+             else "")
+          )
+          None
+        } else {
+          logger.warn(
+            s"Found $count rows of $files rejected by the load of $targetFullTableName, which rejected ${loadInfo.totalRejectedRows} bad records, $structuralCount with structural errors: the rules of the native loader differ from those of BigQuery for some values. The rows found are written to the audit, with the bad records that BigQuery reports${if (settings.appConfig.sinkReplayToFile) ", and no replay file is written, so that no loaded row is loaded again"
+              else ""}"
+          )
+          Some(job)
+        }
+      }.toSet
+      val replayed = replay.flatMap { file =>
+        if (inexact.isEmpty) file.close()
+        else {
+          file.abort()
+          None
+        }
+      }
+      FoundRows(
+        records.toList ++
+        diagnosticLoads.collect {
+          case (job, loadInfo) if !inexact(job) => badRecordsOf(loadInfo)
+        }.flatten ++
+        loadInfos.zipWithIndex.collect {
+          case (loadInfo, job) if inexact(job) => badRecordsOf(loadInfo)
+        }.flatten,
+        replayed
+      )
+    } finally {
+      Try(ParUtils.runInParallel(tableIds, Some(settings.appConfig.maxParTask)) { id =>
+        BigQueryJobBase.recoverBigqueryException(settings.appConfig.onExceptionRetries) {
+          new BigQueryNativeJob(targetConfig, "").dropTable(id)
+        }
+      }).failed.foreach(exception => Utils.logException(logger, exception))
+    }
+  }
+
+  /** @return
+    *   the name of new replay files of the domain, without extension: unique, so that two loads of
+    *   the table in the same second keep their files
+    */
+  private def replayName(): String = {
+    val timestamp = DateTimeFormatter
+      .ofPattern("yyyyMMddHHmmss")
+      .withZone(ZoneId.systemDefault())
+      .format(Instant.now())
+    s"${domain.name}.${starlakeSchema.name}.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
+  }
+
+  /** The replay file of the rejected rows of CSV or JSON files, in the replay area of the domain,
+    * created with its first row: the lines of a JSON file, the rows of a CSV file with its header,
+    * separator, quote and null value, in their encoding, so that the table loads it again. A
+    * failure to write it deletes it, with a `WARN`: the rows are kept in the audit.
+    *
+    * @param names
+    *   the names of the columns of a CSV file
+    */
+  private class ReplayFile(names: List[String]) {
+    private val csv = format == Format.DSV
+    private val path =
+      new Path(DatasetArea.replay(domain.name), s"${replayName()}.${if (csv) "csv" else "json"}")
+    private val charset =
+      Charset.forName(BigQueryRejectedRows.diagnosticMetadata(mergedMetadata).resolveEncoding())
+    private var writer: Option[Writer] = None
+    private var started = false
+    private var failed = false
+
+    private def line(values: List[Option[String]]): String =
+      if (csv)
+        BigQueryRejectedRows.csvLine(
+          values,
+          mergedMetadata.resolveSeparator(),
+          // BigQuery's default
+          mergedMetadata.quote.getOrElse("\""),
+          mergedMetadata.nullValue
+        )
+      else values.headOption.flatten.getOrElse("")
+
+    def write(values: List[Option[String]]): Unit =
+      if (!failed)
+        Try {
+          val output = writer.getOrElse {
+            started = true
+            storageHandler.mkdirs(path.getParent)
+            val created =
+              new BufferedWriter(new OutputStreamWriter(storageHandler.output(path), charset))
+            writer = Some(created)
+            if (csv && mergedMetadata.resolveWithHeader())
+              created.write(line(names.map(Some(_))) + "\n")
+            created
+          }
+          output.write(line(values) + "\n")
+        }.failed.foreach(fail)
+
+    private def fail(exception: Throwable): Unit = {
+      logger.warn(s"Could not write the replay file $path of $targetFullTableName", exception)
+      abort()
+      failed = true
+    }
+
+    /** @return
+      *   the file, if written
+      */
+    def close(): Option[Path] =
+      writer.filterNot(_ => failed).flatMap { output =>
+        Try(output.close()) match {
+          case Success(_) =>
+            logger.info(s"Replay file of $targetFullTableName written to $path")
+            Some(path)
+          case Failure(exception) =>
+            fail(exception)
+            None
+        }
+      }
+
+    /** Deletes the file, written in part */
+    def abort(): Unit = {
+      writer.foreach(output => Try(output.close()))
+      writer = None
+      if (started) Try(storageHandler.delete(path))
+    }
+  }
+
   /** Keeps the rows of the first step without a value for a required attribute, as the Spark loads
     * keep their rejected rows: the first `audit.maxErrors` of them in the audit `rejected` table,
     * and all of them in replay files with `sinkReplayToFile`
@@ -600,13 +927,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     condition: String
   ): Unit = {
     val replayArea = DatasetArea.replay(domain.name)
-    val timestamp = DateTimeFormatter
-      .ofPattern("yyyyMMddHHmmss")
-      .withZone(ZoneId.systemDefault())
-      .format(Instant.now())
-    // Unique, so that two loads of the table in the same second keep their files
-    val name =
-      s"${domain.name}.${starlakeSchema.name}.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
+    val name = replayName()
     val onCloudStorage = replayArea.toString.startsWith("gs://")
     val exportFolder =
       if (onCloudStorage) Some(replayArea.toString.stripSuffix("/") + "/")

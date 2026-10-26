@@ -267,23 +267,12 @@ object BigQueryNativeSchema extends LazyLogging {
     *   step SQL of the loads, cannot parse a CAST to `RANGE<T>`.
     */
   def rangeFromText(text: String, elementType: String, safe: Boolean): String = {
-    val trimmed = s"TRIM($text)"
-    // An unbounded bound is UNBOUNDED or NULL, in any case
-    def bound(regex: String): String = {
-      val text = s"TRIM(REGEXP_EXTRACT($trimmed, '$regex'))"
-      s"IF(UPPER($text) IN ('UNBOUNDED', 'NULL'), NULL, $text)"
-    }
-    val lower = bound("^[[]([^,]+),")
-    val upper = bound(",([^,]+)[)]$")
-    val wellFormed = s"REGEXP_CONTAINS($trimmed, '^[[][^,]+,[^,]+[)]$$')"
+    val RangeText(wellFormed, lower, upper) = RangeText(text)
     if (safe) {
       def cast(bound: String) = s"SAFE_CAST($bound AS $elementType)"
-      def castable(bound: String) = s"($bound IS NULL OR ${cast(bound)} IS NOT NULL)"
-      // RANGE fails when its lower bound is not before its upper bound
-      val ordered = s"($lower IS NULL OR $upper IS NULL OR ${cast(lower)} < ${cast(upper)})"
-      s"CASE WHEN $wellFormed AND ${castable(lower)} AND ${castable(
+      s"CASE WHEN ${RangeText.validCondition(text, elementType)} THEN RANGE(${cast(lower)}, ${cast(
           upper
-        )} AND $ordered THEN RANGE(${cast(lower)}, ${cast(upper)}) END"
+        )}) END"
     } else {
       // No CASE ... ELSE ERROR(...): BigQuery fails on it with "Function is not implemented. id:
       // cast_range_to_range". A malformed text is cast as a bound instead, which fails the query
@@ -292,6 +281,104 @@ object BigQueryNativeSchema extends LazyLogging {
       s"IF($text IS NULL, NULL, RANGE(${strictBound(lower)}, ${strictBound(upper)}))"
     }
   }
+
+  /** The parts of the canonical text of a RANGE, `[lower, upper)`, in SQL
+    *
+    * @param wellFormed
+    *   the condition that the text has two bounds
+    * @param lower
+    *   the text of its lower bound, NULL when it is unbounded (`UNBOUNDED` or `NULL`, in any case)
+    * @param upper
+    *   the text of its upper bound, NULL when it is unbounded
+    */
+  private case class RangeText(wellFormed: String, lower: String, upper: String)
+
+  private object RangeText {
+    def apply(text: String): RangeText = {
+      val trimmed = s"TRIM($text)"
+      def bound(regex: String): String = {
+        val text = s"TRIM(REGEXP_EXTRACT($trimmed, '$regex'))"
+        s"IF(UPPER($text) IN ('UNBOUNDED', 'NULL'), NULL, $text)"
+      }
+      RangeText(
+        s"REGEXP_CONTAINS($trimmed, '^[[][^,]+,[^,]+[)]$$')",
+        bound("^[[]([^,]+),"),
+        bound(",([^,]+)[)]$")
+      )
+    }
+
+    /** @return
+      *   the condition that a non null text is the canonical text of a RANGE of this element type:
+      *   two bounds of the type, or unbounded, the lower one before the upper one
+      */
+    def validCondition(text: String, elementType: String): String = {
+      val RangeText(wellFormed, lower, upper) = RangeText(text)
+      def cast(bound: String) = s"SAFE_CAST($bound AS $elementType)"
+      def castable(bound: String) = s"($bound IS NULL OR ${cast(bound)} IS NOT NULL)"
+      // RANGE fails when its lower bound is not before its upper bound
+      val ordered = s"($lower IS NULL OR $upper IS NULL OR ${cast(lower)} < ${cast(upper)})"
+      s"$wellFormed AND ${castable(lower)} AND ${castable(upper)} AND $ordered"
+    }
+  }
+
+  /** The values of BOOL columns that load jobs read, in any case */
+  private val loadedBooleans = List("true", "false", "t", "f", "yes", "no", "y", "n", "1", "0")
+
+  /** @param text
+    *   the SQL of a non null string: a value of a CSV file, or the text of a scalar of a JSON file
+    * @param csv
+    *   true for the value of a CSV file, false for a JSON file: BigQuery reads their INTERVAL
+    *   values in different formats
+    * @return
+    *   the SQL condition, never NULL, that a load job reads this text into a column of this type,
+    *   as BigQuery documents its CSV and JSON loads, if the type has one (#1857):
+    *   - `BOOL`: 1 or 0, true or false, t or f, yes or no, y or n, in any case;
+    *   - `BYTES`: base64;
+    *   - `TIMESTAMP`: the text of a timestamp, with a date, whose separator can be a slash, and a
+    *     time, whose seconds are optional, or a number of seconds since the Unix epoch;
+    *   - `GEOGRAPHY`: WKT, WKB in hexadecimal, or GeoJSON;
+    *   - `INTERVAL`: its canonical text, `Y-M D H:M:S[.F]`, in CSV files, and ISO 8601 in JSON;
+    *   - `RANGE`: its canonical text, `[lower, upper)`;
+    *   - `STRING(L)` and `BYTES(L)`: at most L characters or bytes;
+    *   - the other types, `NUMERIC(P, S)` and `BIGNUMERIC(P, S)` included, as SAFE_CAST reads them.
+    *
+    * None for a type that reads any text: STRING without a maximum length, and the types this
+    * function does not know.
+    */
+  def loadableText(text: String, tpe: BigQueryType, csv: Boolean): Option[String] =
+    Option(tpe.standardType).collect {
+      case StandardSQLTypeName.STRING if tpe.maxLength.isDefined =>
+        s"LENGTH($text) <= ${tpe.maxLength.get}"
+      case StandardSQLTypeName.BYTES =>
+        s"SAFE.FROM_BASE64($text) IS NOT NULL" + tpe.maxLength
+          .map(length => s" AND BYTE_LENGTH(SAFE.FROM_BASE64($text)) <= $length")
+          .getOrElse("")
+      case StandardSQLTypeName.BOOL =>
+        s"LOWER($text) IN (${loadedBooleans.map(b => s"'$b'").mkString(", ")})"
+      case StandardSQLTypeName.INT64 | StandardSQLTypeName.FLOAT64 | StandardSQLTypeName.NUMERIC |
+          StandardSQLTypeName.BIGNUMERIC | StandardSQLTypeName.DATE | StandardSQLTypeName.DATETIME |
+          StandardSQLTypeName.TIME =>
+        s"SAFE_CAST($text AS ${tpe.render}) IS NOT NULL"
+      case StandardSQLTypeName.TIMESTAMP =>
+        // A date and a time, which SAFE_CAST does not require
+        val dateAndTime =
+          raw"REGEXP_CONTAINS($text, r'^\s*\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{1,2}')"
+        val dashes = raw"REGEXP_REPLACE($text, r'^(\s*\d{4})/(\d{1,2})/(\d{1,2})', r'\1-\2-\3')"
+        val withSeconds =
+          raw"REGEXP_REPLACE($dashes, r'^(\s*\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{1,2})([^:\d].*)?$$', r'\1:00\2')"
+        val epoch =
+          raw"REGEXP_CONTAINS($text, r'^\s*[-+]?\d+(\.\d+)?\s*$$') AND SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_MULTIPLY(SAFE_CAST(TRIM($text) AS BIGNUMERIC), 1000000) AS INT64)) IS NOT NULL"
+        s"(($dateAndTime AND (SAFE_CAST($text AS TIMESTAMP) IS NOT NULL OR SAFE_CAST($withSeconds AS TIMESTAMP) IS NOT NULL)) OR ($epoch))"
+      case StandardSQLTypeName.GEOGRAPHY =>
+        s"SAFE.ST_GEOGFROM($text) IS NOT NULL"
+      case StandardSQLTypeName.JSON =>
+        s"SAFE.PARSE_JSON($text, wide_number_mode => 'round') IS NOT NULL"
+      case StandardSQLTypeName.INTERVAL =>
+        val iso = raw"REGEXP_CONTAINS($text, r'^\s*-?P')"
+        s"${if (csv) s"NOT $iso" else iso} AND SAFE_CAST($text AS INTERVAL) IS NOT NULL"
+      case StandardSQLTypeName.RANGE if tpe.rangeElementType.isDefined =>
+        s"(${RangeText.validCondition(text, tpe.rangeElementType.get.name())})"
+    }
 
   /** @return
     *   the type of each top-level leaf attribute whose column type in the target schema differs
