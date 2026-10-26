@@ -89,9 +89,24 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
     rule(BigQueryType(StandardSQLTypeName.INT64)) shouldBe Some(
       "SAFE_CAST(v AS INT64) IS NOT NULL"
     )
+    // BigQuery refuses parameterized types in CAST: the integer digits of the rounded value
     rule(
       BigQueryType(StandardSQLTypeName.BIGNUMERIC, precision = Some(40), scale = Some(2))
-    ) shouldBe Some("SAFE_CAST(v AS BIGNUMERIC(40, 2)) IS NOT NULL")
+    ) shouldBe Some(
+      s"SAFE_CAST(v AS BIGNUMERIC) IS NOT NULL AND ABS(ROUND(SAFE_CAST(v AS BIGNUMERIC), 2)) < BIGNUMERIC '1${"0" * 38}'"
+    )
+    rule(
+      BigQueryType(StandardSQLTypeName.NUMERIC, precision = Some(5), scale = Some(2))
+    ) shouldBe Some(
+      "SAFE_CAST(v AS NUMERIC) IS NOT NULL AND ABS(ROUND(SAFE_CAST(v AS NUMERIC), 2)) < NUMERIC '1000'"
+    )
+    // The precision of NUMERIC
+    rule(
+      BigQueryType(StandardSQLTypeName.NUMERIC, precision = Some(38), scale = Some(9))
+    ) shouldBe Some("SAFE_CAST(v AS NUMERIC) IS NOT NULL")
+    rule(BigQueryType(StandardSQLTypeName.NUMERIC, precision = Some(3))) shouldBe Some(
+      "SAFE_CAST(v AS NUMERIC) IS NOT NULL AND ABS(ROUND(SAFE_CAST(v AS NUMERIC), 0)) < NUMERIC '1000'"
+    )
     rule(BigQueryType(StandardSQLTypeName.GEOGRAPHY)) shouldBe Some(
       "SAFE.ST_GEOGFROM(v) IS NOT NULL"
     )

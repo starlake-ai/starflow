@@ -98,17 +98,35 @@ class BigQueryNativeJob(
                   .flatMap { job =>
                     logger.info(s"Waiting for job ${job.getJobId}")
                     // Blocks until this load table job completes its execution, either failing or succeeding.
-                    BigQueryJobBase.recoverBigqueryException(
-                      settings.appConfig.onExceptionRetries
-                    )(
-                      job.waitFor(
-                        RetryOption.totalTimeout(
-                          org.threeten.bp.Duration.ofMillis(
-                            jobTimeoutMs.getOrElse(settings.appConfig.longJobTimeoutMs)
+                    BigQueryJobBase
+                      .recoverBigqueryException(
+                        settings.appConfig.onExceptionRetries
+                      )(
+                        job.waitFor(
+                          RetryOption.totalTimeout(
+                            org.threeten.bp.Duration.ofMillis(
+                              jobTimeoutMs.getOrElse(settings.appConfig.longJobTimeoutMs)
+                            )
                           )
                         )
                       )
-                    )
+                      .recoverWith {
+                        // waitFor throws when the job fails: the failed job reports its bad
+                        // records, kept by the native loader
+                        case exception: BigQueryException =>
+                          Try(
+                            bigquery(accessToken = cliConfig.accessToken).getJob(job.getJobId)
+                          ).toOption
+                            .flatMap(scala.Option(_))
+                            .filter(failed =>
+                              scala
+                                .Option(failed.getStatus)
+                                .flatMap(s => scala.Option(s.getError))
+                                .isDefined
+                            )
+                            .map(Success(_))
+                            .getOrElse(Failure(exception))
+                      }
                   }
                   .map { jobResult =>
                     if (scala.Option(jobResult.getStatus.getError()).isEmpty) {
