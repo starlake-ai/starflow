@@ -340,7 +340,9 @@ object BigQueryNativeSchema extends LazyLogging {
     *   - `INTERVAL`: its canonical text, `Y-M D H:M:S[.F]`, in CSV files, and ISO 8601 in JSON;
     *   - `RANGE`: its canonical text, `[lower, upper)`;
     *   - `STRING(L)` and `BYTES(L)`: at most L characters or bytes;
-    *   - the other types, `NUMERIC(P, S)` and `BIGNUMERIC(P, S)` included, as SAFE_CAST reads them.
+    *   - `NUMERIC(P, S)` and `BIGNUMERIC(P, S)`: at most P - S integer digits once rounded to S
+    *     decimals, since BigQuery refuses parameterized types in CAST;
+    *   - the other types as SAFE_CAST reads them.
     *
     * None for a type that reads any text: STRING without a maximum length, and the types this
     * function does not know.
@@ -355,10 +357,19 @@ object BigQueryNativeSchema extends LazyLogging {
           .getOrElse("")
       case StandardSQLTypeName.BOOL =>
         s"LOWER($text) IN (${loadedBooleans.map(b => s"'$b'").mkString(", ")})"
-      case StandardSQLTypeName.INT64 | StandardSQLTypeName.FLOAT64 | StandardSQLTypeName.NUMERIC |
-          StandardSQLTypeName.BIGNUMERIC | StandardSQLTypeName.DATE | StandardSQLTypeName.DATETIME |
-          StandardSQLTypeName.TIME =>
+      case StandardSQLTypeName.INT64 | StandardSQLTypeName.FLOAT64 | StandardSQLTypeName.DATE |
+          StandardSQLTypeName.DATETIME | StandardSQLTypeName.TIME =>
         s"SAFE_CAST($text AS ${tpe.render}) IS NOT NULL"
+      case StandardSQLTypeName.NUMERIC | StandardSQLTypeName.BIGNUMERIC =>
+        // BigQuery refuses parameterized types in CAST: a value rounded to the scale has at most
+        // P - S integer digits. NUMERIC has 29 of them at most
+        val base = tpe.standardType.name()
+        val cast = s"SAFE_CAST($text AS $base)"
+        val bound = tpe.precision.map(_ - tpe.scale.getOrElse(0L)).collect {
+          case digits if tpe.standardType == StandardSQLTypeName.BIGNUMERIC || digits < 29 =>
+            s" AND ABS(ROUND($cast, ${tpe.scale.getOrElse(0L)})) < $base '1${"0" * digits.toInt}'"
+        }
+        s"$cast IS NOT NULL${bound.getOrElse("")}"
       case StandardSQLTypeName.TIMESTAMP =>
         // A date and a time, which SAFE_CAST does not require
         val dateAndTime =
