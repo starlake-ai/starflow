@@ -86,26 +86,29 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
     rule(BigQueryType(StandardSQLTypeName.BOOL)) shouldBe Some(
       "LOWER(v) IN ('true', 'false', 't', 'f', 'yes', 'no', 'y', 'n', '1', '0')"
     )
+    // Not hexadecimal
     rule(BigQueryType(StandardSQLTypeName.INT64)) shouldBe Some(
-      "SAFE_CAST(v AS INT64) IS NOT NULL"
+      "SAFE_CAST(v AS INT64) IS NOT NULL AND NOT REGEXP_CONTAINS(v, r'^\\s*[-+]?0[xX]')"
     )
-    // BigQuery refuses parameterized types in CAST: the integer digits of the rounded value
+    // Load jobs do not round: at most S decimals and P - S integer digits, read exactly. BigQuery
+    // refuses parameterized types in CAST
+    val exact = "SAFE_CAST(v AS BIGNUMERIC)"
     rule(
       BigQueryType(StandardSQLTypeName.BIGNUMERIC, precision = Some(40), scale = Some(2))
     ) shouldBe Some(
-      s"SAFE_CAST(v AS BIGNUMERIC) IS NOT NULL AND ABS(ROUND(SAFE_CAST(v AS BIGNUMERIC), 2)) < BIGNUMERIC '1${"0" * 38}'"
+      s"$exact IS NOT NULL AND ROUND($exact, 2) = $exact AND ABS($exact) < BIGNUMERIC '1${"0" * 38}'"
     )
+    rule(BigQueryType(StandardSQLTypeName.BIGNUMERIC)) shouldBe Some(s"$exact IS NOT NULL")
     rule(
       BigQueryType(StandardSQLTypeName.NUMERIC, precision = Some(5), scale = Some(2))
     ) shouldBe Some(
-      "SAFE_CAST(v AS NUMERIC) IS NOT NULL AND ABS(ROUND(SAFE_CAST(v AS NUMERIC), 2)) < NUMERIC '1000'"
+      s"$exact IS NOT NULL AND ROUND($exact, 2) = $exact AND ABS($exact) < BIGNUMERIC '1000'"
     )
-    // The precision of NUMERIC
-    rule(
-      BigQueryType(StandardSQLTypeName.NUMERIC, precision = Some(38), scale = Some(9))
-    ) shouldBe Some("SAFE_CAST(v AS NUMERIC) IS NOT NULL")
+    rule(BigQueryType(StandardSQLTypeName.NUMERIC)) shouldBe Some(
+      s"$exact IS NOT NULL AND ROUND($exact, 9) = $exact AND ABS($exact) < BIGNUMERIC '1${"0" * 29}'"
+    )
     rule(BigQueryType(StandardSQLTypeName.NUMERIC, precision = Some(3))) shouldBe Some(
-      "SAFE_CAST(v AS NUMERIC) IS NOT NULL AND ABS(ROUND(SAFE_CAST(v AS NUMERIC), 0)) < NUMERIC '1000'"
+      s"$exact IS NOT NULL AND ROUND($exact, 0) = $exact AND ABS($exact) < BIGNUMERIC '1000'"
     )
     rule(BigQueryType(StandardSQLTypeName.GEOGRAPHY)) shouldBe Some(
       "SAFE.ST_GEOGFROM(v) IS NOT NULL"
@@ -121,10 +124,11 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
       "REGEXP_CONTAINS(v, r'^\\s*-?P') AND SAFE_CAST(v AS INTERVAL) IS NOT NULL"
     )
     val timestamp = rule(BigQueryType(StandardSQLTypeName.TIMESTAMP)).get
-    timestamp should include("SAFE_CAST(v AS TIMESTAMP) IS NOT NULL")
-    // A slash date, a time without seconds, epoch seconds
+    timestamp should include(" AS TIMESTAMP) IS NOT NULL")
+    // A slash date, a time without seconds, more than 6 decimals of seconds, epoch seconds
     timestamp should include("r'\\1-\\2-\\3'")
     timestamp should include("r'\\1:00\\2'")
+    timestamp should include("r'(:\\d{1,2}\\.\\d{6})\\d+', r'\\1'")
     timestamp should include("SAFE.TIMESTAMP_MICROS(")
     val range =
       rule(
@@ -146,9 +150,16 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
       "`price` is not a valid NUMERIC(10, 2)",
       "`days` is not a valid RANGE<DATE>"
     )
-    checks.head.condition shouldBe "r.`id` IS NOT NULL"
-    checks(1).condition shouldBe "(r.`id` IS NULL OR (SAFE_CAST(r.`id` AS INT64) IS NOT NULL))"
+    // An empty value is null, but in STRING and BYTES columns
+    checks.head.condition shouldBe "NULLIF(r.`id`, '') IS NOT NULL"
+    checks(1).condition shouldBe
+    "(NULLIF(r.`id`, '') IS NULL OR (SAFE_CAST(NULLIF(r.`id`, '') AS INT64) IS NOT NULL AND NOT REGEXP_CONTAINS(NULLIF(r.`id`, ''), r'^\\s*[-+]?0[xX]')))"
     checks(2).condition shouldBe "(r.`code` IS NULL OR (LENGTH(r.`code`) <= 3))"
+    // With a null marker, an empty value is an error
+    BigQueryRejectedRows
+      .csvChecks(csvSchema, "r", emptyIsNull = false)
+      .head
+      .condition shouldBe "r.`id` IS NOT NULL"
   }
 
   "jsonChecks" should "check the line, then its fields at every level" in {
@@ -178,7 +189,7 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
     byError("`id`  can't be null") shouldBe
     "(IFNULL(JSON_TYPE(j), '') != 'object' OR NOT (IFNULL(JSON_TYPE(j[\"id\"]), 'null') = 'null'))"
     byError("`id` is not a valid INT64") shouldBe
-    "(IFNULL(JSON_TYPE(j), '') != 'object' OR (IFNULL(JSON_TYPE(j[\"id\"]), 'null') = 'null' OR (JSON_TYPE(j[\"id\"]) IN ('string', 'number', 'boolean') AND (SAFE_CAST(JSON_VALUE(j[\"id\"]) AS INT64) IS NOT NULL))))"
+    "(IFNULL(JSON_TYPE(j), '') != 'object' OR (IFNULL(JSON_TYPE(j[\"id\"]), 'null') = 'null' OR (JSON_TYPE(j[\"id\"]) IN ('string', 'number', 'boolean') AND (SAFE_CAST(JSON_VALUE(j[\"id\"]) AS INT64) IS NOT NULL AND NOT REGEXP_CONTAINS(JSON_VALUE(j[\"id\"]), r'^\\s*[-+]?0[xX]')))))"
     byError("`tags` holds a null element") shouldBe
     "(IFNULL(JSON_TYPE(j), '') != 'object' OR NOT EXISTS (SELECT 1 FROM UNNEST(JSON_QUERY_ARRAY(j[\"tags\"])) AS sl_element_0 WHERE JSON_TYPE(sl_element_0) = 'null'))"
     // A required field of a record applies when the record is an object
@@ -187,8 +198,9 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
     // Every element of a repeated record
     byError("`lines.flag`  can't be null") shouldBe
     "(IFNULL(JSON_TYPE(j), '') != 'object' OR NOT EXISTS (SELECT 1 FROM UNNEST(JSON_QUERY_ARRAY(j[\"lines\"])) AS sl_element_0 WHERE JSON_TYPE(sl_element_0) != 'null' AND NOT ((IFNULL(JSON_TYPE(sl_element_0), '') != 'object' OR NOT (IFNULL(JSON_TYPE(sl_element_0[\"flag\"]), 'null') = 'null')))))"
+    // A string, not a GeoJSON object
     byError("`area` is not a valid GEOGRAPHY") should include(
-      "SAFE.ST_GEOGFROMGEOJSON(TO_JSON_STRING(j[\"area\"]))"
+      "(JSON_TYPE(j[\"area\"]) = 'string' AND SAFE.ST_GEOGFROM(JSON_VALUE(j[\"area\"])) IS NOT NULL)"
     )
   }
 
@@ -206,7 +218,7 @@ class BigQueryRejectedRowsSpec extends AnyFlatSpec with Matchers {
     // The checks are written once, for all the files: the load job of a file is given by its
     // table, and no window function holds the rows of a load job
     sql should startWith(
-      "SELECT * FROM (SELECT sl_row.sl_job, sl_row.`sl_input_file_name` AS sl_file, CONCAT(IF(sl_row.`id` IS NOT NULL, '', \"`id`  can't be null\\n\"), IF((sl_row.`id` IS NULL OR (SAFE_CAST("
+      "SELECT * FROM (SELECT sl_row.sl_job, sl_row.`sl_input_file_name` AS sl_file, CONCAT(IF(NULLIF(sl_row.`id`, '') IS NOT NULL, '', \"`id`  can't be null\\n\"), IF((NULLIF(sl_row.`id`, '') IS NULL OR (SAFE_CAST("
     )
     sql should include(
       "STRUCT(sl_row.`id` AS `id`, sl_row.`code` AS `code`, sl_row.`label` AS `label`, sl_row.`price` AS `price`, sl_row.`days` AS `days`) AS sl_raw FROM (SELECT *, [0, 0, 1][OFFSET(CAST(_TABLE_SUFFIX AS INT64))] AS sl_job FROM `p`.`d`.`t_*`) AS sl_row"

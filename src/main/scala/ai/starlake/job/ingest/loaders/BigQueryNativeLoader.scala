@@ -691,7 +691,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         loadSchema,
         withValue,
         effectiveSchema.attributes,
-        if (limited) Some(maxErrors) else None
+        if (limited) Some(maxErrors) else None,
+        emptyIsNull = mergedMetadata.nullValue.forall(_.isEmpty)
       )
       val rows = new BigQueryNativeJob(targetConfig, "")
         .runBigQueryJob(Some(sql), pageSize = Some(1000))
