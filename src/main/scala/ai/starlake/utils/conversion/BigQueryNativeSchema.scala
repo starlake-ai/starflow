@@ -334,14 +334,16 @@ object BigQueryNativeSchema extends LazyLogging {
     *   as BigQuery documents its CSV and JSON loads, if the type has one (#1857):
     *   - `BOOL`: 1 or 0, true or false, t or f, yes or no, y or n, in any case;
     *   - `BYTES`: base64;
+    *   - `INT64`: as SAFE_CAST reads it, except hexadecimal integers;
     *   - `TIMESTAMP`: the text of a timestamp, with a date, whose separator can be a slash, and a
-    *     time, whose seconds are optional, or a number of seconds since the Unix epoch;
+    *     time, whose seconds are optional and can have more than 6 decimals, or a number of seconds
+    *     since the Unix epoch;
     *   - `GEOGRAPHY`: WKT, WKB in hexadecimal, or GeoJSON;
     *   - `INTERVAL`: its canonical text, `Y-M D H:M:S[.F]`, in CSV files, and ISO 8601 in JSON;
     *   - `RANGE`: its canonical text, `[lower, upper)`;
     *   - `STRING(L)` and `BYTES(L)`: at most L characters or bytes;
-    *   - `NUMERIC(P, S)` and `BIGNUMERIC(P, S)`: at most P - S integer digits once rounded to S
-    *     decimals, since BigQuery refuses parameterized types in CAST;
+    *   - `NUMERIC(P, S)` and `BIGNUMERIC(P, S)`: at most S decimals and P - S integer digits, 9 and
+    *     29 for `NUMERIC`, since load jobs do not round;
     *   - the other types as SAFE_CAST reads them.
     *
     * None for a type that reads any text: STRING without a maximum length, and the types this
@@ -357,19 +359,29 @@ object BigQueryNativeSchema extends LazyLogging {
           .getOrElse("")
       case StandardSQLTypeName.BOOL =>
         s"LOWER($text) IN (${loadedBooleans.map(b => s"'$b'").mkString(", ")})"
-      case StandardSQLTypeName.INT64 | StandardSQLTypeName.FLOAT64 | StandardSQLTypeName.DATE |
-          StandardSQLTypeName.DATETIME | StandardSQLTypeName.TIME =>
+      case StandardSQLTypeName.INT64 =>
+        // Load jobs read no hexadecimal integer, which SAFE_CAST reads
+        raw"SAFE_CAST($text AS INT64) IS NOT NULL AND NOT REGEXP_CONTAINS($text, r'^\s*[-+]?0[xX]')"
+      case StandardSQLTypeName.FLOAT64 | StandardSQLTypeName.DATE | StandardSQLTypeName.DATETIME |
+          StandardSQLTypeName.TIME =>
         s"SAFE_CAST($text AS ${tpe.render}) IS NOT NULL"
       case StandardSQLTypeName.NUMERIC | StandardSQLTypeName.BIGNUMERIC =>
-        // BigQuery refuses parameterized types in CAST: a value rounded to the scale has at most
-        // P - S integer digits. NUMERIC has 29 of them at most
-        val base = tpe.standardType.name()
-        val cast = s"SAFE_CAST($text AS $base)"
-        val bound = tpe.precision.map(_ - tpe.scale.getOrElse(0L)).collect {
-          case digits if tpe.standardType == StandardSQLTypeName.BIGNUMERIC || digits < 29 =>
-            s" AND ABS(ROUND($cast, ${tpe.scale.getOrElse(0L)})) < $base '1${"0" * digits.toInt}'"
+        // Load jobs do not round: a value has at most S decimals and P - S integer digits (9 and
+        // 29 for NUMERIC), read exactly as a BIGNUMERIC. BigQuery refuses parameterized types in
+        // CAST
+        val exact = s"SAFE_CAST($text AS BIGNUMERIC)"
+        val bounds = (tpe.standardType, tpe.precision) match {
+          case (StandardSQLTypeName.NUMERIC, None) => Some((9L, 29L))
+          case (_, Some(precision)) =>
+            val scale = tpe.scale.getOrElse(0L)
+            Some((scale, precision - scale))
+          case _ => None
         }
-        s"$cast IS NOT NULL${bound.getOrElse("")}"
+        s"$exact IS NOT NULL" + bounds
+          .map { case (scale, digits) =>
+            s" AND ROUND($exact, $scale) = $exact AND ABS($exact) < BIGNUMERIC '1${"0" * digits.toInt}'"
+          }
+          .getOrElse("")
       case StandardSQLTypeName.TIMESTAMP =>
         // A date and a time, which SAFE_CAST does not require
         val dateAndTime =
@@ -377,9 +389,11 @@ object BigQueryNativeSchema extends LazyLogging {
         val dashes = raw"REGEXP_REPLACE($text, r'^(\s*\d{4})/(\d{1,2})/(\d{1,2})', r'\1-\2-\3')"
         val withSeconds =
           raw"REGEXP_REPLACE($dashes, r'^(\s*\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{1,2})([^:\d].*)?$$', r'\1:00\2')"
+        // Load jobs read more than 6 decimals of seconds, which SAFE_CAST does not
+        val microseconds = raw"REGEXP_REPLACE($withSeconds, r'(:\d{1,2}\.\d{6})\d+', r'\1')"
         val epoch =
           raw"REGEXP_CONTAINS($text, r'^\s*[-+]?\d+(\.\d+)?\s*$$') AND SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_MULTIPLY(SAFE_CAST(TRIM($text) AS BIGNUMERIC), 1000000) AS INT64)) IS NOT NULL"
-        s"(($dateAndTime AND (SAFE_CAST($text AS TIMESTAMP) IS NOT NULL OR SAFE_CAST($withSeconds AS TIMESTAMP) IS NOT NULL)) OR ($epoch))"
+        s"(($dateAndTime AND SAFE_CAST($microseconds AS TIMESTAMP) IS NOT NULL) OR ($epoch))"
       case StandardSQLTypeName.GEOGRAPHY =>
         s"SAFE.ST_GEOGFROM($text) IS NOT NULL"
       case StandardSQLTypeName.JSON =>

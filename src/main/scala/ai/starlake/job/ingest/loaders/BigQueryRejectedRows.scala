@@ -76,13 +76,22 @@ object BigQueryRejectedRows {
 
   /** @param row
     *   the alias of a row of a diagnostic table of CSV files
+    * @param emptyIsNull
+    *   true when the CSV files have no null marker, or an empty one: an empty value, quoted or not,
+    *   is then null in the columns of any type but STRING and BYTES, while the diagnostic table
+    *   reads a quoted one as an empty string
     * @return
     *   the checks of its values, column by column: a required column has a value, and a value can
     *   be read into its column
     */
-  def csvChecks(loadSchema: Schema, row: String): List[Check] =
+  def csvChecks(loadSchema: Schema, row: String, emptyIsNull: Boolean = true): List[Check] =
     fieldsOf(loadSchema).flatMap { field =>
-      val column = s"$row.`${field.getName}`"
+      val text = Option(field.getType.getStandardType).exists(tpe =>
+        tpe == StandardSQLTypeName.STRING || tpe == StandardSQLTypeName.BYTES
+      )
+      val column =
+        if (emptyIsNull && !text) s"NULLIF($row.`${field.getName}`, '')"
+        else s"$row.`${field.getName}`"
       val requiredCheck =
         if (field.getMode == Field.Mode.REQUIRED)
           List(Check(s"$column IS NOT NULL", required(field.getName)))
@@ -154,10 +163,12 @@ object BigQueryRejectedRows {
         Option(field.getType.getStandardType).toList.flatMap {
           // Any JSON value
           case StandardSQLTypeName.JSON => Nil
+          // A string: BigQuery refuses a GeoJSON object ("JSON object specified for non-record
+          // field")
           case StandardSQLTypeName.GEOGRAPHY =>
             List(
               Check(
-                s"CASE JSON_TYPE($value) WHEN 'string' THEN SAFE.ST_GEOGFROM(JSON_VALUE($value)) IS NOT NULL WHEN 'object' THEN SAFE.ST_GEOGFROMGEOJSON(TO_JSON_STRING($value)) IS NOT NULL ELSE FALSE END",
+                s"(JSON_TYPE($value) = 'string' AND SAFE.ST_GEOGFROM(JSON_VALUE($value)) IS NOT NULL)",
                 invalid(path, field)
               )
             )
@@ -214,6 +225,8 @@ object BigQueryRejectedRows {
     *   show (see [[jsonRowValue]])
     * @param limitByJob
     *   the most rows to read by load job, if not all
+    * @param emptyIsNull
+    *   true when the CSV files have no null marker, or an empty one (see [[csvChecks]])
     * @return
     *   the query of the rejected rows of the diagnostic tables: their load job (`sl_job`), their
     *   file (`sl_file`), their error lines (`sl_errors`), their values as strings (`sl_raw`, a
@@ -229,7 +242,8 @@ object BigQueryRejectedRows {
     loadSchema: Schema,
     withValue: Boolean,
     attributes: List[TableAttribute],
-    limitByJob: Option[Int]
+    limitByJob: Option[Int],
+    emptyIsNull: Boolean = true
   ): String = {
     val file = CometColumns.cometInputFileNameColumn
     val row = "sl_row"
@@ -249,7 +263,7 @@ object BigQueryRejectedRows {
           .mkString("STRUCT(", ", ", ")")
         (
           s"SELECT $row.sl_job, $row.`$file` AS sl_file, ${errors(
-              csvChecks(loadSchema, row)
+              csvChecks(loadSchema, row, emptyIsNull)
             )} AS sl_errors, $raw AS sl_raw FROM (SELECT *, $job AS sl_job FROM $tables) AS $row",
           List("sl_file", "sl_errors", "sl_raw")
         )
