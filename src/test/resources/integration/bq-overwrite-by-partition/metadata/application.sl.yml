@@ -1,0 +1,11 @@
+version: 1
+application:
+  connectionRef: "bigquery"
+  loader: "native"
+  connections:
+    bigquery:
+      type: "bigquery"
+      options:
+        location: "europe-west1"
+        authType: "APPLICATION_DEFAULT"
+        authScopes: "https://www.googleapis.com/auth/cloud-platform"

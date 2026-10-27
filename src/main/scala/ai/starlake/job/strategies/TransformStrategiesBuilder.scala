@@ -89,6 +89,8 @@ class TransformStrategiesBuilder extends LazyLogging {
       )
 
     } else if (targetTableExists) {
+      if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE_BY_PARTITION)
+        TransformStrategiesBuilder.requireSelectedPartition(sinkConfig, tableComponents)
       buildSqlWithJ2(
         strategy,
         selectStatement,
@@ -131,6 +133,25 @@ object TransformStrategiesBuilder {
     val strategyBuilder = consMethodMirror.apply().asInstanceOf[StrategiesBuilder]
     strategyBuilder
      */
+  }
+
+  /** Fails when the partition of an OVERWRITE_BY_PARTITION strategy is a column that the SELECT
+    * does not return: the DELETE of the templates would read the partition of each row of the
+    * target, and delete them all (#1875). A partition given as an expression is not checked, nor a
+    * SELECT whose columns are not known.
+    */
+  def requireSelectedPartition(sinkConfig: Sink, tableComponents: TableComponents): Unit = {
+    val columns = SQLUtils.unquoteAgressive(tableComponents.columnNames)
+    sinkConfig.toAllSinks().partition.flatMap(_.headOption).map(SQLUtils.unquoteAgressive).foreach {
+      partition =>
+        if (
+          partition.matches("[A-Za-z_][A-Za-z0-9_]*") && columns.nonEmpty &&
+          !columns.exists(column => column.endsWith("*") || column.equalsIgnoreCase(partition))
+        )
+          throw new IllegalArgumentException(
+            s"OVERWRITE_BY_PARTITION on ${tableComponents.getFullTableName()}: the SELECT does not return the partition column $partition"
+          )
+    }
   }
 
   def asJavaList[T](l: List[T]): java.util.ArrayList[T] = {

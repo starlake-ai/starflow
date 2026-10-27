@@ -1,3 +1,4 @@
+{%- set partition = sinkPartition | first -%}
 IF OBJECT_ID('tempdb..#SL_INCOMING') IS NOT NULL DROP TABLE #SL_INCOMING;
 
 SELECT * INTO #SL_INCOMING FROM ({{ selectStatement }}) AS S;
@@ -5,7 +6,10 @@ SELECT * INTO #SL_INCOMING FROM ({{ selectStatement }}) AS S;
 BEGIN TRANSACTION;
 
 DELETE FROM {{ tableFullName }}
-WHERE {{ sinkPartition | first }} IN (SELECT DISTINCT {{ sinkPartition | first }} FROM #SL_INCOMING);
+WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM #SL_INCOMING WHERE {{ partition }} IS NOT NULL);
+
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM #SL_INCOMING WHERE {{ partition }} IS NULL);
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }})
 SELECT {{ tableColumnsCsv }} FROM #SL_INCOMING;
