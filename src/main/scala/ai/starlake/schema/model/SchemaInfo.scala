@@ -773,6 +773,12 @@ case class SchemaInfo(
               s"${BigQueryNativeSchema.rangeFromText(raw, elementType.name(), safe = true)} as $finalName"
             )
             .getOrElse(s"$raw as $finalName")
+        // BigQuery refuses parameterized types in CAST, such as STRING(10) or NUMERIC(10, 2)
+        case Some(ddlType)
+            if BigQueryType
+              .parse(ddlType)
+              .exists(t => t.hasParameters && t.rangeElementType.isEmpty) =>
+          s"${BigQueryNativeSchema.castWithinParameters(raw, BigQueryType.parse(ddlType).get)} as $finalName"
         case Some(ddlType) if !isStringLikeDdlType(ddlType) =>
           s"SAFE_CAST($raw AS ${ddlTypesByAttribute(field.name)}) as $finalName"
         case _ =>

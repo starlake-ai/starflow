@@ -25,6 +25,7 @@ import ai.starlake.schema.model.Severity.*
 import ai.starlake.transpiler.diff.{Attribute as DiffAttribute, AttributeStatus}
 import ai.starlake.utils.DataTypeEx.*
 import ai.starlake.utils.Utils
+import ai.starlake.utils.conversion.BigQueryType
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.spark.sql.types.*
 
@@ -322,10 +323,22 @@ case class TableAttribute(
               // first type of the same primitive type with a mapping
               val newPrimitiveTypes: Set[PrimitiveType] =
                 Set(PrimitiveType.datetime, PrimitiveType.time, PrimitiveType.binary)
+              // A type of the parameters of a column, which extract-bq-schema may add to the
+              // project, is not a default type
               val fallbackType =
-                if (newPrimitiveTypes.contains(tpe.primitiveType))
-                  sameTypes.find(_.ddlMapping.exists(_.contains(datawarehouse)))
-                else sameTypes.headOption
+                if (newPrimitiveTypes.contains(tpe.primitiveType)) {
+                  val mapped = sameTypes.filter(_.ddlMapping.exists(_.contains(datawarehouse)))
+                  mapped
+                    .find(sameType =>
+                      !sameType
+                        .getDdlMappingForDB("bigquery")
+                        .flatMap(BigQueryType.parse)
+                        .exists(
+                          _.hasParameters
+                        )
+                    )
+                    .orElse(mapped.headOption)
+                } else sameTypes.headOption
               if (PrimitiveType.decimal.isWide(tpe))
                 fallbackType.foreach { defaultType =>
                   logger.warn(

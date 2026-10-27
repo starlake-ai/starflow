@@ -151,7 +151,8 @@ class DatetimeTimeBinaryTypesSpec extends TestHelper {
     "interval"        -> PrimitiveType.string,
     "range_date"      -> PrimitiveType.string,
     "range_datetime"  -> PrimitiveType.string,
-    "range_timestamp" -> PrimitiveType.string
+    "range_timestamp" -> PrimitiveType.string,
+    "numeric"         -> PrimitiveType.decimal
   )
 
   "A decimal zone" should "be a precision and a scale within the bounds of Spark or of BigQuery" in {
@@ -205,16 +206,16 @@ class DatetimeTimeBinaryTypesSpec extends TestHelper {
       types.find(_.name == "time").map(_.primitiveType) shouldBe Some(PrimitiveType.string)
       types.map(_.name).count(Set("datetime", "time", "binary")) shouldBe 3
       // The built-in types the project does not replace come last
-      types.takeRight(7).map(_.name) shouldBe extraTypeNames.map(_._1).drop(2)
+      types.takeRight(8).map(_.name) shouldBe extraTypeNames.map(_._1).drop(2)
       types
-        .takeRight(7)
+        .takeRight(8)
         .forall(ai.starlake.schema.handlers.SchemaHandler.extraTypes.contains) shouldBe
       true
       // A search by primitive type still finds the types of the project first
       types.find(_.primitiveType == PrimitiveType.timestamp).map(_.name) shouldBe Some("timestamp")
       types.find(_.primitiveType == PrimitiveType.string).map(_.name) shouldBe Some("string")
       // The types of the project are used to find the type of a column, not the built-in ones
-      schemaHandler.typesForSqlTypeLookup() shouldBe types.dropRight(7)
+      schemaHandler.typesForSqlTypeLookup() shouldBe types.dropRight(8)
       // Reported by validate
       schemaHandler.replacedExtraTypes().map { case (extraType, projectType) =>
         extraType.name -> projectType.primitiveType
@@ -235,9 +236,9 @@ class DatetimeTimeBinaryTypesSpec extends TestHelper {
     "A project without datetime and time types" should "get the built-in ones after its own types" in {
       val schemaHandler = projectWithoutDatetimeAndTime()
       val types = schemaHandler.types(reload = true)
-      types.takeRight(9).map(tpe => tpe.name -> tpe.primitiveType) shouldBe extraTypeNames
+      types.takeRight(10).map(tpe => tpe.name -> tpe.primitiveType) shouldBe extraTypeNames
       // The types of the project, unchanged, come first
-      types.dropRight(9).takeRight(2).map(_.name) shouldBe List("iso_civil", "hex_bytes")
+      types.dropRight(10).takeRight(2).map(_.name) shouldBe List("iso_civil", "hex_bytes")
       schemaHandler.replacedExtraTypes() shouldBe Nil
       // The built-in type, not the first type of the project of the same primitive type
       schemaHandler.typeNameOf(datetime) shouldBe Some("datetime")
@@ -267,6 +268,35 @@ class DatetimeTimeBinaryTypesSpec extends TestHelper {
       typeName("time") shouldBe "time"
       // Not the built-in bignumeric, of the same primitive type: the project has no other decimal
       typeName("decimal") shouldBe "decimal"
+    }
+
+    it should "not take a type of the parameters of a column, nor another numeric (#1853)" in {
+      cleanMetadata
+      storageHandler.write(
+        """version: 1
+          |types:
+          |  - name: "binary"
+          |    primitiveType: "string"
+          |    pattern: ".*"
+          |  - name: "binary_16"
+          |    primitiveType: "binary"
+          |    pattern: "base64"
+          |    ddlMapping:
+          |      bigquery: "BYTES(16)"
+          |  - name: "numeric"
+          |    primitiveType: "decimal"
+          |    pattern: "[-+]?\\d*\\.?\\d+"
+          |    zone: "18,2"
+          |""".stripMargin,
+        new Path(DatasetArea.types, "types.sl.yml")
+      )
+      val typeName =
+        ai.starlake.extract.ExtractBigQuerySchema
+          .projectTypeNames(settings.schemaHandler(reload = true))
+      // The project has no other binary type than the one of the parameters of a column
+      typeName("binary") shouldBe "binary"
+      // The numeric of the project would not create an unparameterized NUMERIC
+      typeName("numeric") shouldBe "decimal"
     }
 
     it should "keep the name of a replaced built-in type when the project has no type of its primitive type" in {

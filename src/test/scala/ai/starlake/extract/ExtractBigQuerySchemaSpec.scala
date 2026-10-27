@@ -147,7 +147,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
     attributes.head.map(a => (a.name, a.`type`, a.required, a.array, a.comment)) shouldBe List(
       ("id", "long", Some(true), None, Some("Identifier")),
       ("name", "string", Some(false), None, Some("Name")),
-      ("amount", "decimal", Some(false), None, None),
+      ("amount", "numeric", Some(false), None, None),
       ("tags", "string", Some(false), Some(true), None)
     )
   }
@@ -243,7 +243,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
       "my_materialized_view" -> List(
         ("id", "long", Some("Identifier")),
         ("name", "string", Some("Name")),
-        ("amount", "decimal", None),
+        ("amount", "numeric", None),
         ("tags", "string", None)
       )
     )
@@ -259,7 +259,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
           getViewSchema
         )
         .flatMap(_.attributes.map(_.`type`))
-    val storedTypes = List("long", "string", "decimal", "string")
+    val storedTypes = List("long", "string", "numeric", "string")
     // No bigquery.jobs.create permission
     extractView(_ => throw new BigQueryException(403, "Access Denied")) shouldBe storedTypes
     // No schema
@@ -331,8 +331,9 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
     attributes.map(a => (a.name, a.`type`, a.resolveArray(), a.resolveRequired())) shouldBe List(
       ("id", "long", false, true),
       ("amount", "double", false, false),
-      ("price", "decimal", false, false),
-      // The parameters are not kept, with a warning
+      // An unparameterized NUMERIC, not the NUMERIC(38, 9) of decimal
+      ("price", "numeric", false, false),
+      // The parameters are not kept, with a warning, unless the caller asks for their types
       ("rate", "decimal", false, false),
       ("big", "bignumeric", false, false),
       ("flag", "boolean", false, false),
@@ -352,6 +353,26 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
       ("properties", "struct", true, false)
     )
     attributes.find(_.name == "tags").flatMap(_.comment) shouldBe Some("Tags")
+    // The parameterized columns get types of their own, which the caller adds to the project
+    val parameterizedTypes = new BigQueryParameterizedTypes(Nil)
+    ExtractBigQuerySchema
+      .extractTables(
+        List(listed(allTypes)),
+        ExtractBigQuerySchema.parseTableTypes(Nil),
+        getTable(allTypes),
+        new DryRun(),
+        parameterizedTypes = Some(parameterizedTypes)
+      )
+      .flatMap(_.attributes)
+      .collect {
+        case a if Set("price", "rate", "code", "payload")(a.name) => a.name -> a.`type`
+      } shouldBe List(
+      "price"   -> "numeric",
+      "rate"    -> "numeric_10_2",
+      "code"    -> "string_10",
+      "payload" -> "binary"
+    )
+    parameterizedTypes.takeNewTypes().map(_.name) shouldBe List("numeric_10_2", "string_10")
     // A type unknown to the BigQuery client, and a RANGE without element type, are strings
     val unknownTypes = tableInfo(
       "unknown_types",
@@ -425,7 +446,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
         getTable(legacySqlView),
         dryRun
       )
-      .flatMap(_.attributes.map(_.`type`)) shouldBe List("long", "string", "decimal", "string")
+      .flatMap(_.attributes.map(_.`type`)) shouldBe List("long", "string", "numeric", "string")
     dryRun.dryRunTables shouldBe Nil
   }
 
