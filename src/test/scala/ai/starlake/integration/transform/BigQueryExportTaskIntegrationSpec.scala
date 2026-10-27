@@ -162,14 +162,15 @@ class BigQueryExportTaskIntegrationSpec extends IntegrationTestBase {
   private val start = System.currentTimeMillis()
 
   /** The audit log of the last run of the task in this test, when the audit table is in BigQuery.
-    * The test writes the audit logs interactively, not in batch mode.
+    * The test writes the audit logs interactively, not in batch mode. The audit log keeps the
+    * second of its timestamp only (`AuditLog.asSelect`).
     */
   private def lastAudit(name: String): Option[List[String]] =
     Option(bigquery.getTable(TableId.of("audit", "audit"))).map { _ =>
       values(
         s"""SELECT CAST(success AS STRING), CAST(count AS STRING), message FROM `audit.audit`
            |WHERE domain = '$exportDomain' AND schema = '$name' AND step = 'TRANSFORM'
-           |AND timestamp >= TIMESTAMP_MILLIS($start)
+           |AND timestamp >= TIMESTAMP_SECONDS(${start / 1000})
            |ORDER BY timestamp DESC LIMIT 1""".stripMargin
       )
     }
