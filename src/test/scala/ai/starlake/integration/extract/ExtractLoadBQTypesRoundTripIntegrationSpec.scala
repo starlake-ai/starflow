@@ -95,16 +95,17 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
 
   /** @return
     *   the type, mode and parameters of each column, at every level: an unparameterized NUMERIC is
-    *   not a NUMERIC(38, 9) (#1853)
+    *   not a NUMERIC(38, 9), but a NUMERIC(P) is a NUMERIC(P, 0) (#1853)
     */
   private def describe(fields: List[Field], prefix: String = ""): List[String] =
     fields.flatMap { field =>
       val path = prefix + field.getName
       val standardType = field.getType.getStandardType
+      val precision = Option(field.getPrecision)
       val parameters =
         List(
-          Option(field.getPrecision),
-          Option(field.getScale),
+          precision,
+          Option(field.getScale).orElse(precision.map(_ => java.lang.Long.valueOf(0L))),
           Option(field.getMaxLength),
           Option(field.getRangeElementType).map(_.getType)
         ).flatten.mkString("(", ", ", ")")
@@ -310,10 +311,10 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
                |  huge BIGNUMERIC(50, 20),
                |  small BIGNUMERIC(20, 5),
                |  code STRING(10),
-               |  hash BYTES(16)
+               |  digest BYTES(16)
                |)""".stripMargin)
         run(s"""INSERT INTO `$sourceDataset.$parameters` VALUES
-               |(1, 12.34, 1234567890, NUMERIC '1.5', 2.5,
+               |(1, NUMERIC '12.34', NUMERIC '1234567890', NUMERIC '1.5', NUMERIC '2.5',
                | BIGNUMERIC '123456789012345678901234567890.12345678901234567890',
                | BIGNUMERIC '123456789012345.12345', 'abc', b'\\x01\\x02'),
                |(2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)""".stripMargin)
@@ -370,7 +371,7 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
           "huge"     -> "bignumeric_50_20",
           "small"    -> "bignumeric_20_5",
           "code"     -> "string_10",
-          "hash"     -> "binary_16"
+          "digest"   -> "binary_16"
         )
         List("numeric_10", "numeric_10_0") should contain(types(parameters).toMap.apply("whole"))
         val projectTypeNames = settings.schemaHandler(reload = true).types().map(_.name)
