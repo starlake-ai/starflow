@@ -72,9 +72,15 @@ class ExtractBigQuerySchema(config: TablesExtractConfig)(implicit settings: Sett
     }
   }
 
+  /** @param withParameterizedTypes
+    *   true to give the parameterized columns types of their own, added to the types of the project
+    *   (#1853), as the extraction commands do. Otherwise they get the built-in types, without their
+    *   parameters, so that reading a schema writes no type.
+    */
   def extractSchemasAndTables(
     schemaHandler: SchemaHandler,
-    tablesToExtract: Map[String, List[String]]
+    tablesToExtract: Map[String, List[String]],
+    withParameterizedTypes: Boolean = false
   ): List[DomainInfo] = {
     // case insensitive extraction
     val datasetNames = tablesToExtract.keys.toList
@@ -96,12 +102,24 @@ class ExtractBigQuerySchema(config: TablesExtractConfig)(implicit settings: Sett
             )
           )
       }
-    filteredDatasets.map { dataset =>
-      extractDataset(schemaHandler, dataset)
+    val parameterized =
+      if (withParameterizedTypes) Some(parameterizedTypes(schemaHandler)) else None
+    val domains = filteredDatasets.map { dataset =>
+      extractDataset(schemaHandler, dataset, parameterized)
     }.toList
+    // The types of the parameterized columns, which the extracted domains use
+    parameterized.map(_.takeNewTypes()).filter(_.nonEmpty).foreach { newTypes =>
+      BigQueryParameterizedTypes.addToProject(newTypes)
+      schemaHandler.types(reload = true)
+    }
+    domains
   }
 
-  private def extractDataset(schemaHandler: SchemaHandler, dataset: Dataset): DomainInfo = {
+  private def extractDataset(
+    schemaHandler: SchemaHandler,
+    dataset: Dataset,
+    parameterizedTypes: Option[BigQueryParameterizedTypes]
+  ): DomainInfo = {
     val datasetId = dataset.getDatasetId()
     val bqTables = bigquery.listTables(datasetId, TableListOption.pageSize(10000))
     val allDatawareTables =
@@ -132,7 +150,8 @@ class ExtractBigQuerySchema(config: TablesExtractConfig)(implicit settings: Sett
       // We get the Table again because Tables are returned with a null schema by listTables above.
       tableId => bigquery.getTable(tableId),
       dryRunSchema(Option(dataset.getLocation)),
-      typeNames(schemaHandler)
+      typeNames(schemaHandler),
+      parameterizedTypes
     )
     DomainInfo(
       name = dataset.getDatasetId().getDataset(),
@@ -144,6 +163,29 @@ class ExtractBigQuerySchema(config: TablesExtractConfig)(implicit settings: Sett
       database = Option(dataset.getDatasetId().getProject())
     )
   }
+
+  // The types of the parameterized columns of the extraction, generated from the project types
+  // that the built-in types name
+  private var extractedTypes: Option[BigQueryParameterizedTypes] = None
+  private def parameterizedTypes(schemaHandler: SchemaHandler): BigQueryParameterizedTypes =
+    synchronized {
+      extractedTypes.getOrElse {
+        val typeName = typeNames(schemaHandler)
+        val types = new BigQueryParameterizedTypes(
+          schemaHandler.types(),
+          builtInTypeName => {
+            val builtIn = BigQueryParameterizedTypes.builtIn(builtInTypeName)
+            schemaHandler
+              .types()
+              .find(_.name == typeName(builtInTypeName))
+              .filter(_.primitiveType == builtIn.primitiveType)
+              .getOrElse(builtIn)
+          }
+        )
+        extractedTypes = Some(types)
+        types
+      }
+    }
 
   // The project type names, resolved once per extraction
   private var projectTypeNames: Option[String => String] = None
@@ -251,13 +293,17 @@ object ExtractBigQuerySchema extends LazyLogging {
     *   reads the effective schema of a view
     * @param typeName
     *   the name of the project type of a built-in type
+    * @param parameterizedTypes
+    *   the types of the parameterized columns, if they get types of their own: the caller adds them
+    *   to the project
     */
   def extractTables(
     listedTables: Iterable[TableInfo],
     tableTypes: Set[TableDefinition.Type],
     getTable: TableId => TableInfo,
     getViewSchema: TableInfo => Schema,
-    typeName: String => String = identity
+    typeName: String => String = identity,
+    parameterizedTypes: Option[BigQueryParameterizedTypes] = None
   ): List[SchemaInfo] = {
     // Filter on the listed type first to avoid fetching objects that would be skipped anyway, and
     // again once fetched in case the listing did not return it.
@@ -268,7 +314,7 @@ object ExtractBigQuerySchema extends LazyLogging {
         Try(Option(getTable(tableId))) match {
           case Success(Some(table)) if isExtractable(table, tableTypes) =>
             logger.info(s"Extracting table $tableName")
-            Try(extractTableOrView(table, getViewSchema, typeName)) match {
+            Try(extractTableOrView(table, getViewSchema, typeName, parameterizedTypes)) match {
               case Success(Some(schema)) =>
                 Some(Right(schema))
               case Success(None) =>
@@ -319,7 +365,8 @@ object ExtractBigQuerySchema extends LazyLogging {
   private def extractTableOrView(
     table: TableInfo,
     getViewSchema: TableInfo => Schema,
-    typeName: String => String
+    typeName: String => String,
+    parameterizedTypes: Option[BigQueryParameterizedTypes]
   ): Option[SchemaInfo] =
     table.getDefinition[TableDefinition]() match {
       // Legacy SQL is the dialect of the views that do not set it. The dry run of a legacy SQL
@@ -328,7 +375,7 @@ object ExtractBigQuerySchema extends LazyLogging {
         logger.warn(
           s"View ${table.getTableId.getDataset()}.${table.getTableId.getTable()} uses legacy SQL, whose effective schema cannot be read with a dry run: using its stored schema, which may be stale"
         )
-        extractTable(table, typeName)
+        extractTable(table, typeName, parameterizedTypes)
       case view: ViewDefinition =>
         val viewName = s"${table.getTableId.getDataset()}.${table.getTableId.getTable()}"
         Try(
@@ -338,21 +385,22 @@ object ExtractBigQuerySchema extends LazyLogging {
             val schema = mergeViewSchema(viewName, Option(view.getSchema), effectiveSchema)
             extractTable(
               table.toBuilder.setDefinition(view.toBuilder.setSchema(schema).build()).build(),
-              typeName
+              typeName,
+              parameterizedTypes
             )
           case Success(None) =>
             logger.warn(
               s"The dry run of view $viewName returned no schema: using its stored schema, which may be stale"
             )
-            extractTable(table, typeName)
+            extractTable(table, typeName, parameterizedTypes)
           case Failure(e) =>
             logger.warn(
               s"Could not dry run view $viewName ($e): using its stored schema, which may be stale"
             )
-            extractTable(table, typeName)
+            extractTable(table, typeName, parameterizedTypes)
         }
       case _ =>
-        extractTable(table, typeName)
+        extractTable(table, typeName, parameterizedTypes)
     }
 
   /** @return
@@ -382,20 +430,27 @@ object ExtractBigQuerySchema extends LazyLogging {
     Option(fields).map(_.asScala.toList).getOrElse(Nil)
 
   /** @return
-    *   the attribute of a BigQuery column, named after the built-in type of its BigQuery type.
-    *   Never fails: an unknown type is a string. Notes the parameters and types it does not keep.
+    *   the attribute of a BigQuery column, named after the built-in type of its BigQuery type, or
+    *   after the type of its parameters for a `NUMERIC(P, S)`, `BIGNUMERIC(P, S)`, `STRING(L)` or
+    *   `BYTES(L)` column, when the parameterized columns get types of their own. Never fails: an
+    *   unknown type is a string. Notes the parameters and types it does not keep.
     */
   private def attributeOf(
     field: Field,
     prefix: String,
     typeName: String => String,
+    parameterizedTypes: Option[BigQueryParameterizedTypes],
     notes: ListBuffer[String]
   ): TableAttribute = {
     val path = prefix + field.getName
     val mode = Option(field.getMode).getOrElse(Field.Mode.NULLABLE)
+    val parameterizedTypeName = parameterizedTypes.flatMap(_.typeNameOf(field))
     def withParameters(bigQueryType: String): Option[String] =
       (Option(field.getPrecision), Option(field.getScale), Option(field.getMaxLength)) match {
-        case (None, None, None) => None
+        case (None, None, None)                   => None
+        case _ if parameterizedTypeName.isDefined => None
+        case _ if bigQueryType == "NUMERIC" && field.getPrecision == 38L && field.getScale == 9L =>
+          None
         case (precision, scale, maxLength) =>
           val parameters = (precision.toList ++ scale.toList ++ maxLength.toList).mkString(", ")
           Some(s"$path is a $bigQueryType($parameters), whose parameters its type does not keep")
@@ -403,21 +458,24 @@ object ExtractBigQuerySchema extends LazyLogging {
     // A type unknown to this BigQuery client has no standard type
     val (builtInTypeName, note) =
       Option(field.getType).flatMap(t => Option(t.getStandardType)) match {
-        case Some(StandardSQLTypeName.STRUCT)     => "struct"     -> None
-        case Some(StandardSQLTypeName.STRING)     => "string"     -> withParameters("STRING")
-        case Some(StandardSQLTypeName.BYTES)      => "binary"     -> withParameters("BYTES")
-        case Some(StandardSQLTypeName.INT64)      => "long"       -> None
-        case Some(StandardSQLTypeName.FLOAT64)    => "double"     -> None
-        case Some(StandardSQLTypeName.NUMERIC)    => "decimal"    -> withParameters("NUMERIC")
-        case Some(StandardSQLTypeName.BIGNUMERIC) => "bignumeric" -> withParameters("BIGNUMERIC")
-        case Some(StandardSQLTypeName.BOOL)       => "boolean"    -> None
-        case Some(StandardSQLTypeName.TIMESTAMP)  => "timestamp"  -> None
-        case Some(StandardSQLTypeName.DATE)       => "date"       -> None
-        case Some(StandardSQLTypeName.TIME)       => "time"       -> None
-        case Some(StandardSQLTypeName.DATETIME)   => "datetime"   -> None
-        case Some(StandardSQLTypeName.GEOGRAPHY)  => "geography"  -> None
-        case Some(StandardSQLTypeName.JSON)       => "variant"    -> None
-        case Some(StandardSQLTypeName.INTERVAL)   => "interval"   -> None
+        case Some(StandardSQLTypeName.STRUCT)  => "struct" -> None
+        case Some(StandardSQLTypeName.STRING)  => "string" -> withParameters("STRING")
+        case Some(StandardSQLTypeName.BYTES)   => "binary" -> withParameters("BYTES")
+        case Some(StandardSQLTypeName.INT64)   => "long"   -> None
+        case Some(StandardSQLTypeName.FLOAT64) => "double" -> None
+        // The type numeric creates an unparameterized NUMERIC, and decimal a NUMERIC(38, 9)
+        case Some(StandardSQLTypeName.NUMERIC) =>
+          (if (field.getPrecision == null) "numeric" else "decimal") -> withParameters("NUMERIC")
+        case Some(StandardSQLTypeName.BIGNUMERIC) =>
+          "bignumeric" -> withParameters("BIGNUMERIC")
+        case Some(StandardSQLTypeName.BOOL)      => "boolean"   -> None
+        case Some(StandardSQLTypeName.TIMESTAMP) => "timestamp" -> None
+        case Some(StandardSQLTypeName.DATE)      => "date"      -> None
+        case Some(StandardSQLTypeName.TIME)      => "time"      -> None
+        case Some(StandardSQLTypeName.DATETIME)  => "datetime"  -> None
+        case Some(StandardSQLTypeName.GEOGRAPHY) => "geography" -> None
+        case Some(StandardSQLTypeName.JSON)      => "variant"   -> None
+        case Some(StandardSQLTypeName.INTERVAL)  => "interval"  -> None
         case Some(StandardSQLTypeName.RANGE) =>
           Option(field.getRangeElementType)
             .flatMap(t => Option(t.getType))
@@ -436,12 +494,17 @@ object ExtractBigQuerySchema extends LazyLogging {
     val isStruct = builtInTypeName == "struct"
     TableAttribute(
       name = field.getName,
-      `type` = if (isStruct) builtInTypeName else typeName(builtInTypeName),
+      `type` =
+        if (isStruct) builtInTypeName
+        else parameterizedTypeName.getOrElse(typeName(builtInTypeName)),
       array = if (mode == Field.Mode.REPEATED) Some(true) else None,
       required = Some(mode == Field.Mode.REQUIRED),
       comment = Option(field.getDescription),
       attributes =
-        if (isStruct) fieldsOf(field.getSubFields).map(attributeOf(_, path + ".", typeName, notes))
+        if (isStruct)
+          fieldsOf(field.getSubFields).map(
+            attributeOf(_, path + ".", typeName, parameterizedTypes, notes)
+          )
         else Nil
     )
   }
@@ -458,13 +521,24 @@ object ExtractBigQuerySchema extends LazyLogging {
     val names = scala.collection.mutable.Map.empty[String, String]
     def resolve(builtInTypeName: String): String =
       SchemaHandler.builtInTypes.find(_.name == builtInTypeName) match {
+        // The project's own numeric would not create the unparameterized NUMERIC of the column
+        case Some(builtInType)
+            if builtInType.name == "numeric" && projectTypes.exists(tpe =>
+              tpe.name == "numeric" && !BigQueryParameterizedTypes.sameType(tpe, builtInType)
+            ) =>
+          val decimal = resolve("decimal")
+          logger.warn(
+            s"The type numeric of the project is not the built-in numeric, which creates an unparameterized BigQuery NUMERIC: the NUMERIC columns are extracted with the type $decimal"
+          )
+          decimal
         case Some(builtInType)
             if !projectTypes.exists(tpe =>
               tpe.name == builtInType.name && tpe.primitiveType == builtInType.primitiveType
             ) =>
+          // A type of the parameters of a column does not replace a built-in type
           val ownTypes = projectTypes.filter(tpe =>
             tpe.primitiveType == builtInType.primitiveType && !SchemaHandler.builtInTypes
-              .contains(tpe)
+              .contains(tpe) && !BigQueryParameterizedTypes.isParameterized(tpe)
           )
           val bigQueryMapping = builtInType.getDdlMappingForDB("bigquery")
           ownTypes
@@ -562,12 +636,17 @@ object ExtractBigQuerySchema extends LazyLogging {
     *   the table schema read from the table definition, whatever the BigQuery object type, or None
     *   if the definition has no schema.
     */
-  def extractTable(table: TableInfo, typeName: String => String = identity): Option[SchemaInfo] = {
+  def extractTable(
+    table: TableInfo,
+    typeName: String => String = identity,
+    parameterizedTypes: Option[BigQueryParameterizedTypes] = None
+  ): Option[SchemaInfo] = {
     val tableName = table.getTableId().getTable()
     Option(table.getDefinition[TableDefinition]()).flatMap(d => Option(d.getSchema)) match {
       case Some(bqSchema) =>
         val notes = ListBuffer.empty[String]
-        val attributes = fieldsOf(bqSchema.getFields).map(attributeOf(_, "", typeName, notes))
+        val attributes =
+          fieldsOf(bqSchema.getFields).map(attributeOf(_, "", typeName, parameterizedTypes, notes))
         if (notes.nonEmpty)
           logger.warn(
             s"${table.getTableId.getDataset()}.$tableName: ${notes.mkString(", ")}"
@@ -596,10 +675,15 @@ object ExtractBigQuerySchema extends LazyLogging {
 
   def extractAndSaveToExternal(
     config: TablesExtractConfig,
-    schemaHandler: SchemaHandler
+    schemaHandler: SchemaHandler,
+    withParameterizedTypes: Boolean = false
   )(implicit settings: Settings): List[DomainInfo] = {
     val domains =
-      new ExtractBigQuerySchema(config).extractSchemasAndTables(schemaHandler, config.tables)
+      new ExtractBigQuerySchema(config).extractSchemasAndTables(
+        schemaHandler,
+        config.tables,
+        withParameterizedTypes
+      )
     schemaHandler.saveToExternals(domains)
     domains
   }

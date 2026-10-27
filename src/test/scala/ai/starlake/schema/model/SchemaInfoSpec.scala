@@ -268,6 +268,49 @@ class SchemaInfoSpec extends TestHelper {
       sql should not include "SAFE."
     }
 
+    it should "cast the POSITION values of parameterized types without their parameters (#1853)" in {
+      val schema = SchemaInfo(
+        name = "codes",
+        pattern = Pattern.compile(".*TBL\\.POS"),
+        metadata = Some(Metadata(format = Some(Format.POSITION))),
+        attributes = List(
+          TableAttribute(name = "code", position = Some(Position(0, 9))),
+          TableAttribute(name = "amount", `type` = "decimal", position = Some(Position(10, 19))),
+          TableAttribute(name = "small", `type` = "decimal", position = Some(Position(20, 29))),
+          TableAttribute(name = "big", `type` = "bignumeric", position = Some(Position(30, 59))),
+          TableAttribute(name = "hash", `type` = "binary", position = Some(Position(60, 69)))
+        )
+      )
+      val sql = schema.buildSecondStepSqlSelectOnLoad(
+        "tmp_table",
+        ddlTypesByAttribute = Map(
+          "code"   -> "STRING(10)",
+          "amount" -> "NUMERIC(10, 2)",
+          "small"  -> "NUMERIC(29)",
+          "big"    -> "BIGNUMERIC(50, 20)",
+          "hash"   -> "BYTES(16)"
+        )
+      )
+      // BigQuery refuses parameterized types in CAST: NULL beyond the parameters
+      sql should include(
+        "IF(LENGTH(SUBSTR(value, 1, 10)) <= 10, SUBSTR(value, 1, 10), NULL) as code"
+      )
+      sql should include(
+        "IF(ABS(ROUND(SAFE_CAST(SUBSTR(value, 11, 10) AS NUMERIC), 2)) < CAST('100000000' AS NUMERIC), SAFE_CAST(SUBSTR(value, 11, 10) AS NUMERIC), NULL) as amount"
+      )
+      // Any NUMERIC has at most 29 integer digits
+      sql should include("SAFE_CAST(SUBSTR(value, 21, 10) AS NUMERIC) as small")
+      sql should include(
+        s"< CAST('1${"0" * 30}' AS BIGNUMERIC), SAFE_CAST(SUBSTR(value, 31, 30) AS BIGNUMERIC), NULL) as big"
+      )
+      sql should include(
+        "IF(BYTE_LENGTH(SAFE_CAST(SUBSTR(value, 61, 10) AS BYTES)) <= 16, SAFE_CAST(SUBSTR(value, 61, 10) AS BYTES), NULL) as hash"
+      )
+      sql should not include "STRING(10)"
+      ai.starlake.sql.SQLUtils.extractColumnNames(sql) shouldBe
+      List("code", "amount", "small", "big", "hash")
+    }
+
     it should "build the POSITION RANGE values from their bounds, in SQL that JSqlParser parses" in {
       val schema = SchemaInfo(
         name = "periods",

@@ -254,6 +254,40 @@ class BigQueryNativeSchemaSpec extends TestHelper {
       StandardSQLTypeName.BIGNUMERIC
     }
 
+    it should "take the decimal mapping that has the precision and scale of the zone (#1853)" in {
+      val attributes = List(
+        // The built-in numeric: zone 38,9 and an unparameterized NUMERIC mapping
+        TableAttribute("plain", "numeric"),
+        // The zone derives a NUMERIC(20, 5)
+        TableAttribute("small", "small_bignumeric"),
+        TableAttribute("money", "money_zone"),
+        // The zone derives a NUMERIC(10, 0)
+        TableAttribute("whole", "whole_number"),
+        // No zone: the NUMERIC(38, 9) of Spark
+        TableAttribute("price", "decimal")
+      )
+      def describe(schema: BQSchema, name: String) = {
+        val bigQueryField = field(schema, name)
+        (
+          bigQueryField.getType.getStandardType,
+          Option(bigQueryField.getPrecision).map(_.longValue()),
+          Option(bigQueryField.getScale).map(_.longValue())
+        )
+      }
+      val schema = patched(attributes)
+      describe(schema, "plain") shouldBe (StandardSQLTypeName.NUMERIC, None, None)
+      describe(schema, "small") shouldBe (StandardSQLTypeName.BIGNUMERIC, Some(20L), Some(5L))
+      describe(schema, "money") shouldBe (StandardSQLTypeName.NUMERIC, Some(10L), Some(2L))
+      describe(schema, "whole") shouldBe (StandardSQLTypeName.NUMERIC, Some(10L), None)
+      describe(schema, "price") shouldBe (StandardSQLTypeName.NUMERIC, Some(38L), Some(9L))
+      // The mappings disabled: the types derived from the zones
+      val derived = patched(attributes, enabled = false)
+      describe(derived, "plain") shouldBe (StandardSQLTypeName.NUMERIC, Some(38L), Some(9L))
+      describe(derived, "small") shouldBe (StandardSQLTypeName.NUMERIC, Some(20L), Some(5L))
+      // A target column created by decimal keeps its type
+      patched(attributes, Some(derived)) shouldBe derived
+    }
+
     it should "give the built-in datetime, time and binary types their BigQuery type" in {
       val attributes = List(
         TableAttribute("civil", "datetime", required = Some(true)),

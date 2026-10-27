@@ -100,3 +100,15 @@ types:
       postgres: varchar(8000)
       synapse: Varchar(8000)
       duckdb: VARCHAR
+  - name: "numeric"
+    primitiveType: "decimal"
+    pattern: "[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*"
+    zone: "38,9"
+    sample: "-45.787686786"
+    comment: "Decimal of 38 digits, 9 of them after the point, such as an unparameterized BigQuery NUMERIC, where the type decimal creates a NUMERIC(38, 9)"
+    ddlMapping:
+      bigquery: NUMERIC
+      snowflake: DECIMAL
+      synapse: decimal
+      postgres: DECIMAL
+      duckdb: DECIMAL
