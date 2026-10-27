@@ -133,13 +133,14 @@ class BigQueryNativeRejectedRowsIntegrationSpec extends IntegrationTestBase {
       .toList
 
   /** @return
-    *   the accepted and rejected counts of the audit log of the loads of a file since this time
+    *   the accepted and rejected counts of the audit log of the loads of a file since this time.
+    *   The audit log keeps the second of its timestamp only (`AuditLog.asSelect`).
     */
   private def auditCounts(table: String, since: Long, file: File): List[(Long, Long)] =
     run(
       s"""SELECT COUNTACCEPTED, COUNTREJECTED FROM `audit.audit`
          |WHERE DOMAIN = '$dataset' AND SCHEMA = '$table' AND STEP = 'LOAD'
-         |AND TIMESTAMP >= TIMESTAMP_MILLIS($since) AND PATHS LIKE '%${file.name}%'""".stripMargin
+         |AND TIMESTAMP >= TIMESTAMP_SECONDS(${since / 1000}) AND PATHS LIKE '%${file.name}%'""".stripMargin
     ).iterateAll()
       .asScala
       .map(row => row.get(0).getLongValue -> row.get(1).getLongValue)
