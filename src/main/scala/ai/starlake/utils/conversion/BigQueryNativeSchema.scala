@@ -321,6 +321,30 @@ object BigQueryNativeSchema extends LazyLogging {
     }
   }
 
+  /** @return
+    *   the SQL of a text cast to a type with parameters, NULL when it is malformed or beyond them,
+    *   as SAFE_CAST gives NULL for the other types: BigQuery refuses parameterized types in CAST.
+    *   The column rounds a NUMERIC(P, S) or BIGNUMERIC(P, S) value to S decimals.
+    */
+  def castWithinParameters(text: String, tpe: BigQueryType): String = {
+    val base = tpe.standardType.name()
+    val value = s"SAFE_CAST($text AS $base)"
+    (tpe.standardType, tpe.maxLength, tpe.precision) match {
+      case (StandardSQLTypeName.STRING, Some(length), _) =>
+        s"IF(LENGTH($text) <= $length, $text, NULL)"
+      case (StandardSQLTypeName.BYTES, Some(length), _) =>
+        s"IF(BYTE_LENGTH($value) <= $length, $value, NULL)"
+      case (StandardSQLTypeName.NUMERIC | StandardSQLTypeName.BIGNUMERIC, _, Some(precision)) =>
+        val scale = tpe.scale.getOrElse(0L)
+        val digits = precision - scale
+        // Any NUMERIC has at most 29 integer digits
+        if (tpe.standardType == StandardSQLTypeName.NUMERIC && digits >= 29) value
+        else
+          s"IF(ABS(ROUND($value, $scale)) < CAST('1${"0" * digits.toInt}' AS $base), $value, NULL)"
+      case _ => value
+    }
+  }
+
   /** The values of BOOL columns that load jobs read, in any case */
   private val loadedBooleans = List("true", "false", "t", "f", "yes", "no", "y", "n", "1", "0")
 
@@ -475,7 +499,11 @@ object BigQueryNativeSchema extends LazyLogging {
     *   the BigQuery type of a decimal attribute, when it differs from the derived one. The
     *   precision and scale come from the zone of the type. Spark cannot hold a precision above 38,
     *   from which the derived type is the default decimal: the column is a BIGNUMERIC,
-    *   unparameterized when the mapping is.
+    *   unparameterized when the mapping is. Below, the mapping is the type when it has the
+    *   precision and scale of the zone (#1853): a BIGNUMERIC(P, S), which the zone derives as a
+    *   NUMERIC when S <= 9 and P - S <= 29, a NUMERIC(P) without scale, which the zone derives as a
+    *   NUMERIC(P, 0), or an unparameterized NUMERIC for the zone 38,9 of NUMERIC, which the zone
+    *   derives as a NUMERIC(38, 9).
     */
   private def decimalType(tpe: Type, field: Field, log: Boolean): Option[BigQueryType] = {
     val mapping = tpe.ddlMapping.flatMap(_.get("bigquery"))
@@ -498,19 +526,34 @@ object BigQueryNativeSchema extends LazyLogging {
           }
           Some(zoneType)
         }
-      case _ =>
-        mapping.foreach { ddl =>
-          val derivedType = BigQueryType.of(field)
-          val matches = parsed.exists(mapping =>
-            mapping == derivedType ||
-            mapping.standardType == derivedType.standardType && !mapping.hasParameters
-          )
-          if (log && !matches)
-            logger.warn(
-              s"The BigQuery mapping $ddl of the decimal type ${tpe.name} is not applied: the precision and scale of its zone give ${derivedType.render}"
-            )
+      case zoneParameters =>
+        val derivedType = BigQueryType.of(field)
+        val zoneMapping = parsed.filter {
+          case BigQueryType(
+                StandardSQLTypeName.NUMERIC | StandardSQLTypeName.BIGNUMERIC,
+                Some(precision),
+                scale,
+                None,
+                None
+              ) =>
+            zoneParameters.contains((precision.toInt, scale.getOrElse(0L).toInt))
+          case BigQueryType(StandardSQLTypeName.NUMERIC, None, None, None, None) =>
+            zoneParameters.contains((38, 9))
+          case _ => false
         }
-        None
+        zoneMapping.filterNot(_ == derivedType).orElse {
+          mapping.foreach { ddl =>
+            val matches = parsed.exists(mapping =>
+              mapping == derivedType ||
+              mapping.standardType == derivedType.standardType && !mapping.hasParameters
+            )
+            if (log && !matches)
+              logger.warn(
+                s"The BigQuery mapping $ddl of the decimal type ${tpe.name} is not applied: the precision and scale of its zone give ${derivedType.render}"
+              )
+          }
+          None
+        }
     }
   }
 

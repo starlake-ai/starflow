@@ -50,6 +50,7 @@ import ai.starlake.sql.SQLUtils
 import ai.starlake.transpiler.diff.Attribute
 import ai.starlake.transpiler.schema.{JdbcColumn, JdbcMetaData}
 import ai.starlake.utils.Formatter.*
+import ai.starlake.utils.conversion.BigQueryType
 import ai.starlake.utils.{StarlakeConfigException, StarlakeNotFoundException, Utils, YamlSerde}
 import better.files.Resource
 import com.databricks.spark.xml.util.XSDToSchema
@@ -107,6 +108,15 @@ object SchemaHandler {
 
   /** The built-in types: those of default.sl.yml, then those of extra.sl.yml */
   lazy val builtInTypes: List[Type] = loadResourceTypes("types/default.sl.yml") ++ extraTypes
+
+  /** @return
+    *   true if the type is the base type with a BigQuery mapping that has parameters, and maybe a
+    *   zone of its own: a type that extract-bq-schema generates for the parameters of a column
+    */
+  def isParameterizedCopy(tpe: Type, base: Type): Boolean =
+    tpe.primitiveType == base.primitiveType && tpe.pattern == base.pattern &&
+    tpe.ddlMapping.map(_ - "bigquery") == base.ddlMapping.map(_ - "bigquery") &&
+    tpe.getDdlMappingForDB("bigquery").flatMap(BigQueryType.parse).exists(_.hasParameters)
 }
 
 /** Handles access to datasets metadata, eq. domains / types / schemas.
@@ -409,10 +419,15 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     *   the types used to find the type of a database column from its SQL type: the built-in types
     *   of types/extra.sl.yml, or a copy of them, are left out, so that a column keeps the type it
     *   had before they existed. For example, a Snowflake TIMESTAMP column is a TIMESTAMP_NTZ, the
-    *   mapping of datetime.
+    *   mapping of datetime. So are the types that extract-bq-schema generates from the built-in
+    *   types for the parameters of a BigQuery column, such as binary_16, whose other mappings are
+    *   those of their built-in type (#1853).
     */
   def typesForSqlTypeLookup(): List[Type] =
-    types().filterNot(SchemaHandler.extraTypes.contains)
+    types().filterNot(tpe =>
+      SchemaHandler.extraTypes.contains(tpe) ||
+      SchemaHandler.builtInTypes.exists(SchemaHandler.isParameterizedCopy(tpe, _))
+    )
 
   /** @return
     *   the name of the type of the attributes of a primitive type, in infer-schema for example: the

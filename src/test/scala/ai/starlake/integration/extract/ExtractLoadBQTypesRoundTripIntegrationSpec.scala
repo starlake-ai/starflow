@@ -38,6 +38,9 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
   private val view = "all_types_view"
   // BigQuery loads RANGE values from CSV, not from JSON
   private val ranges = "ranges"
+  // The columns whose types have parameters, and a view on them (#1853)
+  private val parameters = "parameters"
+  private val parametersView = "parameters_view"
 
   private val parquetDataset = "starlake_it_bq_roundtrip_parquet"
   // Every type, nullable and required, repeated and nested fields: loaded in two steps
@@ -91,23 +94,21 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
       .toList
 
   /** @return
-    *   the type, mode and parameters of each column, at every level. NUMERIC is the only type of
-    *   precision 38 and scale 9: the parameters of the NUMERIC columns that the loader creates are
-    *   those of an unparameterized NUMERIC.
+    *   the type, mode and parameters of each column, at every level: an unparameterized NUMERIC is
+    *   not a NUMERIC(38, 9), but a NUMERIC(P) is a NUMERIC(P, 0) (#1853)
     */
   private def describe(fields: List[Field], prefix: String = ""): List[String] =
     fields.flatMap { field =>
       val path = prefix + field.getName
       val standardType = field.getType.getStandardType
+      val precision = Option(field.getPrecision)
       val parameters =
-        if (standardType == StandardSQLTypeName.NUMERIC) ""
-        else
-          List(
-            Option(field.getPrecision),
-            Option(field.getScale),
-            Option(field.getMaxLength),
-            Option(field.getRangeElementType).map(_.getType)
-          ).flatten.mkString("(", ", ", ")")
+        List(
+          precision,
+          Option(field.getScale).orElse(precision.map(_ => java.lang.Long.valueOf(0L))),
+          Option(field.getMaxLength),
+          Option(field.getRangeElementType).map(_.getType)
+        ).flatten.mkString("(", ", ", ")")
       s"$path $standardType$parameters ${Option(field.getMode).getOrElse(Field.Mode.NULLABLE)}" ::
       describe(Option(field.getSubFields).map(_.asScala.toList).getOrElse(Nil), path + ".")
     }
@@ -264,7 +265,9 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
           if (bigquery.getDataset(dataset) == null)
             bigquery.create(DatasetInfo.newBuilder(dataset).setLocation("europe-west1").build())
         }
-        List(table, ranges).foreach(name => bigquery.delete(TableId.of(targetDataset, name)))
+        List(table, ranges, parameters).foreach(name =>
+          bigquery.delete(TableId.of(targetDataset, name))
+        )
         run(s"""CREATE OR REPLACE TABLE `$sourceDataset.$table` (
                |  id INT64 NOT NULL,
                |  civil DATETIME,
@@ -299,27 +302,49 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
         run(
           s"CREATE OR REPLACE VIEW `$sourceDataset.$view` AS SELECT * FROM `$sourceDataset.$table`"
         )
+        run(s"""CREATE OR REPLACE TABLE `$sourceDataset.$parameters` (
+               |  id INT64 NOT NULL,
+               |  rate NUMERIC(10, 2),
+               |  whole NUMERIC(10),
+               |  plain NUMERIC,
+               |  declared NUMERIC(38, 9),
+               |  huge BIGNUMERIC(50, 20),
+               |  small BIGNUMERIC(20, 5),
+               |  code STRING(10),
+               |  digest BYTES(16)
+               |)""".stripMargin)
+        run(s"""INSERT INTO `$sourceDataset.$parameters` VALUES
+               |(1, NUMERIC '12.34', NUMERIC '1234567890', NUMERIC '1.5', NUMERIC '2.5',
+               | BIGNUMERIC '123456789012345678901234567890.12345678901234567890',
+               | BIGNUMERIC '123456789012345.12345', 'abc', b'\\x01\\x02'),
+               |(2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)""".stripMargin)
+        run(
+          s"CREATE OR REPLACE VIEW `$sourceDataset.$parametersView` AS SELECT * FROM `$sourceDataset.$parameters`"
+        )
 
         val extracted = new ExtractBigQuerySchema(
           TablesExtractConfig(
             connectionRef = Some("bigquery"),
-            tables = Map(sourceDataset -> List(table, view, ranges)),
+            tables = Map(sourceDataset -> List(table, view, ranges, parameters, parametersView)),
             tableTypes = List("TABLE", "VIEW")
           )
         ).extractSchemasAndTables(
           settings.schemaHandler(),
-          Map(sourceDataset -> List(table, view, ranges))
+          Map(sourceDataset -> List(table, view, ranges, parameters, parametersView)),
+          // As extract-bq-schema
+          withParameterizedTypes = true
         ).head
         val types = extracted.tables
           .map(schema => schema.name -> schema.attributes.map(a => a.name -> a.`type`))
           .toMap
         types(table) shouldBe List(
-          "id"       -> "long",
-          "civil"    -> "datetime",
-          "wall"     -> "time",
-          "payload"  -> "binary",
-          "big"      -> "bignumeric",
-          "price"    -> "decimal",
+          "id"      -> "long",
+          "civil"   -> "datetime",
+          "wall"    -> "time",
+          "payload" -> "binary",
+          "big"     -> "bignumeric",
+          // An unparameterized NUMERIC, not the NUMERIC(38, 9) of decimal (#1853)
+          "price"    -> "numeric",
           "area"     -> "geography",
           "duration" -> "interval",
           "doc"      -> "variant",
@@ -333,6 +358,29 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
           "days"     -> "range_date",
           "civils"   -> "range_datetime",
           "instants" -> "range_timestamp"
+        )
+        // A type for each parameter set, written to the types of the project (#1853). BigQuery may
+        // report no scale for a NUMERIC(10)
+        info(s"Types of $parameters: ${types(parameters)}")
+        info(s"Types of $parametersView, from its dry run: ${types(parametersView)}")
+        types(parameters).filterNot(_._1 == "whole") shouldBe List(
+          "id"       -> "long",
+          "rate"     -> "numeric_10_2",
+          "plain"    -> "numeric",
+          "declared" -> "decimal",
+          "huge"     -> "bignumeric_50_20",
+          "small"    -> "bignumeric_20_5",
+          "code"     -> "string_10",
+          "digest"   -> "binary_16"
+        )
+        List("numeric_10", "numeric_10_0") should contain(types(parameters).toMap.apply("whole"))
+        val projectTypeNames = settings.schemaHandler(reload = true).types().map(_.name)
+        projectTypeNames should contain allOf (
+          "numeric_10_2",
+          "bignumeric_50_20",
+          "bignumeric_20_5",
+          "string_10",
+          "binary_16"
         )
 
         // The extracted table, loaded into the target dataset from newline delimited JSON
@@ -349,6 +397,8 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
             tables = extracted.tables.collect {
               case schema if schema.name == table =>
                 schema.copy(pattern = Pattern.compile(s"$table-.*\\.json"))
+              case schema if schema.name == parameters =>
+                schema.copy(pattern = Pattern.compile(s"$parameters-.*\\.json"))
               case schema if schema.name == ranges =>
                 schema.copy(
                   pattern = Pattern.compile(s"$ranges-.*\\.csv"),
@@ -378,6 +428,10 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
              |  FROM `$sourceDataset.$table`) t""".stripMargin
         ).iterateAll().asScala.map(_.get(0).getStringValue).toList
         (incoming / s"$table-1.json").overwrite(lines.mkString("", "\n", "\n"))
+        val parameterLines = run(
+          s"SELECT TO_JSON_STRING(t) FROM `$sourceDataset.$parameters` t ORDER BY id"
+        ).iterateAll().asScala.map(_.get(0).getStringValue).toList
+        (incoming / s"$parameters-1.json").overwrite(parameterLines.mkString("", "\n", "\n"))
         // The canonical text of the RANGE values, as CSV loads read them
         val rangeLines = run(
           s"""SELECT CONCAT(CAST(id AS STRING), ';', IFNULL(CAST(days AS STRING), ''), ';',
@@ -390,9 +444,11 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
         assert(new Main().run(Array("stage")))
         assert(new Main().run(Array("load")))
 
-        List(table, ranges).foreach { name =>
-          describe(fields(targetDataset, name)) shouldBe describe(fields(sourceDataset, name))
-          fingerprint(targetDataset, name) shouldBe fingerprint(sourceDataset, name)
+        List(table, ranges, parameters).foreach { name =>
+          withClue(name) {
+            describe(fields(targetDataset, name)) shouldBe describe(fields(sourceDataset, name))
+            fingerprint(targetDataset, name) shouldBe fingerprint(sourceDataset, name)
+          }
         }
       }
     }
@@ -499,7 +555,7 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
               ("total", "long", false),
               ("ratio", "double", false),
               ("flag", "boolean", false),
-              ("price", "decimal", false),
+              ("price", "numeric", false),
               ("big", "bignumeric", false),
               ("civil", "datetime", false),
               ("wall", "time", false),

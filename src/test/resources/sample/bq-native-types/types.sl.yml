@@ -61,3 +61,21 @@ types:
     primitiveType: "decimal"
     pattern: "[-+]?\\d*\\.?\\d+"
     zone: "50, 20"
+  - name: "small_bignumeric"
+    primitiveType: "decimal"
+    pattern: "[-+]?\\d*\\.?\\d+"
+    zone: "20,5"
+    ddlMapping:
+      bigquery: "BIGNUMERIC(20, 5)"
+  - name: "money_zone"
+    primitiveType: "decimal"
+    pattern: "[-+]?\\d*\\.?\\d+"
+    zone: "10,2"
+    ddlMapping:
+      bigquery: "NUMERIC(10, 2)"
+  - name: "whole_number"
+    primitiveType: "decimal"
+    pattern: "[-+]?\\d+"
+    zone: "10,0"
+    ddlMapping:
+      bigquery: "NUMERIC(10)"
