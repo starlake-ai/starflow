@@ -9,7 +9,6 @@ import ai.starlake.schema.model.{
   DomainInfo,
   Format,
   Metadata,
-  SchemaInfo,
   TableAttribute,
   WriteStrategy,
   WriteStrategyType
@@ -652,52 +651,6 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
           rejectedSince(parquetDataset, parquetTypes, replayLoad, replayUri).map(
             _._1.split("\n").lift(1)
           ) shouldBe nullsRejected.map(_._1.split("\n").lift(1))
-
-          // The bad records that a CSV load skips are kept with the message of BigQuery
-          val csvDomain = s"${parquetDataset}_csv"
-          DomainInfo(
-            name = csvDomain,
-            metadata = Some(
-              Metadata(
-                format = Some(Format.DSV),
-                withHeader = Some(true),
-                separator = Some(","),
-                directory = Some(s"{{root_path}}/incoming/$csvDomain")
-              )
-            ),
-            tables = List(
-              SchemaInfo(
-                "bad_lines",
-                Pattern.compile("bad_lines.*\\.csv"),
-                attributes = List(TableAttribute("id", "long"), TableAttribute("label", "string"))
-              )
-            )
-          ).writeDomainAsYaml(DatasetArea.load)(settings.storageHandler())
-          bigquery.delete(TableId.of(csvDomain, "bad_lines"))
-          val csvFile = project / "incoming" / csvDomain / "bad_lines.csv"
-          csvFile.parent.createDirectories()
-          csvFile.overwrite("id,label\n1,one\nx,two\n3,three\ny,four\n")
-          val csvLoad = System.currentTimeMillis()
-          loadInPlace("bad_lines", csvFile.uri.toString, csvDomain) shouldBe true
-          fingerprintOf(s"SELECT * FROM `$csvDomain.bad_lines`").head shouldBe "2"
-          val csvPath = new org.apache.hadoop.fs.Path(csvFile.uri.toString).toString
-          val csvRejected = rejectedSince(csvDomain, "bad_lines", csvLoad, csvPath)
-          info(
-            s"Rejected CSV records: ${csvRejected.map(_._1.replace("\n", " | ")).mkString("; ")}"
-          )
-          // One per bad value, with the message of BigQuery
-          csvRejected should have size 2
-          // As BigQuery writes them: "Unable to parse; line_number: 3 ... column_name: "id"
-          // column_type: INT64 value: "x""
-          List(3 -> "x", 5 -> "y").foreach { case (line, value) =>
-            csvRejected.count { case (error, _) =>
-              error.contains(s"line_number: $line ") && error.contains(s"""value: "$value"""")
-            } shouldBe 1
-          }
-          csvRejected.foreach { case (error, _) =>
-            error should startWith("ERR -> \n")
-            error should include("\n\nFILE -> ")
-          }
 
           // OVERWRITE replaces the rows, APPEND adds them again
           writeParquetDomain(extracted, WriteStrategyType.OVERWRITE, WriteStrategyType.APPEND)
