@@ -1,8 +1,17 @@
-CREATE VIEW {{ tableDomain }}.SL_INCOMING AS {{ selectStatement }};
+{%- set partition = sinkPartition | first -%}
+{%- set incoming = tableDomain + '.SL_INCOMING_BY_PARTITION' -%}
+{# The SELECT is evaluated once, before the DELETE: it may read the partitions it replaces. A rollback
+   does not drop a temporary table: it has a name of its own, which does not hide the SL_INCOMING
+   views of the other strategies, dropped first. A statement can read a temporary table only once:
+   the DELETE joins the distinct partitions, NULL included #}
+DROP TEMPORARY TABLE IF EXISTS {{ incoming }};
 
-DELETE FROM {{ tableFullName }} 
-WHERE {{ sinkPartition | first }} IN (SELECT DISTINCT {{ sinkPartition | first }} FROM {{ tableDomain }}.SL_INCOMING);
+CREATE TEMPORARY TABLE {{ incoming }} AS {{ selectStatement }};
 
-INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM {{ tableDomain }}.SL_INCOMING;
+DELETE SL_EXISTING FROM {{ tableFullName }} SL_EXISTING
+INNER JOIN (SELECT DISTINCT {{ partition }} AS SL_PARTITION FROM {{ incoming }}) SL_PARTITIONS
+ON {{ partition }} <=> SL_PARTITIONS.SL_PARTITION;
 
-DROP VIEW IF EXISTS {{ tableDomain }}.SL_INCOMING;
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM {{ incoming }};
+
+DROP TEMPORARY TABLE IF EXISTS {{ incoming }};

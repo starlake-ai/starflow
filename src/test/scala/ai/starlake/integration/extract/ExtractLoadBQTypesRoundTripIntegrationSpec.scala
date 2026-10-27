@@ -524,7 +524,6 @@ class ExtractLoadBQTypesRoundTripIntegrationSpec extends IntegrationTestBase {
                  |  counts ARRAY<INT64>,
                  |  record STRUCT<code STRING, days ARRAY<DATE>>
                  |) PARTITION BY day""".stripMargin)
-          // OVERWRITE_BY_PARTITION does not replace the rows of the NULL partition: none here
           run(s"""INSERT INTO `$sourceDataset.$parquetLists` VALUES
                  |(1, DATE '2019-12-31', DATETIME '2019-12-31 23:59:59.999999', BIGNUMERIC '1.5',
                  | b'\\x00', ['x', 'y'], [1, 2], STRUCT('c', [DATE '2019-01-01'])),
