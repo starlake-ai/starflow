@@ -84,6 +84,7 @@ __Improvement__:
   - **Behaviour change**: the unparameterized `NUMERIC` columns, extracted as `decimal` so far, are extracted as `numeric`. The native BigQuery loader takes the BigQuery mapping of a decimal type when it has the precision and scale of its zone: a `BIGNUMERIC(P, S)`, which the zone gave as a `NUMERIC(P, S)` when S <= 9 and P - S <= 29, a `NUMERIC(P)` without scale, and an unparameterized `NUMERIC` for the zone `38,9`. New columns of the custom decimal types with such a zone and mapping change accordingly; the columns that already exist keep their type, except in a load that replaces the table (`OVERWRITE` in one step), as for any type change.
   - `POSITION` loads cast their values to a parameterized type without its parameters, which BigQuery refuses in `CAST`, and give NULL to a value beyond them, as to a malformed one. The generated types are not used to find the type of a database column from its SQL type, nor as the default type of a primitive type in `yml2ddl`.
   - Limit: two processes extracting into the same project at the same time can lose the types of one of them.
+  - Limit: the columns of a view keep the built-in types, since BigQuery's dry run of a view reports no parameters (`NUMERIC(10, 2)` is extracted as `numeric`, `STRING(10)` as `string`).
 
 # 1.8.13:
 __Improvement__:
