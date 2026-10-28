@@ -26,7 +26,8 @@ class OverwriteByPartitionTemplatesSpec extends TestHelper {
       database: String = "",
       domain: String = "my_domain",
       columns: List[String] = List("p", "k", "v"),
-      sink: => Sink = AllSinks(partition = Some(List("p"))).getSink()
+      sink: => Sink = AllSinks(partition = Some(List("p"))).getSink(),
+      templateVariables: Map[String, Any] = Map.empty
     ): String =
       new TransformStrategiesBuilder().buildTransform(
         WriteStrategy(`type` = Some(WriteStrategyType.OVERWRITE_BY_PARTITION)),
@@ -36,7 +37,8 @@ class OverwriteByPartitionTemplatesSpec extends TestHelper {
         truncate = false,
         materializedView = Materialization.TABLE,
         settings.appConfig.jdbcEngines(engine).copy(strategyBuilder = strategyBuilder),
-        sink
+        sink,
+        templateVariables
       )
 
     private def occurrences(sql: String, text: String): Int =
@@ -112,6 +114,60 @@ class OverwriteByPartitionTemplatesSpec extends TestHelper {
       ).map(sql.indexOf)
       positions.foreach(_ should be >= 0)
       positions shouldBe positions.sorted
+    }
+
+    it should "turn the partition filter of a BigQuery table on again on every path (#1880)" in {
+
+      /** The script, for a table that requires a partition filter or not, read before the run */
+      def bigquery(
+        tableFilter: Option[Boolean],
+        sinkFilter: Option[Boolean],
+        partition: String = "p"
+      ): String =
+        render(
+          "bigquery",
+          "bigquery",
+          columns = List(partition, "k", "v"),
+          sink = BigQuerySink(
+            partition = Some(List(partition)),
+            requirePartitionFilter = sinkFilter
+          ),
+          templateVariables =
+            tableFilter.map(filter => "tableRequirePartitionFilter" -> filter.toString).toMap
+        )
+      val off = "ALTER TABLE my_domain.my_table SET OPTIONS (require_partition_filter = false);"
+      val on = "ALTER TABLE my_domain.my_table SET OPTIONS (require_partition_filter = true);"
+      def alters(sql: String): List[String] =
+        "ALTER TABLE .*?;".r.findAllIn(sql).toList
+
+      // A table that requires one, whose sink does not declare it: turned off, and on again on the
+      // error path, after the rollback, and on success
+      val undeclared = bigquery(Some(true), None)
+      val positions = List(
+        off,
+        "BEGIN TRANSACTION",
+        "COMMIT TRANSACTION",
+        "EXCEPTION WHEN ERROR THEN",
+        "ROLLBACK TRANSACTION",
+        on,
+        "RAISE;"
+      ).map(undeclared.indexOf)
+      positions.foreach(_ should be >= 0)
+      positions shouldBe positions.sorted
+      alters(undeclared) shouldBe List(off, on, on)
+      // A table that does not require one is left as it is
+      alters(bigquery(Some(false), None)) shouldBe Nil
+      // A sink that declares the option sets the state of the table after a successful run
+      alters(bigquery(Some(false), Some(true))) shouldBe List(on)
+      // on the error path only
+      alters(bigquery(Some(true), Some(false))) shouldBe List(off, on)
+      // Without the state of the table, the sink tells
+      alters(bigquery(None, Some(true))) shouldBe List(off, on, on)
+      alters(bigquery(None, None)) shouldBe Nil
+      // Tables partitioned by ingestion time too
+      val ingestionTime = bigquery(Some(true), None, partition = "_PARTITIONTIME")
+      ingestionTime should include("EXCEPTION WHEN ERROR THEN")
+      alters(ingestionTime) shouldBe List(off, on, on)
     }
 
     it should "keep the SELECT inline for a BigQuery table partitioned by ingestion time" in {

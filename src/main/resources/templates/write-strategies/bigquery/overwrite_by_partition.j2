@@ -1,6 +1,17 @@
 {%- set partition = sinkPartition | first -%}
-ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = false);
+{#- The DELETE selects its partitions through a subquery: a partition filter that the table requires
+    is turned off around the transaction, and turned on again on every path, the error path included
+    (#1880). Whether the table requires one is read before the run; without it, the sink tells. The
+    sink's requirePartitionFilter, when set, is the state of the table after a successful run -#}
+{%- set partitionFilter = (tableRequirePartitionFilter == 'true') if tableRequirePartitionFilter is defined else (sinkRequirePartitionFilter == 'true') -%}
+BEGIN
+DECLARE sl_rollback_failed BOOL DEFAULT FALSE;
 
+{% if partitionFilter %}
+ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = false);
+{% endif %}
+
+BEGIN
 BEGIN TRANSACTION;
 
 {% if partition | upper in ['_PARTITIONTIME', '_PARTITIONDATE'] %}
@@ -31,8 +42,21 @@ COMMIT TRANSACTION;
 
 DROP TABLE SL_INCOMING;
 {% endif %}
-
-{% if sinkRequirePartitionFilter == 'true' %}
-    ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = true);
+EXCEPTION WHEN ERROR THEN
+  -- The transaction may be over already, after a failed COMMIT for example
+  BEGIN
+    ROLLBACK TRANSACTION;
+  EXCEPTION WHEN ERROR THEN
+    SET sl_rollback_failed = TRUE;
+  END;
+{% if partitionFilter %}
+  ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = true);
 {% endif %}
+  -- The error of the run, as it was raised
+  RAISE;
+END;
 
+{% if sinkRequirePartitionFilter == 'true' or (partitionFilter and sinkRequirePartitionFilter != 'false') %}
+ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = true);
+{% endif %}
+END;

@@ -354,13 +354,16 @@ final case class AllSinks(
       .getOrElse(ref, throw new Exception(s"Could not find connection $ref"))
     val options = this.options.getOrElse(connection.options)
     val allSinksWithOptions = this.copy(options = Some(options), connectionRef = Some(ref))
+    // The BigQuery and JDBC sinks carry the options of the sink only, never those of the
+    // connection (URL, credentials), which the write strategy templates would receive (#1877)
+    val allSinksWithOwnOptions = this.copy(connectionRef = Some(ref))
     val connResult =
       connection.`type` match {
         case ConnectionType.SNOWFLAKE_LOG => SnowflakeLogSink.fromAllSinks(allSinksWithOptions)
         case ConnectionType.GCPLOG        => GcpLogSink.fromAllSinks(allSinksWithOptions)
         case ConnectionType.FS            => FsSink.fromAllSinks(allSinksWithOptions)
-        case ConnectionType.JDBC          => JdbcSink.fromAllSinks(allSinksWithOptions)
-        case ConnectionType.BQ            => BigQuerySink.fromAllSinks(allSinksWithOptions)
+        case ConnectionType.JDBC          => JdbcSink.fromAllSinks(allSinksWithOwnOptions)
+        case ConnectionType.BQ            => BigQuerySink.fromAllSinks(allSinksWithOwnOptions)
         case ConnectionType.ES            => EsSink.fromAllSinks(allSinksWithOptions)
         case ConnectionType.KAFKA         => KafkaSink.fromAllSinks(allSinksWithOptions)
         case _ => throw new Exception(s"Unsupported SinkType sink type ${connection.`type`}")
@@ -379,6 +382,8 @@ final case class AllSinks(
   *   Number of days before this table is set as expired and deleted. Never by default.
   * @param requirePartitionFilter:
   *   Should be require a partition filter on every request ? No by default.
+  * @param options:
+  *   the options of the sink, which the write strategy templates receive as `sinkOptions`
   */
 final case class BigQuerySink(
   connectionRef: Option[String] = None,
@@ -389,7 +394,8 @@ final case class BigQuerySink(
   requirePartitionFilter: Option[Boolean] = None,
   materialization: Option[Materialization] = None,
   enableRefresh: Option[Boolean] = None,
-  refreshIntervalMs: Option[Long] = None
+  refreshIntervalMs: Option[Long] = None,
+  options: Option[Map[String, String]] = None
 ) extends Sink {
   def toAllSinks(): AllSinks = {
     AllSinks(
@@ -401,9 +407,16 @@ final case class BigQuerySink(
       materialization,
       enableRefresh,
       refreshIntervalMs,
-      partition = partition
+      partition = partition,
+      options = options
     )
   }
+
+  /** The options of the task reach the write strategy templates as `sinkOptions` only: they are not
+    * table options of the engine, which `sinkTableOptionsClause` renders (#1877)
+    */
+  override def asMap(jdbcEngine: JdbcEngine)(implicit settings: Settings): Map[String, Object] =
+    super.asMap(jdbcEngine) + ("sinkTableOptionsClause" -> "")
 
   @JsonIgnore
   def getPartitionColumn(): Option[String] = this.partition.flatMap(_.headOption)
@@ -420,7 +433,8 @@ object BigQuerySink {
       requirePartitionFilter = allSinks.requirePartitionFilter,
       materialization = allSinks.materializedView,
       enableRefresh = allSinks.enableRefresh,
-      refreshIntervalMs = allSinks.refreshIntervalMs
+      refreshIntervalMs = allSinks.refreshIntervalMs,
+      options = allSinks.options
     )
   }
 }
@@ -649,23 +663,36 @@ object FsSink {
   *   Number of Spark partitions
   * @param batchsize:
   *   Batch size of each JDBC bulk insert
+  * @param options:
+  *   the options of the sink, which the write strategy templates receive as `sinkOptions`
   */
 @JsonTypeName("JDBC")
-case class JdbcSink(connectionRef: Option[String] = None, partition: Option[Seq[String]] = None)
-    extends Sink {
+case class JdbcSink(
+  connectionRef: Option[String] = None,
+  partition: Option[Seq[String]] = None,
+  options: Option[Map[String, String]] = None
+) extends Sink {
   def toAllSinks(): AllSinks = {
     AllSinks(
       connectionRef = connectionRef,
-      partition = partition
+      partition = partition,
+      options = options
     )
   }
+
+  /** The options of the task reach the write strategy templates as `sinkOptions` only: they are not
+    * table options of the engine, which `sinkTableOptionsClause` renders (#1877)
+    */
+  override def asMap(jdbcEngine: JdbcEngine)(implicit settings: Settings): Map[String, Object] =
+    super.asMap(jdbcEngine) + ("sinkTableOptionsClause" -> "")
 }
 
 object JdbcSink {
   def fromAllSinks(allSinks: AllSinks): JdbcSink = {
     JdbcSink(
       allSinks.connectionRef,
-      allSinks.partition
+      allSinks.partition,
+      allSinks.options
     )
   }
 }

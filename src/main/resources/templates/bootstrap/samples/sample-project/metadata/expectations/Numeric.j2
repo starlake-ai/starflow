@@ -127,40 +127,8 @@ SELECT
 FROM {{ table_name }};
 {% endmacro %}
 
-{% macro expect_column_most_common_value_to_be_in_set(table_name, column_name, values) %}
--- This macro generates a SQL query that checks if the most common value in the specified column is within a given set.
---
--- Parameters:
--- table_name: The name of the table to query.
--- column_name: The name of the column to find the most common value for.
--- values: A list of values to check if the most common value is within.
---
--- Returns:
--- The most common value in the specified column if it is within the given set.
-
-WITH ValueCounts AS (
-    SELECT {{ column_name }}, COUNT(*) AS value_count
-    FROM {{ table_name }}
-    GROUP BY {{ column_name }}
-),
-MostCommonValue AS (
-    SELECT {{ column_name }}
-    FROM ValueCounts
-    ORDER BY value_count DESC
-    LIMIT 1
-)
-SELECT 
-    CASE 
-        WHEN {{ column_name }} IN ({{ values | join(', ') }}) 
-        THEN 0 
-        ELSE 1 
-    END AS is_valid
-FROM MostCommonValue;
-{% endmacro %}
-
 {% macro expect_column_pair_values_a_to_be_greater_than_b(table_name, column_a, column_b) %}
 -- This macro generates a SQL query that checks if the values in column A are greater than the values in column B for each row.
--- If the result set is empty, it means all values in column A are greater than the values in column B.
 --
 -- Parameters:
 -- table_name: The name of the table to query.
@@ -168,8 +136,7 @@ FROM MostCommonValue;
 -- column_b: The name of column B.
 --
 -- Returns:
--- A result set containing rows where the values in column A are not greater than the values in column B.
--- If the result set is empty, it means all values in column A are greater than the values in column B.
+-- 0 if the values in column A are greater than the values in column B in every row, 1 otherwise.
 
 SELECT 
     CASE 
@@ -181,62 +148,6 @@ SELECT
         ) THEN 1
         ELSE 0
     END AS result
-{% endmacro %}
-
-{% macro expect_column_pair_values_to_be_equal(table_name, column_a, column_b) %}
--- This macro generates a SQL query that checks if the values in two specified columns are equal for each row.
--- If any row has unequal values in the specified columns, it will be returned by the query.
---
--- Parameters:
--- table_name: The name of the table to query.
--- column_a: The name of the first column.
--- column_b: The name of the second column.
---
--- Returns:
--- A result set containing rows where the values in the specified columns are not equal.
--- If the result set is empty, it means all values in the specified columns are equal.
-
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1
-            FROM {{ table_name }}
-            WHERE {{ column_a }} <> {{ column_b }}
-            LIMIT 1
-        ) THEN 1
-        ELSE 0
-    END AS result;
-{% endmacro %}
-
-{% macro expect_column_pair_values_to_be_in_set(table_name, column_a, column_b, value_pairs) %}
--- This macro generates a SQL query that checks if the values in two specified columns are within a given set for each row.
--- If any row has values in the specified columns that are not within the set, it will be returned by the query.
---
--- Parameters:
--- table_name: The name of the table to query.
--- column_a: The name of the first column.
--- column_b: The name of the second column.
--- value_pairs: A list of tuples representing the allowed pairs of values.
---
--- Returns:
--- A result set containing rows where the values in the specified columns are not within the given set.
--- If the result set is empty, it means all values in the specified columns are within the given set.
-
-SELECT CASE
-    WHEN EXISTS (
-        SELECT 1
-        FROM {{ table_name }}
-        WHERE ({{ column_a }}, {{ column_b }}) IN (
-            {% for pair in value_pairs %}
-            ({{ pair[0] }}, {{ pair[1] }})
-            {% if not loop.last %}
-            ,
-            {% endif %}
-            {% endfor %}
-        )
-    ) THEN 1
-    ELSE 0
-END AS result;
 {% endmacro %}
 
 {% macro expect_column_quantile_values_to_be_between(table_name, column_name, quantiles, lower_bounds, upper_bounds) %}
@@ -287,25 +198,14 @@ FROM Quantiles;
 -- upper_bound: The upper bound of the range.
 --
 -- Returns:
--- The standard deviation of the specified column if it is between the given range.
+-- 0 if the sample standard deviation of the specified column is between the given range, 1 otherwise.
 
-WITH stats AS (
-    SELECT
-        AVG({{ column_name }}) AS mean_value,
-        COUNT({{ column_name }}) AS count_value
-    FROM {{ table_name }}
-),
-variance AS (
-    SELECT
-        SUM(({{ column_name }} - mean_value) * ({{ column_name }} - mean_value)) / (count_value - 1) AS variance_value
-    FROM {{ table_name }}, stats
-)
 SELECT CASE
-    WHEN ROUND(SQRT(variance_value), 2) BETWEEN {{ lower_bound }} AND {{ upper_bound }}
+    WHEN ROUND(STDDEV_SAMP({{ column_name }}), 2) BETWEEN {{ lower_bound }} AND {{ upper_bound }}
     THEN 0
     ELSE 1
 END AS result
-FROM variance;
+FROM {{ table_name }};
 {% endmacro %}
 
 {% macro expect_column_sum_to_be_between(table_name, column_name, lower_bound, upper_bound) %}
@@ -329,42 +229,36 @@ SELECT
 FROM {{ table_name }};
 {% endmacro %}
 
-{% macro expect_column_value_z_scores_to_be_less_than(table_name, column_name, threshold) %}
+{% macro expect_column_value_z_scores_to_be_less_than(table_name, column_name, threshold, double_sided=True) %}
 -- This macro generates a SQL query that checks if the z-scores of values in a specified column are less than a given threshold.
 --
 -- Parameters:
 -- table_name: The name of the table to query.
 -- column_name: The name of the column to calculate z-scores for.
 -- threshold: The z-score threshold.
+-- double_sided: If True, the absolute value of the z-score is compared, so that values far below
+--               the mean count too.
 --
 -- Returns:
--- The values in the specified column and their z-scores that are less than the given threshold.
+-- The number of values whose z-score is not less than the given threshold: 0 when they all are.
+-- The z-score uses the sample standard deviation. When all the values are equal, it is not
+-- defined, and no value is counted.
 
-WITH Mean AS (
+WITH Stats AS (
     SELECT 
-        AVG({{ column_name }}) AS mean_value
+        AVG({{ column_name }}) AS mean_value,
+        STDDEV_SAMP({{ column_name }}) AS stdev_value
     FROM {{ table_name }}
-),
-Stats AS (
-    SELECT 
-        Mean.mean_value,
-        SQRT(
-            SUM(({{ column_name }} - Mean.mean_value) * ({{ column_name }} - Mean.mean_value))
-            / (COUNT({{ column_name }}) - 1)
-        ) AS stdev_value
-    FROM {{ table_name }}, Mean
 ),
 ZScores AS (
     SELECT 
         {{ column_name }},
-        ({{ column_name }} - Stats.mean_value) / Stats.stdev_value AS z_score
+        ({{ column_name }} - Stats.mean_value) / NULLIF(Stats.stdev_value, 0) AS z_score
     FROM {{ table_name }}, Stats
 )
-SELECT 
-    CASE 
-        WHEN EXISTS (SELECT 1 FROM ZScores WHERE z_score < {{ threshold }} AND z_score != 0) THEN 0
-        ELSE 1
-    END AS result;
+SELECT COUNT(*) AS result
+FROM ZScores
+WHERE {% if double_sided %}ABS(z_score){% else %}z_score{% endif %} >= {{ threshold }};
 {% endmacro %}
 
 {% macro expect_column_values_to_be_between(table_name, column_name, lower_bound, upper_bound) %}
@@ -377,61 +271,12 @@ SELECT
 -- upper_bound: The upper bound of the range.
 --
 -- Returns:
--- The values in the specified column that are not between the given range.
+-- The number of values that are not between the given range: 0 when they all are. NULL values are
+-- not counted.
 
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1
-            FROM {{ table_name }}
-            WHERE {{ column_name }} NOT BETWEEN {{ lower_bound }} AND {{ upper_bound }}
-        ) THEN 0
-        ELSE 1
-    END AS result;
-{% endmacro %}
-
-{% macro expect_column_values_to_be_in_set(table_name, column_name, values) %}
--- This macro generates a SQL query that checks if the values in a specified column are within a given set.
---
--- Parameters:
--- table_name: The name of the table to query.
--- column_name: The name of the column to check the values for.
--- values: A list of values that the column values should be within.
---
--- Returns:
--- The values in the specified column that are not within the given set.
-
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 
-            FROM {{ table_name }}
-            WHERE {{ column_name }} NOT IN ({{ values | join(', ') }})
-        ) THEN 0
-        ELSE 1
-    END AS result;
-{% endmacro %}
-
-{% macro expect_column_values_to_not_be_in_set(table_name, column_name, values) %}
--- This macro generates a SQL query that checks if the values in a specified column are not within a given set.
---
--- Parameters:
--- table_name: The name of the table to query.
--- column_name: The name of the column to check the values for.
--- values: A list of values that the column values should not be within.
---
--- Returns:
--- The values in the specified column that are within the given set.
-
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 
-            FROM {{ table_name }}
-            WHERE {{ column_name }} IN ({{ values | map('string') | join(', ') }})
-        ) THEN 0
-        ELSE 1
-    END AS result;
+SELECT COUNT(*) AS result
+FROM {{ table_name }}
+WHERE {{ column_name }} NOT BETWEEN {{ lower_bound }} AND {{ upper_bound }};
 {% endmacro %}
 
 {% macro expect_multicolumn_sum_to_equal(table_name, columns, expected_sum) %}
