@@ -4,6 +4,7 @@ import ai.starlake.job.transform.BigQueryAutoTask
 import com.google.cloud.bigquery._
 
 import scala.jdk.CollectionConverters._
+import scala.util.{Failure, Success, Try}
 
 /** OVERWRITE_BY_PARTITION on a BigQuery table that requires a partition filter (#1880): the filter
   * is turned on again after the run, failed or not, whether the sink declares it or not.
@@ -119,7 +120,11 @@ class OverwriteByPartitionFilterBQIntegrationSpec extends BigQueryTransformInteg
         val failing =
           s"""SELECT p, k, CASE WHEN k = 2 THEN ERROR('sl it failure') ELSE v END AS v
              |FROM `$dataset.$table` WHERE p = DATE '2026-10-01'""".stripMargin
-        assert(!transform(failing, Some(true)))
+        // The command throws the error of the run
+        Try(transform(failing, Some(true))) match {
+          case Success(succeeded) => succeeded shouldBe false
+          case Failure(exception) => exception.getMessage should include("sl it failure")
+        }
         requiresPartitionFilter() shouldBe true
         rows() shouldBe initial
         // The audit log keeps the second of its timestamp only
