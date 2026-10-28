@@ -1,7 +1,24 @@
+{%- set partition = sinkPartition | first -%}
+{%- if tableDatabase and tableDomain -%}
+{%- set incoming = tableDatabase + '.' + tableDomain + '.SL_INCOMING' -%}
+{%- elif tableDomain -%}
+{%- set incoming = tableDomain + '.SL_INCOMING' -%}
+{%- else -%}
+{%- set incoming = 'SL_INCOMING' -%}
+{%- endif -%}
+{# The SELECT is evaluated once, before the DELETE: it may read the partitions it replaces. It is
+   inserted into a table of the column types of the target, as into the target. Creating this table
+   commits the presql; it is not dropped, so that the DELETE, the INSERT and the postsql commit
+   together: the next run of the session replaces it #}
+CREATE OR REPLACE TEMPORARY TABLE {{ incoming }} AS SELECT {{ tableColumnsCsv }} FROM {{ tableFullName }} WHERE FALSE;
 
+INSERT INTO {{ incoming }}({{ tableColumnsCsv }}) {{ selectStatement }};
 
-DELETE FROM {{ tableFullName }} 
-WHERE {{ sinkPartition | first }} IN (SELECT DISTINCT {{ sinkPartition | first }} FROM ({{ selectStatement }}));
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM {{ incoming }} WHERE {{ partition }} IS NOT NULL);
 
-INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }};
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM {{ incoming }} WHERE {{ partition }} IS NULL);
+
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM {{ incoming }};
 

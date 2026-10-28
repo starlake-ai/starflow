@@ -1,7 +1,17 @@
-CREATE TEMPORARY VIEW SL_INCOMING AS {{ selectStatement }};
+{%- set partition = sinkPartition | first -%}
+{# The SELECT is evaluated once, before the DELETE: it may read the partitions it replaces. Where DDL
+   commits, a failed run leaves the temporary table: it has a name of its own, dropped first #}
+DROP TABLE IF EXISTS SL_INCOMING_BY_PARTITION;
 
-DELETE FROM {{ tableFullName }} 
-WHERE {{ sinkPartition | first }} IN (SELECT DISTINCT {{ sinkPartition | first }} FROM SL_INCOMING);
+CREATE TEMPORARY TABLE SL_INCOMING_BY_PARTITION AS {{ selectStatement }};
 
-INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM SL_INCOMING_BY_PARTITION WHERE {{ partition }} IS NOT NULL);
+
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM SL_INCOMING_BY_PARTITION WHERE {{ partition }} IS NULL);
+
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING_BY_PARTITION;
+
+DROP TABLE IF EXISTS SL_INCOMING_BY_PARTITION;
 

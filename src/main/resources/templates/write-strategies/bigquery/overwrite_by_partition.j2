@@ -1,14 +1,36 @@
-
+{%- set partition = sinkPartition | first -%}
 ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = false);
 
 BEGIN TRANSACTION;
 
-DELETE FROM {{ tableFullName }} 
-WHERE {{ sinkPartition | first }} IN (SELECT DISTINCT {{ sinkPartition | first }} FROM ({{ selectStatement }}));
+{% if partition | upper in ['_PARTITIONTIME', '_PARTITIONDATE'] %}
+{# A table cannot hold the pseudo-columns of a table partitioned by ingestion time: the SELECT is
+   evaluated twice, after the DELETE, and the NULL partition is not replaced #}
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM ({{ selectStatement }}));
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }};
 
 COMMIT TRANSACTION;
+{% else %}
+{# The SELECT is evaluated once, before the DELETE: it may read the partitions it replaces. It is
+   inserted into a table of the column types of the target, as into the target #}
+CREATE TEMP TABLE SL_INCOMING AS SELECT {{ tableColumnsCsv }} FROM {{ tableFullName }} WHERE FALSE;
+
+INSERT INTO SL_INCOMING({{ tableColumnsCsv }}) {{ selectStatement }};
+
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM SL_INCOMING WHERE {{ partition }} IS NOT NULL);
+
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM SL_INCOMING WHERE {{ partition }} IS NULL);
+
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
+
+COMMIT TRANSACTION;
+
+DROP TABLE SL_INCOMING;
+{% endif %}
 
 {% if sinkRequirePartitionFilter == 'true' %}
     ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = true);
