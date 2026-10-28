@@ -9,6 +9,8 @@ __Bug fix__:
   - The schema `filter` (except the filter of POSITION files, applied to their raw lines), scripted attributes, SQL privacy and expectations now see the transformed values.
   - **Upgrade note**: the tables loaded since 1.5.16 with a non-SQL privacy contain clear values. Reload them or transform the existing rows, then remove the clear values that remain elsewhere: time travel and table history (Delta, Iceberg, BigQuery), rejected and audit tables, downstream tables and exports. Until then, new rows are masked and old rows are not, so a merge key (`UPSERT_BY_KEY`, `SCD2`) or a join on such a column no longer matches the old rows.
   - Known limitations: the privacy of a scripted attribute is not applied (write it in the script); rejected records keep their input values; custom privacy engines do not receive the other columns of the row; typed input is transformed in its Spark string form (for example a timestamp in the session time zone).
+- **DuckDB native loads no longer fail with `Current transaction is aborted`** on a table that does not exist yet: since DuckDB 2.0 any failing statement aborts the open transaction, and the existence check probed the table with a query. DuckDB tables and views are now looked up in `information_schema`.
+- **A failing DuckDB transform reports its own error** instead of `cannot rollback - no transaction is active`: the rollback is now skipped when no transaction is open, and a failing rollback is logged rather than hiding the original error.
 
 __Improvement__:
 - **Native BigQuery loads use the BigQuery type of the attribute types** (#1836, part (a)): the tables and columns that the native BigQuery loader creates were typed from the Spark type of the primitive type, so the `ddlMapping.bigquery` of a custom type had no effect (a type mapped to `DATETIME` gave a `TIMESTAMP` column). The columns now take the BigQuery type of their attribute type mapping when it differs from the derived one, for example `DATETIME`, `TIME`, `JSON`, `GEOGRAPHY` or `STRING(n)`; `BYTES`, `INTERVAL`, `RANGE<...>` and `BYTES(n)` are accepted too. This applies to the temporary table of a two-step load, the target table it creates and the columns it adds.
@@ -40,6 +42,12 @@ __Improvement__:
     - `validate` reports the zones it accepted although Spark could not use them, such as `10,12`, `50,5` or `10, 2`;
     - a project type named like a new built-in type replaces it, with a `WARN` when its primitive type differs;
     - the types above change in the output of `extract-bq-schema`, and in the schema sync and diff of BigQuery transforms, which use the same extraction, and the tables and views that failed are extracted. A `BIGNUMERIC(p,s)` column gives `bignumeric`, which only the native BigQuery loader loads, and an extracted `NUMERIC` column loads into a `NUMERIC(38,9)`: the same type, with its parameters written.
+- **DuckDB JDBC driver upgraded to 2.0.0.0**, along with the installer pin. DuckDB 2.0 changes behavior in ways that reach Starflow projects:
+  - **Database files written by Starflow can no longer be opened by DuckDB 1.x** (CLI, Python package, UI): new databases use storage version 69. Existing files created by 1.x are read and written without being upgraded, so they stay readable by 1.x. To keep a file readable by 1.x tools, set `storage_compatibility_version` (or `STORAGE_VERSION` in `ATTACH`) in the connection `preActions`.
+  - **Arrow lambdas (`x -> x + 1`) are rejected** by default: write `lambda x : x + 1` in transforms run on DuckDB. `SET lambda_syntax = 'enable_single_arrow'` restores the old syntax until DuckDB 2.1.
+  - **Integer division and modulo by zero (`//`, `%`) now fail** instead of returning NULL: wrap them in `TRY(...)` or set `error_on_division_by_zero = false`.
+  - **Axis order sensitive spatial functions** (`ST_Distance_Sphere`, ...) fail until `geometry_always_xy` is set: `false` keeps the 1.x [latitude, longitude] order. `starlake test` sets it to `false` before installing the transpiler macros.
+  - **S3 credentials passed in the URL query string are ignored** and become part of the object key: use secrets.
 
 # 1.8.13:
 __Improvement__:

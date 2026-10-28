@@ -362,6 +362,89 @@ object JdbcDbUtils extends LazyLogging {
     url: String,
     domainAndTablename: String,
     engineName: String
+  ): Boolean =
+    if (isDuckDbConnection(conn))
+      duckDbTableExists(conn, domainAndTablename)
+    else
+      probeTableExists(conn, url, domainAndTablename, engineName)
+
+  private def isDuckDbConnection(conn: Connection): Boolean =
+    Try(conn.getMetaData.getDatabaseProductName.equalsIgnoreCase("DuckDB")).getOrElse(false)
+
+  /** Looks the table or view up in information_schema rather than probing it: since DuckDB 2.0 a
+    * failing statement aborts the open transaction, so a probe on a missing table would make every
+    * later statement of the caller's transaction fail. Name resolution follows DuckDB's: `t` in the
+    * current schema (or among temporary tables), `a.t` as schema `a` of the current catalog or as
+    * catalog `a` with its `main` schema, `c.s.t` fully qualified. Identifiers match case
+    * insensitively, as DuckDB resolves them.
+    */
+  private def duckDbTableExists(conn: Connection, domainAndTablename: String): Boolean = {
+    val parts = splitQualifiedName(domainAndTablename).map(_.toLowerCase)
+    val (predicate, params) = parts match {
+      case List(table) =>
+        (
+          "((table_catalog = current_database() AND table_schema = current_schema()) OR table_catalog = 'temp') AND lower(table_name) = ?",
+          List(table)
+        )
+      case List(first, table) =>
+        (
+          "((table_catalog = current_database() AND lower(table_schema) = ?) OR (lower(table_catalog) = ? AND table_schema = 'main')) AND lower(table_name) = ?",
+          List(first, first, table)
+        )
+      case List(catalog, schema, table) =>
+        (
+          "lower(table_catalog) = ? AND lower(table_schema) = ? AND lower(table_name) = ?",
+          List(catalog, schema, table)
+        )
+      case _ =>
+        throw new IllegalArgumentException(s"Invalid table name $domainAndTablename")
+    }
+    Using.resource(
+      conn.prepareStatement(s"SELECT 1 FROM information_schema.tables WHERE $predicate LIMIT 1")
+    ) { statement =>
+      params.zipWithIndex.foreach { case (param, index) => statement.setString(index + 1, param) }
+      Using.resource(statement.executeQuery())(_.next())
+    }
+  }
+
+  /** Splits a dot separated table name, honoring double quoted parts (`"my.domain".table`). */
+  private[extract] def splitQualifiedName(name: String): List[String] = {
+    val parts = ListBuffer[String]()
+    val current = new StringBuilder
+    var inQuotes = false
+    var i = 0
+    while (i < name.length) {
+      val c = name.charAt(i)
+      if (c == '"') {
+        if (inQuotes && i + 1 < name.length && name.charAt(i + 1) == '"') {
+          current.append('"')
+          i += 1
+        } else
+          inQuotes = !inQuotes
+      } else if (c == '.' && !inQuotes) {
+        parts += current.toString.trim
+        current.clear()
+      } else
+        current.append(c)
+      i += 1
+    }
+    parts += current.toString.trim
+    parts.toList
+  }
+
+  /** Roll back the open transaction, if any, without masking the error the caller is handling:
+    * DuckDB 2.0 throws on a rollback when no transaction is active, which 1.x ignored.
+    */
+  def rollbackQuietly(conn: Connection): Unit =
+    Try(if (!conn.getAutoCommit) conn.rollback()).failed.foreach { e =>
+      logger.warn(s"Rollback failed: ${e.getMessage}")
+    }
+
+  private def probeTableExists(
+    conn: Connection,
+    url: String,
+    domainAndTablename: String,
+    engineName: String
   ): Boolean = {
     val dialect = SparkUtils.dialectForUrl(ConnectionInfo.jdbcUrlForDialect(url, engineName))
     Try {

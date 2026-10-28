@@ -270,12 +270,17 @@ abstract class AutoTask(
     schemaHandler.activeEnvVars() ++ commandParameters // ++ Map("merge" -> tableExists)
 
   /** DuckDB extensions and macros required to run transpiled SQL in test mode. These are already
-    * written for DuckDB and must never be transpiled. They are idempotent (LOAD / CREATE OR REPLACE
-    * FUNCTION) and may safely be executed more than once.
+    * written for DuckDB and must never be transpiled. They are idempotent (LOAD / SET / CREATE OR
+    * REPLACE FUNCTION) and may safely be executed more than once.
+    *
+    * DuckDB 2.0 refuses axis order sensitive spatial functions (ST_Distance_Sphere, ...) until
+    * `geometry_always_xy` is set. The transpiler macros flip BigQuery's [lon, lat] points to the
+    * [lat, lon] order DuckDB 1.x assumed, so the pre-2.0 behavior is kept.
     */
   protected lazy val testInitSqls: List[String] =
     if (this.test) {
-      List("LOAD SPATIAL", "LOAD JSON") ++ JSQLTranspiler.getMacroArray.toList
+      List("LOAD SPATIAL", "SET geometry_always_xy = false", "LOAD JSON") ++
+      JSQLTranspiler.getMacroArray.toList
     } else
       Nil
 

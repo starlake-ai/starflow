@@ -280,7 +280,7 @@ class JdbcAutoTask(
                     runSqls(conn, postSql, "Post")
                     conn.commit()
                   case Failure(e) =>
-                    conn.rollback()
+                    JdbcDbUtils.rollbackQuietly(conn)
                     throw e
                 }
               }
@@ -341,7 +341,7 @@ class JdbcAutoTask(
                     runSqls(conn, postSql, "Post")
                     conn.commit()
                   case Failure(e) =>
-                    conn.rollback()
+                    JdbcDbUtils.rollbackQuietly(conn)
                     throw enrichWithSchemaSyncHint(jdbcTargetColumns(conn), e)
                 }
               }
@@ -358,7 +358,7 @@ class JdbcAutoTask(
             } match {
               case Success(_) =>
               case Failure(e) =>
-                conn.rollback()
+                JdbcDbUtils.rollbackQuietly(conn)
                 throw e
             }
           }

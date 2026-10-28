@@ -418,7 +418,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final String TRINODB_VERSION = getEnv("TRINODB_VERSION").orElse("478");
 
     // DUCKDB
-    private static final String DUCKDB_VERSION = getEnv("DUCKDB_VERSION").orElse("1.5.6.0");
+    private static final String DUCKDB_VERSION = getEnv("DUCKDB_VERSION").orElse("2.0.0.0");
 
     // ARROW FLIGHT SQL
     private static final String FLIGHT_SQL_JDBC_VERSION = getEnv("FLIGHT_SQL_JDBC_VERSION").orElse("19.0.0");
