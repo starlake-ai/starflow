@@ -10,6 +10,8 @@
 #   binary           bytes encoded in base64 (SGVsbG8gV29ybGQ=)
 #                    bigquery BYTES, snowflake BINARY, postgres BYTEA, duckdb BLOB
 #                    For hex input, declare a type of primitiveType binary with pattern "hex".
+#   numeric          decimal of zone 38,9: bigquery NUMERIC, snowflake DECIMAL,
+#                    postgres DECIMAL, duckdb DECIMAL (an unparameterized BigQuery NUMERIC)
 #   bignumeric       decimal of zone 76,38: bigquery BIGNUMERIC, postgres NUMERIC
 #                    Only the native BigQuery loader loads it.
 #   geography        WKT or GeoJSON text: bigquery GEOGRAPHY
