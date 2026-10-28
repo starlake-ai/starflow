@@ -8,7 +8,8 @@
 -- ties_okay: If True, allows values outside the set if they are equally common but not more common.
 --
 -- Returns:
--- 0 if the expectation is met, 1 if it is not.
+-- 0 if the expectation is met, 1 if it is not: without ties_okay, every most common value must be
+-- in the set.
 
 WITH ValueCounts AS (
     SELECT 
@@ -33,13 +34,20 @@ SELECT
         WHEN NOT EXISTS (
             SELECT 1 FROM MostCommonValues WHERE value IN (
                 {% for val in value_set %}
-                    {% if val is string %}'{{ val }}'{% else %}{{ val }}{% endif %}
+                    {% if val is string %}'{{ val | replace("'", "''") }}'{% else %}{{ val }}{% endif %}
                     {% if not loop.last %}, {% endif %}
                 {% endfor %}
             )
         ) THEN 1 
-        {% if ties_okay %}
-        WHEN (SELECT COUNT(*) FROM MostCommonValues) > 1 THEN 0 
+        {% if not ties_okay %}
+        WHEN EXISTS (
+            SELECT 1 FROM MostCommonValues WHERE value NOT IN (
+                {% for val in value_set %}
+                    {% if val is string %}'{{ val | replace("'", "''") }}'{% else %}{{ val }}{% endif %}
+                    {% if not loop.last %}, {% endif %}
+                {% endfor %}
+            )
+        ) THEN 1
         {% endif %}
         ELSE 0 
     END AS result;
@@ -47,7 +55,6 @@ SELECT
 
 {% macro expect_column_pair_values_to_be_equal(table_name, column_a, column_b) %}
 -- This macro generates a SQL query that checks if the values in two specified columns are equal for each row.
--- If any row has unequal values in the specified columns, it will be returned by the query.
 --
 -- Parameters:
 -- table_name: The name of the table to query.
@@ -55,13 +62,8 @@ SELECT
 -- column_b: The name of the second column.
 --
 -- Returns:
--- A result set containing rows where the values in the specified columns are not equal.
--- If the result set is empty, it means all values in the specified columns are equal.
---
--- This will generate a query like:
--- SELECT *
--- FROM table_name
--- WHERE column_A <> column_B;
+-- 0 if the values in the specified columns are equal in every row, a NULL being equal to a NULL
+-- only, 1 otherwise.
 
 SELECT 
     CASE 
@@ -77,37 +79,34 @@ SELECT
 
 {% macro expect_column_pair_values_to_be_in_set(table_name, column_a, column_b, value_pairs) %}
 -- This macro generates a SQL query that checks if the values in two specified columns are within a given set for each row.
--- If any row has values in the specified columns that are not within the set, it will be returned by the query.
 --
 -- Parameters:
 -- table_name: The name of the table to query.
 -- column_a: The name of the first column.
 -- column_b: The name of the second column.
--- value_pairs: A list of tuples representing the allowed pairs of values.
+-- value_pairs: A list of tuples representing the allowed pairs of values. A string value is quoted,
+--              None is NULL, and other values are written as they are.
 --
 -- Returns:
--- A result set containing rows where the values in the specified columns are not within the given set.
--- If the result set is empty, it means all values in the specified columns are within the given set.
+-- The number of rows whose pair of values is not one of the given pairs: 0 when they all are. Rows
+-- whose two values are NULL are not counted.
 --
 -- This will generate a query like:
--- SELECT *
+-- SELECT COUNT(*)
 -- FROM table_name
--- WHERE (column_A, column_B) NOT IN ((value1_A, value1_B), (value2_A, value2_B));
+-- WHERE NOT (column_A IS NULL AND column_B IS NULL)
+-- AND NOT (FALSE OR (column_A IS NOT DISTINCT FROM value1_A AND column_B IS NOT DISTINCT FROM value1_B));
 
-SELECT CASE
-    WHEN EXISTS (
-        SELECT 1
-        FROM {{ table_name }}
-        WHERE (
-              {% for pair in value_pairs %}
-                (COALESCE({{ column_a }}, 'NULL_REPLACEMENT') = COALESCE('{{ pair[0] }}', 'NULL_REPLACEMENT')
-                AND COALESCE({{ column_b }}, 'NULL_REPLACEMENT') = COALESCE('{{ pair[1] }}', 'NULL_REPLACEMENT'))
-                {% if not loop.last %} OR {% endif %}
-            {% endfor %}
-        )
-    ) THEN 1
-    ELSE 0
-END AS result;
+SELECT COUNT(*) AS result
+FROM {{ table_name }}
+WHERE NOT ({{ column_a }} IS NULL AND {{ column_b }} IS NULL)
+AND NOT (
+    FALSE
+    {% for pair in value_pairs %}
+    OR ({{ column_a }} IS NOT DISTINCT FROM {% if pair[0] is none %}NULL{% elif pair[0] is string %}'{{ pair[0] | replace("'", "''") }}'{% else %}{{ pair[0] }}{% endif %}
+    AND {{ column_b }} IS NOT DISTINCT FROM {% if pair[1] is none %}NULL{% elif pair[1] is string %}'{{ pair[1] | replace("'", "''") }}'{% else %}{{ pair[1] }}{% endif %})
+    {% endfor %}
+);
 {% endmacro %}
 
 {% macro expect_column_value_lengths_to_be_between(table_name, column_name, lower_bound, upper_bound) %}
@@ -152,26 +151,21 @@ SELECT
 -- Parameters:
 -- table_name: The name of the table to query.
 -- column_name: The name of the column to check the values for.
--- values: A list of values that the column values should be within.
+-- values: A list of values that the column values should be within, as SQL literals: ["'a'", "'b'"]
+--         for strings.
 --
 -- Returns:
--- The values in the specified column that are not within the given set.
+-- The number of values that are not within the given set: 0 when they all are. NULL values are
+-- not counted.
 --
 -- This will generate a query like:
--- SELECT column_name
+-- SELECT COUNT(*)
 -- FROM table_name
 -- WHERE column_name NOT IN (value1, value2, value3);
 
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 
-            FROM {{ table_name }}
-            WHERE {{ column_name }} NOT IN ({{ values | join(', ') }})
-            OR {{ column_name }} IS NULL  
-        ) THEN 0  
-        ELSE 1  
-    END AS result;
+SELECT COUNT(*) AS result
+FROM {{ table_name }}
+WHERE {{ column_name }} NOT IN ({{ values | join(', ') }});
 {% endmacro %}
 
 {% macro expect_column_values_to_match_like_pattern(table_name, column_name, pattern) %}
@@ -231,26 +225,28 @@ WHERE
 ;
 {% endmacro %}
 
-{% macro expect_column_values_to_match_regex(table_name, column_name, regex, mostly=95) %}
--- This macro checks if column values match a regex across different databases.
--- It calculates the percentage of matching values and returns 0 (pass) or 1 (fail) based on the `mostly` threshold.
-
+{% macro expect_column_values_to_match_regex(table_name, column_name, regex, mostly=0.95) %}
+-- This macro checks that at least a fraction of the values of a column match a regular expression,
+-- anywhere in the value. It uses the regexp_matches function of DuckDB: on another engine, use its
+-- own function (REGEXP_CONTAINS on BigQuery, REGEXP_LIKE on Snowflake, which matches the whole value).
+--
+-- Parameters:
+-- mostly: The minimum fraction of the values that should match (0.95). A value above 1 is read as a
+--         percentage (95).
+--
+-- Returns:
+-- 0 if the expectation is met, 1 otherwise. NULL values are not counted.
+{% set ratio = mostly / 100 if mostly > 1 else mostly %}
 WITH validation AS (
     SELECT 
-        COUNT(*) AS total_rows,
-        SUM(
-            CASE 
-                WHEN {{ column_name }} REGEXP '{{ regex }}' THEN 1  -- MySQL, SQLite (if REGEXP function is enabled)
-                WHEN REGEXP_LIKE({{ column_name }}, '{{ regex }}') THEN 1  -- BigQuery, Snowflake, DuckDB
-                ELSE 0 
-            END
-        ) AS matching_rows
+        COUNT({{ column_name }}) AS total_rows,
+        COUNT(CASE WHEN regexp_matches({{ column_name }}, '{{ regex }}') THEN 1 END) AS matching_rows
     FROM {{ table_name }}
 )
 SELECT 
     CASE 
-        WHEN (matching_rows * 100.0 / NULLIF(total_rows, 0)) >= {{ mostly }} THEN 0  -- Pass
-        ELSE 1  -- Fail
+        WHEN matching_rows >= {{ ratio }} * total_rows THEN 0
+        ELSE 1
     END AS result
 FROM validation;
 {% endmacro %}
@@ -265,24 +261,24 @@ FROM validation;
 --
 --
 -- Returns:
--- The values in the specified column that do not match any pattern in the given list of regular expression patterns.
+-- The number of values that do not match any pattern in the given list of regular expression
+-- patterns: 0 when each value matches one. NULL values are not counted. It uses the regexp_matches
+-- function of DuckDB, which matches anywhere in the value.
 --
 -- This will generate a query like:
--- SELECT column_name
+-- SELECT COUNT(*)
 -- FROM table_name
--- WHERE column_name !~ 'regex_pattern1'
--- AND column_name !~ 'regex_pattern2'
--- AND column_name !~ 'regex_pattern3';
+-- WHERE NOT (regexp_matches(column_name, 'regex_pattern1')
+-- OR regexp_matches(column_name, 'regex_pattern2'));
 
-SELECT {{ column_name }}
+SELECT COUNT(*) AS result
 FROM {{ table_name }}
-WHERE 
+WHERE NOT (
+FALSE
 {% for pattern in regex_patterns %}
-{{ column_name }} NOT REGEXP '{{ pattern }}'
-{% if not loop.last %}
-AND 
-{% endif %}
-{% endfor %};
+OR regexp_matches({{ column_name }}, '{{ pattern }}')
+{% endfor %}
+);
 {% endmacro %}
 
 {% macro expect_column_values_to_not_be_in_set(table_name, column_name, values) %}
@@ -291,25 +287,20 @@ AND
 -- Parameters:
 -- table_name: The name of the table to query.
 -- column_name: The name of the column to check the values for.
--- values: A list of values that the column values should not be within.
+-- values: A list of values that the column values should not be within, as SQL literals: ["'a'", "'b'"]
+--         for strings.
 --
 -- Returns:
--- The values in the specified column that are within the given set.
+-- The number of values that are within the given set: 0 when none is.
 --
 -- This will generate a query like:
--- SELECT column_name
+-- SELECT COUNT(*)
 -- FROM table_name
--- WHERE column_name NOT IN ('value1', 'value2', 'value3');
+-- WHERE column_name IN ('value1', 'value2', 'value3');
 
-SELECT 
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 
-            FROM {{ table_name }}
-            WHERE {{ column_name }} IN ({{ values | map('string') | join(', ') }})
-        ) THEN 0
-        ELSE 1
-    END AS result;
+SELECT COUNT(*) AS result
+FROM {{ table_name }}
+WHERE {{ column_name }} IN ({{ values | map('string') | join(', ') }});
 {% endmacro %}
 
 {% macro expect_column_values_to_not_match_like_pattern(table_name, column_name, pattern) %}
@@ -377,15 +368,16 @@ FROM total_count, non_matching_count;
 -- regex_pattern: The regular expression pattern that the column values should not match.
 --
 -- Returns:
--- The values in the specified column that match the given regular expression pattern.
+-- The number of values that match the given regular expression pattern: 0 when none does. It uses
+-- the regexp_matches function of DuckDB, which matches anywhere in the value.
 --
 -- This will generate a query like:
--- SELECT column_name
+-- SELECT COUNT(*)
 -- FROM table_name
--- WHERE column_name ~ 'regex_pattern';
-SELECT {{ column_name }}
+-- WHERE regexp_matches(column_name, 'regex_pattern');
+SELECT COUNT(*) AS result
 FROM {{ table_name }}
-WHERE {{ column_name }} REGEXP '{{ regex_pattern }}';
+WHERE regexp_matches({{ column_name }}, '{{ regex_pattern }}');
 {% endmacro %}
 
 {% macro expect_column_values_to_not_match_regex_list(table_name, column_name, regex_patterns) %}
@@ -397,21 +389,19 @@ WHERE {{ column_name }} REGEXP '{{ regex_pattern }}';
 -- regex_patterns: A list of regular expression patterns that the column values should not match.
 --
 -- Returns:
--- The values in the specified column that match any pattern in the given list of regular expression patterns.
+-- The number of values that match any pattern in the given list of regular expression patterns:
+-- 0 when none does. It uses the regexp_matches function of DuckDB, which matches anywhere in the
+-- value.
 --
 -- This will generate a query like:
--- SELECT column_name
+-- SELECT COUNT(*)
 -- FROM table_name
--- WHERE column_name REGEXP 'regex_pattern1'
--- OR column_name REGEXP 'regex_pattern2'
--- OR column_name REGEXP 'regex_pattern3';
-SELECT {{ column_name }}
+-- WHERE regexp_matches(column_name, 'regex_pattern1')
+-- OR regexp_matches(column_name, 'regex_pattern2');
+SELECT COUNT(*) AS result
 FROM {{ table_name }}
-WHERE 
+WHERE FALSE
 {% for pattern in regex_patterns %}
-{{ column_name }} REGEXP '{{ pattern }}'
-{% if not loop.last %}
-OR 
-{% endif %}
+OR regexp_matches({{ column_name }}, '{{ pattern }}')
 {% endfor %};
 {% endmacro %}

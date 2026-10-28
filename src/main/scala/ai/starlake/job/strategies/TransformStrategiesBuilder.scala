@@ -20,7 +20,8 @@ class TransformStrategiesBuilder extends LazyLogging {
     materializedView: Materialization,
     jdbcEngine: JdbcEngine,
     sinkConfig: Sink,
-    action: String
+    action: String,
+    templateVariables: Map[String, Any] = Map.empty
   )(implicit settings: Settings): String = {
     val selectStatement = {
       val trimmed = selectStatementInput.trim
@@ -37,7 +38,7 @@ class TransformStrategiesBuilder extends LazyLogging {
       sinkConfig
     )
     val templateLoader = new WriteStrategyTemplateLoader()
-    val paramMap = context.asMap().asInstanceOf[Map[String, Object]]
+    val paramMap = (context.asMap() ++ templateVariables).asInstanceOf[Map[String, Object]]
     val contentTemplate = templateLoader.loadTemplate(
       s"${jdbcEngine.strategyBuilder.toLowerCase()}/${action.toLowerCase()}.j2"
     )
@@ -70,7 +71,8 @@ class TransformStrategiesBuilder extends LazyLogging {
     truncate: Boolean,
     materializedView: Materialization,
     jdbcEngine: JdbcEngine,
-    sinkConfig: Sink
+    sinkConfig: Sink,
+    templateVariables: Map[String, Any] = Map.empty
   )(implicit settings: Settings): String = {
     logger.info(
       s"Running Write strategy: ${strategy.`type`} for table ${tableComponents.getFullTableName()} with options: truncate: $truncate, materializedView: $materializedView, targetTableExists: $targetTableExists"
@@ -85,7 +87,8 @@ class TransformStrategiesBuilder extends LazyLogging {
         materializedView,
         jdbcEngine,
         sinkConfig,
-        "VIEW"
+        "VIEW",
+        templateVariables
       )
 
     } else if (targetTableExists) {
@@ -100,7 +103,8 @@ class TransformStrategiesBuilder extends LazyLogging {
         materializedView,
         jdbcEngine,
         sinkConfig,
-        strategy.getEffectiveType().toString
+        strategy.getEffectiveType().toString,
+        templateVariables
       )
     } else {
       buildSqlWithJ2(
@@ -112,7 +116,8 @@ class TransformStrategiesBuilder extends LazyLogging {
         materializedView,
         jdbcEngine,
         sinkConfig,
-        "CREATE"
+        "CREATE",
+        templateVariables
       )
     }
   }
@@ -286,7 +291,7 @@ object TransformStrategiesBuilder {
         "tableFormat"               -> tableFormat,
         "partitionPruningKey"       -> partitionPruningKey,
         "quotedPartitionPruningKey" -> quotedPartitionPruningKey
-      ) ++ jdbcEngine.asMap() ++ sinkConfig.toAllSinks().asMap(jdbcEngine)
+      ) ++ jdbcEngine.asMap() ++ sinkConfig.asMap(jdbcEngine)
 
     }
   }

@@ -67,6 +67,40 @@ class SinkSpec extends TestHelper {
       )
     }
 
+    "The BigQuery and JDBC sinks of a task" should "carry its options, not those of the connection (#1877)" in {
+      val options = Some(Map("my_option" -> "hello"))
+      AllSinks(connectionRef = Some("bigquery"), options = options).getSink() shouldBe BigQuerySink(
+        connectionRef = Some("bigquery"),
+        options = options
+      )
+      AllSinks(connectionRef = Some("test-pg"), options = options).getSink() shouldBe JdbcSink(
+        connectionRef = Some("test-pg"),
+        options = options
+      )
+      // The write strategy templates receive them, not as table options of the engine
+      val variables = AllSinks(connectionRef = Some("test-pg"), options = options)
+        .getSink()
+        .asMap(settings.appConfig.jdbcEngines("spark"))
+      variables.get("sinkOptions") shouldBe Some(java.util.Map.of("my_option", "hello"))
+      variables.get("sinkTableOptionsClause") shouldBe Some("")
+      AllSinks(connectionRef = Some("bigquery"), options = options)
+        .getSink()
+        .asMap(settings.appConfig.jdbcEngines("bigquery"))
+        .get("sinkTableOptionsClause") shouldBe Some("")
+      // File sinks still render them
+      AllSinks(connectionRef = Some("spark"), options = options)
+        .getSink()
+        .asMap(settings.appConfig.jdbcEngines("spark"))
+        .get("sinkTableOptionsClause") shouldBe Some("OPTIONS('my_option'='hello')")
+      // Never the URL or the credentials of the connection
+      AllSinks(connectionRef = Some("bigquery")).getSink().toAllSinks().options shouldBe None
+      AllSinks(connectionRef = Some("test-pg")).getSink().toAllSinks().options shouldBe None
+      // A file sink still takes the options of its connection
+      AllSinks(connectionRef = Some("spark")).getSink().toAllSinks().options shouldBe Some(
+        settings.appConfig.connections("spark").options
+      )
+    }
+
     "parsing JDBC sink" should "succeed" in {
       mapper.readValue(
         """
