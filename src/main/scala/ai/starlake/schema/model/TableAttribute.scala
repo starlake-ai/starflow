@@ -25,6 +25,7 @@ import ai.starlake.schema.model.Severity.*
 import ai.starlake.transpiler.diff.{Attribute as DiffAttribute, AttributeStatus}
 import ai.starlake.utils.DataTypeEx.*
 import ai.starlake.utils.Utils
+import ai.starlake.utils.conversion.BigQueryType
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.spark.sql.types.*
 
@@ -317,7 +318,34 @@ case class TableAttribute(
           val ddlMapping = tpe.ddlMapping.flatMap { mapping => mapping.get(datawarehouse) }
           ddlMapping match {
             case None =>
-              schemaHandler.types().find(_.primitiveType == tpe.primitiveType) match {
+              val sameTypes = schemaHandler.types().filter(_.primitiveType == tpe.primitiveType)
+              // The built-in types of the newer primitive types come after the project types: the
+              // first type of the same primitive type with a mapping
+              val newPrimitiveTypes: Set[PrimitiveType] =
+                Set(PrimitiveType.datetime, PrimitiveType.time, PrimitiveType.binary)
+              // A type of the parameters of a column, which extract-bq-schema may add to the
+              // project, is not a default type
+              val fallbackType =
+                if (newPrimitiveTypes.contains(tpe.primitiveType)) {
+                  val mapped = sameTypes.filter(_.ddlMapping.exists(_.contains(datawarehouse)))
+                  mapped
+                    .find(sameType =>
+                      !sameType
+                        .getDdlMappingForDB("bigquery")
+                        .flatMap(BigQueryType.parse)
+                        .exists(
+                          _.hasParameters
+                        )
+                    )
+                    .orElse(mapped.headOption)
+                } else sameTypes.headOption
+              if (PrimitiveType.decimal.isWide(tpe))
+                fallbackType.foreach { defaultType =>
+                  logger.warn(
+                    s"The decimal type ${tpe.name} of $name is wider than ${PrimitiveType.decimal.maxSparkPrecision} digits and has no mapping for $datawarehouse: its column takes the one of ${defaultType.name}, which may not hold its values"
+                  )
+                }
+              fallbackType match {
                 case None =>
                   throw new Exception(
                     s"No mapping found for ${tpe.name} with primitive type " +
@@ -375,7 +403,7 @@ case class TableAttribute(
                  |"$name": {
                  |  "type": "$typeMapping"
                  |}""".stripMargin
-            case PrimitiveType.timestamp =>
+            case PrimitiveType.timestamp | PrimitiveType.datetime =>
               val format = tpe.pattern match {
                 case "epoch_milli"  => Some("epoch_millis")
                 case "epoch_second" => Some("epoch_second")

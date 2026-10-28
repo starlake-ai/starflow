@@ -757,6 +757,7 @@ object YamlConfigGenerators {
       partition <- Gen.option(arbitrary[List[String]])
       coalesce  <- Gen.option(arbitrary[Boolean])
       options   <- Gen.option(arbitrary[Map[String, String]])
+      path      <- Gen.option(arbitrary[String])
     } yield AllSinks(
       connectionRef = connectionRef,
       clustering = clustering,
@@ -770,7 +771,8 @@ object YamlConfigGenerators {
       extension = extension,
       partition = partition,
       coalesce = coalesce,
-      options = options
+      options = options,
+      path = path
     )
   }
 

@@ -3,11 +3,21 @@ package ai.starlake.job.validator
 import ai.starlake.job.validator.RowValidator.{SL_ERROR_COL, SL_INPUT_COL}
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.Trim.{BOTH, LEFT, NONE, RIGHT}
-import ai.starlake.schema.model.{PrimitiveType, TableAttribute, TransformInput, Type}
+import ai.starlake.schema.model.{
+  PrimitiveType,
+  PrimitiveTypeDeserializer,
+  TableAttribute,
+  TransformInput,
+  Type
+}
 import ai.starlake.utils.TransformEngine
+import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{ArrayType, Metadata, MetadataBuilder, StringType}
+import org.apache.spark.sql.types.{ArrayType, DataType, Metadata, MetadataBuilder, StringType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, Row}
+
+import scala.util.Try
 object RowValidator {
   val SL_INPUT_COL = "$SL_INPUT_COL"
   val SL_ERROR_COL = "$SL_ERROR_COL"
@@ -23,14 +33,100 @@ class RowValidator(
 
   protected val typesMap = types.map(tpe => tpe.name -> tpe).toMap
 
-  private def applyPrivacy(attribute: TableAttribute, column: Column): Column = {
+  /** @return
+    *   the Spark type of a leaf of the input, whose attribute type is the name of the primitive
+    *   type of its column
+    */
+  private def inputSparkType(inputAttribute: TableAttribute): Option[DataType] =
+    Try(new PrimitiveTypeDeserializer().simpleTypeFromString(inputAttribute.`type`)).toOption
+      .filter(_ != PrimitiveType.struct)
+      .map(_.sparkType(None))
+
+  /** A typed timestamp or date input of a datetime attribute is cast by Spark, in the session time
+    * zone for a timestamp: it has no text to read with the pattern
+    */
+  private def isCastToDatetime(attribute: TableAttribute, inputAttribute: TableAttribute): Boolean =
+    typesMap.get(attribute.`type`).exists(_.primitiveType == PrimitiveType.datetime) &&
+    Set(PrimitiveType.timestamp.value, PrimitiveType.date.value).contains(inputAttribute.`type`)
+
+  // One UDF per privacy level: the same UDF instance on the same column is evaluated once by Spark
+  private val privacyUDFs = scala.collection.mutable.Map.empty[String, UserDefinedFunction]
+
+  /** @return
+    *   the privacy engine of the attribute, applied to its input value as a string, or None when it
+    *   has no privacy or a SQL one, which the SQL of the load applies. A failing engine returns
+    *   null.
+    */
+  private def privacyEngine(attribute: TableAttribute): Option[Column => Column] = {
     val privacyLevel = attribute.resolvePrivacy()
     if (privacyLevel == TransformInput.None || privacyLevel.sql) {
-      lit(null)
+      None
     } else {
-      val ((privacyAlgo, privacyParams), _) = allPrivacyLevels(privacyLevel.value)
-      privacyLevel.cryptUDF(privacyAlgo, privacyParams)(column)
+      val ((privacyAlgo, privacyParams), _) = allPrivacyLevels.getOrElse(
+        privacyLevel.value,
+        throw new IllegalArgumentException(
+          s"Unknown privacy level ${privacyLevel.value} of attribute ${attribute.name}. Known levels are ${allPrivacyLevels.keys.toList.sorted
+              .mkString(", ")}"
+        )
+      )
+      val privacyUDF = privacyUDFs.getOrElseUpdate(
+        privacyLevel.value,
+        privacyLevel.cryptUDF(privacyAlgo, privacyParams)
+      )
+      Some(column => privacyUDF(column.cast(StringType)))
     }
+  }
+
+  /** @return
+    *   the privacy transformation of the attribute: the output of its privacy engine, where an
+    *   empty output, such as HIDE, is null for a non-string attribute
+    */
+  private def privacyTransform(attribute: TableAttribute): Option[Column => Column] =
+    privacyEngine(attribute).map { engine => column =>
+      val output = engine(column)
+      if (attribute.`type` == PrimitiveType.variant.value) {
+        // A variant holds JSON: the output is stored as a JSON string, ["..."] without its brackets
+        val jsonArray = to_json(array(output))
+        when(output.isNull.or(output === ""), lit(null))
+          .otherwise(jsonArray.substr(lit(2), length(jsonArray) - 2))
+      } else if (isStringAttribute(attribute)) output
+      else when(output === "", lit(null)).otherwise(output)
+    }
+
+  private def isStringAttribute(attribute: TableAttribute): Boolean =
+    typesMap.get(attribute.`type`).forall { tpe =>
+      tpe.primitiveType == PrimitiveType.string || tpe.primitiveType == PrimitiveType.variant
+    }
+
+  /** @return
+    *   the value converted to the attribute type, null if it cannot be
+    */
+  private def fitToField(attribute: TableAttribute, column: Column)(implicit
+    schemaHandler: SchemaHandler
+  ): Column = {
+    val attributeType = typesMap(attribute.`type`)
+    val fittedAttribute: Column = attributeType.primitiveType match {
+      case PrimitiveType.timestamp =>
+        PrimitiveType.timestamp
+          .parseUDF(attributeType.pattern, attributeType.zone)(column)
+      case PrimitiveType.date =>
+        PrimitiveType.date.parseUDF(attributeType.pattern, attributeType.zone)(column)
+      case PrimitiveType.boolean =>
+        PrimitiveType.boolean.parseUDF(attributeType.pattern)(column)
+      case PrimitiveType.double =>
+        PrimitiveType.double.parseUDF(attributeType.zone)(column)
+      case PrimitiveType.datetime =>
+        PrimitiveType.datetime.parseUDF(attributeType.pattern)(column)
+      case PrimitiveType.time =>
+        PrimitiveType.time.parseUDF(attributeType.pattern)(column)
+      case PrimitiveType.binary =>
+        PrimitiveType.binary.parseUDF(attributeType.pattern)(column)
+      case _ =>
+        column.cast(attribute.sparkType(schemaHandler))
+      // we should never have struct because it is not a valid leaf
+    }
+    when(column.isNull, lit(null).cast(attribute.sparkType(schemaHandler)))
+      .otherwise(fittedAttribute)
   }
 
   def validateWorkflow(inputDF: DataFrame, inputAttributes: List[TableAttribute])(implicit
@@ -55,26 +151,6 @@ class RowValidator(
   def fitToSchema(inputAttributes: List[TableAttribute])(inputDF: DataFrame)(implicit
     schemaHandler: SchemaHandler
   ): DataFrame = {
-    def fitToField(attribute: TableAttribute, column: Column): Column = {
-      val attributeType = typesMap(attribute.`type`)
-      val fittedAttribute: Column = attributeType.primitiveType match {
-        case PrimitiveType.timestamp =>
-          PrimitiveType.timestamp
-            .parseUDF(attributeType.pattern, attributeType.zone)(column)
-        case PrimitiveType.date =>
-          PrimitiveType.date.parseUDF(attributeType.pattern, attributeType.zone)(column)
-        case PrimitiveType.boolean =>
-          PrimitiveType.boolean.parseUDF(attributeType.pattern)(column)
-        case PrimitiveType.double =>
-          PrimitiveType.double.parseUDF(attributeType.zone)(column)
-        case _ =>
-          column.cast(attribute.sparkType(schemaHandler))
-        // we should never have struct because it is not a valid leaf
-      }
-      when(column.isNull, lit(null).cast(attribute.sparkType(schemaHandler)))
-        .otherwise(fittedAttribute)
-    }
-
     def buildSparkFieldMetadata(currentSchema: TableAttribute): Metadata = {
       val metadataBuilder = new MetadataBuilder()
       if (currentSchema.`type` == PrimitiveType.variant.value) {
@@ -101,6 +177,12 @@ class RowValidator(
               }
             )
           }
+        case Some(_)
+            if currentSchema.attributes.isEmpty && privacyTransform(currentSchema).isDefined =>
+          // Leaf with privacy, variant included: the privacy is applied to the input value, then
+          // its output is fitted to the attribute type
+          val privacy = privacyTransform(currentSchema).get
+          (column: Column) => fitToField(currentSchema, privacy(column))
         case Some(_) if currentSchema.`type` == PrimitiveType.variant.value =>
           (column: Column) => column
         case Some(inputSchema) if currentSchema.attributes.nonEmpty =>
@@ -113,28 +195,41 @@ class RowValidator(
                 .as(field.name, metadata = buildSparkFieldMetadata(field))
             }: _*)
           }
-        case Some(_) =>
+        case Some(inputSchema) =>
           // This is the leaf case.
+          // Spark refuses a cast of a type it cannot convert, a number to a datetime for example,
+          // even in a branch that is not taken: the value is then converted from its text
+          val castable = inputSparkType(inputSchema).forall(
+            Cast.canCast(_, currentSchema.sparkType(schemaHandler))
+          )
           (column: Column) => {
-            when(
-              (lit(
-                currentSchema.primitiveSparkType(schemaHandler).typeName
-              ) =!= StringType.typeName)
-                .and(
-                  typeof(column) === lit(
-                    currentSchema.primitiveSparkType(schemaHandler).typeName
+            if (!castable)
+              fitToField(currentSchema, column)
+            else
+              when(
+                (lit(
+                  currentSchema.primitiveSparkType(schemaHandler).typeName
+                ) =!= StringType.typeName)
+                  .and(
+                    typeof(column) === lit(
+                      currentSchema.primitiveSparkType(schemaHandler).typeName
+                    )
                   )
-                ),
-              column.cast(currentSchema.sparkType(schemaHandler))
-            )
-              .otherwise(
-                fitToField(currentSchema, column)
+                  .or(lit(isCastToDatetime(currentSchema, inputSchema))),
+                column.cast(currentSchema.sparkType(schemaHandler))
               )
+                .otherwise(
+                  fitToField(currentSchema, column)
+                )
           }
         case None =>
           (_: Column) => {
             // default value is not subject to trim. This means that default value, if column is trimmed, should be trimmed.
-            fitToField(currentSchema, lit(currentSchema.default.orNull))
+            val default = lit(currentSchema.default.orNull)
+            fitToField(
+              currentSchema,
+              privacyTransform(currentSchema).map(_(default)).getOrElse(default)
+            )
           }
       }
     }
@@ -186,6 +281,12 @@ class RowValidator(
           PrimitiveType.boolean.parseUDF(attributeType.pattern)(column).isNotNull
         case PrimitiveType.double =>
           PrimitiveType.double.parseUDF(attributeType.zone)(column).isNotNull
+        case PrimitiveType.datetime =>
+          PrimitiveType.datetime.parseUDF(attributeType.pattern)(column).isNotNull
+        case PrimitiveType.time =>
+          PrimitiveType.time.parseUDF(attributeType.pattern)(column).isNotNull
+        case PrimitiveType.binary =>
+          PrimitiveType.binary.parseUDF(attributeType.pattern)(column).isNotNull
         case _ =>
           val finalPattern =
             if (attributeType.pattern.startsWith("(?")) attributeType.pattern
@@ -213,7 +314,8 @@ class RowValidator(
       val attributeType = typesMap(attribute.`type`)
       val attributePatternIsCastable: Column = attributeType.primitiveType match {
         case PrimitiveType.timestamp | PrimitiveType.date | PrimitiveType.boolean |
-            PrimitiveType.string =>
+            PrimitiveType.string | PrimitiveType.datetime | PrimitiveType.time |
+            PrimitiveType.binary =>
           lit(true)
         case PrimitiveType.byte =>
           PrimitiveType.byte.parseUDF(column).isNotNull
@@ -235,21 +337,28 @@ class RowValidator(
         .otherwise(lit(null))
     }
 
-    def checkPrivacyOutputType(attribute: TableAttribute, column: Column, path: Column): Column = {
-      val attributeType = typesMap(attribute.`type`)
-      when(
-        applyPrivacy(attribute, column).isNotNull
-          .and(
-            applyPrivacy(attribute, column)
-              .cast(
-                attributeType.primitiveType.sparkType(attributeType.zone)
-              )
-              .isNull
-          ),
-        rejectValue(path, "input and privacy output type are not compatible", column)
-      )
-        .otherwise(lit(null))
-    }
+    def checkPrivacyOutputType(attribute: TableAttribute, column: Column, path: Column): Column =
+      (privacyEngine(attribute), privacyTransform(attribute)) match {
+        case (Some(engine), Some(privacy)) =>
+          val output = privacy(column)
+          // A privacy engine that fails returns null
+          when(
+            column.isNotNull.and(engine(column).isNull),
+            rejectValue(path, "privacy could not be applied", column)
+          )
+            .when(
+              column.isNotNull.and(output.isNull).and(lit(attribute.resolveRequired())),
+              rejectValue(path, "is required but its privacy output is null", column)
+            )
+            // The output is checked with the conversion that stores it
+            .when(
+              output.isNotNull.and(fitToField(attribute, output).isNull),
+              rejectValue(path, "input and privacy output type are not compatible", column)
+            )
+            .otherwise(lit(null))
+        case _ =>
+          lit(null)
+      }
 
     /** @return
       *   (data Column, column name) => column validation expression
@@ -262,8 +371,9 @@ class RowValidator(
         case Some(inputSchema) =>
           if (
             currentSchema.`type` == PrimitiveType.variant.value && !currentSchema.resolveArray()
-          ) { (_: Column, _: Column) =>
-            array().cast(ArrayType(StringType))
+          ) { (dataColumn: Column, pathColumn: Column) =>
+            array_compact(array(checkPrivacyOutputType(currentSchema, dataColumn, pathColumn)))
+              .cast(ArrayType(StringType))
           } else if (inputSchema.resolveArray() != currentSchema.resolveArray()) {
             if (currentSchema.resolveArray()) { (dataColumn: Column, pathColumn: Column) =>
               array(rejectValue(pathColumn, "is not an array", dataColumn))
@@ -352,8 +462,12 @@ class RowValidator(
                       typeof(dataColumn) === lit(
                         currentSchema.primitiveSparkType(schemaHandler).typeName
                       )
-                    ),
-                  array()
+                    )
+                    .or(lit(isCastToDatetime(currentSchema, inputSchema))),
+                  // Typed input: only its privacy output needs a check
+                  array_compact(
+                    array(checkPrivacyOutputType(currentSchema, dataColumn, pathColumn))
+                  )
                 )
                 .otherwise(
                   array_compact(
@@ -415,14 +529,41 @@ class RowValidator(
       }
     }
 
-    def replaceWithDefaultValue(attribute: TableAttribute, column: Column): Column = {
+    def replaceWithDefaultValue(
+      attribute: TableAttribute,
+      column: Column,
+      inputAttribute: TableAttribute
+    ): Column = {
       attribute.default match {
         case Some(defaultValue) =>
-          when(
-            column.isNull,
-            lit(defaultValue).cast(attribute.sparkType(schemaHandler))
-          )
-            .otherwise(column)
+          val defaultColumn = typesMap.get(attribute.`type`) match {
+            // A datetime or binary default is read with the pattern of its type, as the value it
+            // replaces: here for an input of that type, by the validation otherwise. Spark cannot
+            // mix a text and a binary value.
+            case Some(tpe)
+                if tpe.primitiveType == PrimitiveType.datetime || tpe.primitiveType == PrimitiveType.binary =>
+              val typedInputs =
+                if (tpe.primitiveType == PrimitiveType.binary) Set(PrimitiveType.binary.value)
+                else
+                  Set(
+                    PrimitiveType.datetime.value,
+                    PrimitiveType.timestamp.value,
+                    PrimitiveType.date.value
+                  )
+              if (!typedInputs.contains(inputAttribute.`type`))
+                lit(defaultValue)
+              else
+                lit(
+                  Try(tpe.sparkValue(defaultValue)).getOrElse(
+                    throw new IllegalArgumentException(
+                      s"The default value $defaultValue of attribute ${attribute.name} does not match the pattern ${tpe.pattern} of its type ${tpe.name}"
+                    )
+                  )
+                )
+            case _ =>
+              lit(defaultValue).cast(attribute.sparkType(schemaHandler))
+          }
+          when(column.isNull, defaultColumn).otherwise(column)
         case None => column
       }
     }
@@ -433,7 +574,11 @@ class RowValidator(
       * @return
       *   trimmed column if input column type is string
       */
-    def applyTrim(attribute: TableAttribute, column: Column): Column = {
+    def applyTrim(
+      attribute: TableAttribute,
+      column: Column,
+      inputAttribute: TableAttribute
+    ): Column = {
       val trimmedColumn = attribute.trim match {
         case Some(NONE) | None => column
         case Some(LEFT)        => ltrim(column)
@@ -441,7 +586,9 @@ class RowValidator(
         case Some(BOTH)        => trim(column)
         case strat => throw new RuntimeException(s"$strat is not supported as trim strategy yet")
       }
-      when(typeof(column) === "string", trimmedColumn).otherwise(column)
+      // Spark cannot mix the trimmed text of a binary input with its bytes
+      if (inputAttribute.`type` == PrimitiveType.binary.value) column
+      else when(typeof(column) === "string", trimmedColumn).otherwise(column)
     }
 
     def prepareData(
@@ -479,7 +626,8 @@ class RowValidator(
             to_json(
               replaceWithDefaultValue(
                 currentSchema,
-                substituteToNull(applyTrim(currentSchema, strColumn))
+                substituteToNull(applyTrim(currentSchema, strColumn, inputSchema)),
+                inputSchema
               )
             )
           })
@@ -492,7 +640,8 @@ class RowValidator(
               Some((strColumn: Column) => {
                 replaceWithDefaultValue(
                   currentSchema,
-                  substituteToNull(applyTrim(currentSchema, strColumn))
+                  substituteToNull(applyTrim(currentSchema, strColumn, inputSchema)),
+                  inputSchema
                 ).cast(StringType)
               })
           }
@@ -520,7 +669,8 @@ class RowValidator(
             // default value is not subject to trim. This means that default value, if column is trimmed, should be trimmed.
             replaceWithDefaultValue(
               currentSchema,
-              substituteToNull(applyTrim(currentSchema, strColumn))
+              substituteToNull(applyTrim(currentSchema, strColumn, inputSchema)),
+              inputSchema
             )
           })
         case _ =>

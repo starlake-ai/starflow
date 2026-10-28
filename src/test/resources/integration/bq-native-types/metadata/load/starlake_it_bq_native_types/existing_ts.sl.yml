@@ -1,0 +1,24 @@
+---
+version: 1
+table:
+  name: "existing_ts"
+  pattern: "existing_ts-.*.json"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "civil"
+      type: "civil_datetime"
+    - name: "wall"
+      type: "wall_time"
+    - name: "payload"
+      type: "json_text"
+    - name: "area"
+      type: "area"
+    - name: "code"
+      type: "code10"
+    - name: "amount"
+      type: "decimal"
+    - name: "tags"
+      type: "string"
+      array: true

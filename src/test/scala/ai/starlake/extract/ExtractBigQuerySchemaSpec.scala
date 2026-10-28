@@ -135,7 +135,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
   }
 
   "extractTable" should "read the same schema from tables, views and materialized views" in {
-    val schemas = allObjects.flatMap(ExtractBigQuerySchema.extractTable)
+    val schemas = allObjects.flatMap(ExtractBigQuerySchema.extractTable(_))
     schemas.map(_.name) shouldBe List("my_table", "my_view", "my_materialized_view")
     schemas.map(_.comment) shouldBe List(
       Some("my_table description"),
@@ -147,14 +147,14 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
     attributes.head.map(a => (a.name, a.`type`, a.required, a.array, a.comment)) shouldBe List(
       ("id", "long", Some(true), None, Some("Identifier")),
       ("name", "string", Some(false), None, Some("Name")),
-      ("amount", "decimal", Some(false), None, None),
+      ("amount", "numeric", Some(false), None, None),
       ("tags", "string", Some(false), Some(true), None)
     )
   }
 
   it should "read the schema of external tables and snapshots" in {
     List(externalTable, snapshot)
-      .flatMap(ExtractBigQuerySchema.extractTable)
+      .flatMap(ExtractBigQuerySchema.extractTable(_))
       .map(_.attributes) shouldBe List.fill(2)(
       ExtractBigQuerySchema.extractTable(table).map(_.attributes).getOrElse(Nil)
     )
@@ -199,11 +199,12 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
       ) shouldBe Nil
   }
 
-  it should "skip objects that cannot be fetched or converted" in {
+  it should "skip objects that cannot be fetched, and extract every column type" in {
+    // Spark cannot hold the default precision of BIGNUMERIC: it is not converted to Spark anymore
     val unsupportedColumn = tableInfo(
       "unsupported_column",
       StandardTableDefinition.of(
-        Schema.of(Field.of("bytes", StandardSQLTypeName.BYTES))
+        Schema.of(Field.of("big", StandardSQLTypeName.BIGNUMERIC))
       )
     )
     val failing = tableInfo("failing", StandardTableDefinition.of(bqSchema))
@@ -217,7 +218,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
           else getTable(unsupportedColumn, table)(tableId),
         new DryRun()
       )
-      .map(_.name) shouldBe List("my_table")
+      .map(_.name) shouldBe List("unsupported_column", "my_table")
   }
 
   it should "read the types of views from their effective schema, keeping their descriptions" in {
@@ -242,7 +243,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
       "my_materialized_view" -> List(
         ("id", "long", Some("Identifier")),
         ("name", "string", Some("Name")),
-        ("amount", "decimal", None),
+        ("amount", "numeric", None),
         ("tags", "string", None)
       )
     )
@@ -258,14 +259,178 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
           getViewSchema
         )
         .flatMap(_.attributes.map(_.`type`))
-    val storedTypes = List("long", "string", "decimal", "string")
+    val storedTypes = List("long", "string", "numeric", "string")
     // No bigquery.jobs.create permission
     extractView(_ => throw new BigQueryException(403, "Access Denied")) shouldBe storedTypes
     // No schema
     extractView(new DryRun()) shouldBe storedTypes
     extractView(_ => Schema.of()) shouldBe storedTypes
-    // An effective type that cannot be converted fails the view instead of extracting stale types
-    extractView(_ => Schema.of(Field.of("id", StandardSQLTypeName.BYTES))) shouldBe Nil
+    // The effective types, including those that Spark cannot hold
+    extractView(_ => Schema.of(Field.of("id", StandardSQLTypeName.BIGNUMERIC))) shouldBe List(
+      "bignumeric"
+    )
+  }
+
+  it should "give each BigQuery column type a Starlake type, and never fail" in {
+    def range(name: String, elementType: String): Field =
+      Field
+        .newBuilder(name, StandardSQLTypeName.RANGE)
+        .setRangeElementType(FieldElementType.newBuilder().setType(elementType).build())
+        .build()
+    val allTypes = tableInfo(
+      "all_types",
+      StandardTableDefinition.of(
+        Schema.of(
+          Field.newBuilder("id", StandardSQLTypeName.INT64).setMode(Field.Mode.REQUIRED).build(),
+          Field.of("amount", StandardSQLTypeName.FLOAT64),
+          Field.of("price", StandardSQLTypeName.NUMERIC),
+          Field
+            .newBuilder("rate", StandardSQLTypeName.NUMERIC)
+            .setPrecision(10L)
+            .setScale(2L)
+            .build(),
+          Field.of("big", StandardSQLTypeName.BIGNUMERIC),
+          Field.of("flag", StandardSQLTypeName.BOOL),
+          Field.newBuilder("code", StandardSQLTypeName.STRING).setMaxLength(10L).build(),
+          Field.of("payload", StandardSQLTypeName.BYTES),
+          Field.of("day", StandardSQLTypeName.DATE),
+          Field.of("civil", StandardSQLTypeName.DATETIME),
+          Field.of("wall", StandardSQLTypeName.TIME),
+          Field.of("instant", StandardSQLTypeName.TIMESTAMP),
+          Field.of("area", StandardSQLTypeName.GEOGRAPHY),
+          Field.of("doc", StandardSQLTypeName.JSON),
+          Field.of("duration", StandardSQLTypeName.INTERVAL),
+          range("days", "DATE"),
+          range("civils", "DATETIME"),
+          range("instants", "TIMESTAMP"),
+          Field
+            .newBuilder("tags", StandardSQLTypeName.STRING)
+            .setMode(Field.Mode.REPEATED)
+            .setDescription("Tags")
+            .build(),
+          // Converted to a Spark map, which could not be extracted
+          Field
+            .newBuilder(
+              "properties",
+              StandardSQLTypeName.STRUCT,
+              Field.of("key", StandardSQLTypeName.STRING),
+              Field.of("value", StandardSQLTypeName.DATETIME)
+            )
+            .setMode(Field.Mode.REPEATED)
+            .build()
+        )
+      )
+    )
+    val schemas = ExtractBigQuerySchema.extractTables(
+      List(listed(allTypes)),
+      ExtractBigQuerySchema.parseTableTypes(Nil),
+      getTable(allTypes),
+      new DryRun()
+    )
+    val attributes = schemas.flatMap(_.attributes)
+    attributes.map(a => (a.name, a.`type`, a.resolveArray(), a.resolveRequired())) shouldBe List(
+      ("id", "long", false, true),
+      ("amount", "double", false, false),
+      // An unparameterized NUMERIC, not the NUMERIC(38, 9) of decimal
+      ("price", "numeric", false, false),
+      // The parameters are not kept, with a warning, unless the caller asks for their types
+      ("rate", "decimal", false, false),
+      ("big", "bignumeric", false, false),
+      ("flag", "boolean", false, false),
+      ("code", "string", false, false),
+      ("payload", "binary", false, false),
+      ("day", "date", false, false),
+      ("civil", "datetime", false, false),
+      ("wall", "time", false, false),
+      ("instant", "timestamp", false, false),
+      ("area", "geography", false, false),
+      ("doc", "variant", false, false),
+      ("duration", "interval", false, false),
+      ("days", "range_date", false, false),
+      ("civils", "range_datetime", false, false),
+      ("instants", "range_timestamp", false, false),
+      ("tags", "string", true, false),
+      ("properties", "struct", true, false)
+    )
+    attributes.find(_.name == "tags").flatMap(_.comment) shouldBe Some("Tags")
+    // The parameterized columns get types of their own, which the caller adds to the project
+    val parameterizedTypes = new BigQueryParameterizedTypes(Nil)
+    ExtractBigQuerySchema
+      .extractTables(
+        List(listed(allTypes)),
+        ExtractBigQuerySchema.parseTableTypes(Nil),
+        getTable(allTypes),
+        new DryRun(),
+        parameterizedTypes = Some(parameterizedTypes)
+      )
+      .flatMap(_.attributes)
+      .collect {
+        case a if Set("price", "rate", "code", "payload")(a.name) => a.name -> a.`type`
+      } shouldBe List(
+      "price"   -> "numeric",
+      "rate"    -> "numeric_10_2",
+      "code"    -> "string_10",
+      "payload" -> "binary"
+    )
+    parameterizedTypes.takeNewTypes().map(_.name) shouldBe List("numeric_10_2", "string_10")
+    // A type unknown to the BigQuery client, and a RANGE without element type, are strings
+    val unknownTypes = tableInfo(
+      "unknown_types",
+      StandardTableDefinition.of(
+        Schema.of(
+          Field.of("future", LegacySQLTypeName.valueOf("FUTURE_TYPE")),
+          Field.of("no_element", StandardSQLTypeName.RANGE)
+        )
+      )
+    )
+    ExtractBigQuerySchema
+      .extractTables(
+        List(listed(unknownTypes)),
+        ExtractBigQuerySchema.parseTableTypes(Nil),
+        getTable(unknownTypes),
+        new DryRun()
+      )
+      .flatMap(_.attributes.map(a => a.name -> a.`type`)) shouldBe List(
+      "future"     -> "string",
+      "no_element" -> "string"
+    )
+    attributes.find(_.name == "properties").map(_.attributes.map(a => a.name -> a.`type`)) shouldBe
+    Some(List("key" -> "string", "value" -> "datetime"))
+    // The project type of each built-in type
+    ExtractBigQuerySchema
+      .extractTables(
+        List(listed(allTypes)),
+        ExtractBigQuerySchema.parseTableTypes(Nil),
+        getTable(allTypes),
+        new DryRun(),
+        typeName = name => if (name == "datetime") "civil_datetime" else name
+      )
+      .flatMap(_.attributes)
+      .find(_.name == "civil")
+      .map(_.`type`) shouldBe Some("civil_datetime")
+  }
+
+  it should "extract BYTES columns as binary" in {
+    val bytesTable = tableInfo(
+      "bytes_table",
+      StandardTableDefinition.of(
+        Schema.of(
+          Field.of("payload", StandardSQLTypeName.BYTES),
+          Field.newBuilder("chunks", StandardSQLTypeName.BYTES).setMode(Field.Mode.REPEATED).build()
+        )
+      )
+    )
+    ExtractBigQuerySchema
+      .extractTables(
+        List(listed(bytesTable)),
+        ExtractBigQuerySchema.parseTableTypes(Nil),
+        getTable(bytesTable),
+        new DryRun()
+      )
+      .flatMap(_.attributes.map(a => (a.name, a.`type`, a.resolveArray()))) shouldBe List(
+      ("payload", "binary", false),
+      ("chunks", "binary", true)
+    )
   }
 
   it should "not dry run legacy SQL views, whose dry runs return no schema" in {
@@ -281,7 +446,7 @@ class ExtractBigQuerySchemaSpec extends AnyFlatSpec with Matchers {
         getTable(legacySqlView),
         dryRun
       )
-      .flatMap(_.attributes.map(_.`type`)) shouldBe List("long", "string", "decimal", "string")
+      .flatMap(_.attributes.map(_.`type`)) shouldBe List("long", "string", "numeric", "string")
     dryRun.dryRunTables shouldBe Nil
   }
 

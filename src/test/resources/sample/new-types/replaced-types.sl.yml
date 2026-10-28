@@ -1,0 +1,15 @@
+---
+# Replaces the built-in datetime type with a timestamp, and defines another datetime type
+version: 1
+types:
+  - name: "datetime"
+    primitiveType: "timestamp"
+    pattern: "yyyy-MM-dd HH:mm:ss"
+  - name: "decimal"
+    primitiveType: "long"
+    pattern: "-?\\d+"
+  - name: "civil"
+    primitiveType: "datetime"
+    pattern: "SQL_DATE_TIME"
+    ddlMapping:
+      bigquery: DATETIME

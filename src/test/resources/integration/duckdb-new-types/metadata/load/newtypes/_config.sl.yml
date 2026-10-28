@@ -1,0 +1,5 @@
+version: 1
+load:
+  name: "newtypes"
+  metadata:
+    directory: "{{root_path}}/incoming/newtypes"

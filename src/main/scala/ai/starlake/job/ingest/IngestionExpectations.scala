@@ -50,7 +50,7 @@ trait IngestionExpectations { self: IngestionJob =>
   private def expectationTarget: (Option[String], String, String) = {
     val database = schemaHandler.getDatabase(this.domain)
     val loadedTable = (database, this.domain.finalName, this.schema.finalName)
-    if (IngestionJob.selectLoader(mergedMetadata) == "bigquery") {
+    if (selectLoader() == "bigquery") {
       val sinkOptions = mergedMetadata.getSink().getConnection().options
       schemaHandler.dataBranch(sinkOptions) match {
         case Some(branch) =>

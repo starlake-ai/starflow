@@ -1,0 +1,12 @@
+---
+# No datetime or time type: the built-in ones are used
+version: 1
+types:
+  - name: "iso_civil"
+    primitiveType: "datetime"
+    pattern: "ISO_LOCAL_DATE_TIME"
+    sample: "2019-12-31T23:59:02.5"
+  - name: "hex_bytes"
+    primitiveType: "binary"
+    pattern: "hex"
+    sample: "48656c6c6f"

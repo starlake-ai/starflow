@@ -102,7 +102,7 @@ object No extends TransformEngine {
 object Initials extends TransformEngine {
 
   def crypt(s: String, colMap: => Map[String, Option[String]], params: List[String]): String = {
-    s.split("\\s+").map(_.substring(0, 1)).mkString("", ".", ".")
+    s.split("\\s+").filter(_.nonEmpty).map(_.substring(0, 1)).mkString("", ".", ".")
   }
 }
 

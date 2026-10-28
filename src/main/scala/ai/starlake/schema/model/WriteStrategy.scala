@@ -55,7 +55,8 @@ case class WriteStrategy(
             table.attributes.nonEmpty && !table.attributes.exists { attr =>
               val primitiveType = attr.primitiveType(settings.schemaHandler())
               primitiveType match {
-                case Some(PrimitiveType.timestamp) | Some(PrimitiveType.date) =>
+                case Some(PrimitiveType.timestamp) | Some(PrimitiveType.date) |
+                    Some(PrimitiveType.datetime) =>
                   attr.getFinalName().equalsIgnoreCase(timestamp)
                 case _ => false
               }

@@ -1,12 +1,13 @@
 package ai.starlake.job.validator
 
 import ai.starlake.TestHelper
-import ai.starlake.config.Settings
+import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.job.validator.RowValidator.SL_ERROR_COL
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model._
 import org.apache.spark.sql.functions.{array_size, col, explode}
 import org.apache.spark.sql.types._
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.scalatest.BeforeAndAfterAll
 
@@ -162,7 +163,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   "prepareData" should "trim and apply default value" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       val spark = sparkSession
       import spark.implicits._
       val rowValidatorEmptyIsNull =
@@ -364,7 +365,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "ignore unmatched type of array or struct" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       val spark = sparkSession
       val inputDF =
         spark.sql("select 1 as should_be_array, array(1) as should_be_array_of_struct").toDF()
@@ -409,7 +410,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "ignore missing fields and drop them" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       val spark = sparkSession
       val rowValidator =
         new RowValidator(
@@ -537,6 +538,19 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
     assertionRules(validatedDF)
   }
 
+  /** @return
+    *   the schema handler of the test project without its datetime and time types, which replace
+    *   the built-in ones
+    */
+  def withBuiltInTypes(withSettings: WithSettings): SchemaHandler = {
+    implicit val settings: Settings = withSettings.settings
+    withSettings.deliverTestFile(
+      "/sample/new-types/types.sl.yml",
+      new Path(DatasetArea.types, "types.sl.yml")
+    )
+    settings.schemaHandler(reload = true)
+  }
+
   def defaultTypes(implicit settings: Settings): List[Type] = {
     settings.schemaHandler().types()
   }
@@ -570,6 +584,10 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
             .atZoneSameInstant(ZoneId.systemDefault())
             .toLocalDateTime
         )
+      case PrimitiveType.datetime => java.time.LocalDateTime.of(2023, 10, 27, 10, 15, 30)
+      // Spark has no time type: a time is its text
+      case PrimitiveType.time   => "10:15:30"
+      case PrimitiveType.binary => "Hi".getBytes("UTF-8")
     }
     // Create sample data for each primitive type
     val inputRow = Row(
@@ -624,7 +642,12 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           val localDateTime = t.toLocalDateTime
           val offsetDateTime = localDateTime.atZone(ZoneId.systemDefault()).toOffsetDateTime()
           offsetDateTime.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
-        case e => String.valueOf(e)
+        // In the pattern of the datetime type
+        case t: java.time.LocalDateTime =>
+          t.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        // In the encoding of the binary type
+        case bytes: Array[Byte] => java.util.Base64.getEncoder.encodeToString(bytes)
+        case e                  => String.valueOf(e)
       }
     }: _*)
     val stringInputSchema =
@@ -651,13 +674,16 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
         throw new RuntimeException("Should not happen since it is filtered out")
       case PrimitiveType.date      => "2023-13-27"
       case PrimitiveType.timestamp => "2011-12-03 10:15:30+01:00"
+      case PrimitiveType.datetime  => "2023-10-27 25:15:30"
+      case PrimitiveType.time      => "25:00:00"
+      case PrimitiveType.binary    => "not base64!"
     }
     (Row(nonEmptyRow: _*), inputSchema, ingestionSchema)
   }
 
   "validate" should "validate all primitive types with string type" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       // Create attributes for each primitive type
 
@@ -676,7 +702,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
   it should "validate all primitive types with native type" in {
     // allows to support files such as parquet where timestamp or date are already defined
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
 
       val (inputRow, inputSchema, ingestionSchema) = primitiveNativeType()
@@ -693,7 +719,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "reject when pattern is invalid or overflow" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       import spark.implicits._
 
@@ -718,7 +744,10 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           "`decimal` (decimal) doesn't match pattern `[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*`: 012.5F-5",
           "`byte` (byte) doesn't match pattern `.`: more than one byte",
           "`string` (string) doesn't match pattern `.*CONTAINS.*`: string value\nthis is not the expected keyword: MISSING in \n the pattern.",
-          "`short` (short) doesn't match pattern `-?\\d+`: +"
+          "`short` (short) doesn't match pattern `-?\\d+`: +",
+          "`datetime` (datetime) doesn't match pattern `SQL_DATE_TIME`: 2023-10-27 25:15:30",
+          "`time` (time) doesn't match pattern `ISO_LOCAL_TIME`: 25:00:00",
+          "`binary` (binary) doesn't match pattern `base64`: not base64!"
         )
       }
     }
@@ -726,7 +755,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "validate all primitive types with string type within an array" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
 
       val (primitiveInputRow, primitiveInputSchema, primitiveIngestionSchema) =
@@ -751,7 +780,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "reject when pattern is invalid or overflow within an array" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       import spark.implicits._
 
@@ -783,6 +812,9 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           "`decimal[0]` (decimal) doesn't match pattern `[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*`: 012.5F-5",
           "`byte[0]` (byte) doesn't match pattern `.`: more than one byte",
           "`short[0]` (short) doesn't match pattern `-?\\d+`: +",
+          "`datetime[0]` (datetime) doesn't match pattern `SQL_DATE_TIME`: 2023-10-27 25:15:30",
+          "`time[0]` (time) doesn't match pattern `ISO_LOCAL_TIME`: 25:00:00",
+          "`binary[0]` (binary) doesn't match pattern `base64`: not base64!",
           "`string[0]` (string) doesn't match pattern `.*CONTAINS.*`: string value\nthis is not the expected keyword: MISSING in \n the pattern.",
           "`boolean[0]` (boolean) doesn't match pattern `(?i)true|yes|[y1]|t<-TF->(?i)false|no|[n0]|f`: vrai"
         ))
@@ -792,7 +824,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "validate all primitive types with string type within a struct" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
 
       val (primitiveInputRow, primitiveInputSchema, primitiveIngestionSchema) =
@@ -815,7 +847,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "reject when pattern is invalid or overflow within a struct_root" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       import spark.implicits._
 
@@ -845,6 +877,9 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           "`struct_root.decimal` (decimal) doesn't match pattern `[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*`: 012.5F-5",
           "`struct_root.byte` (byte) doesn't match pattern `.`: more than one byte",
           "`struct_root.short` (short) doesn't match pattern `-?\\d+`: +",
+          "`struct_root.datetime` (datetime) doesn't match pattern `SQL_DATE_TIME`: 2023-10-27 25:15:30",
+          "`struct_root.time` (time) doesn't match pattern `ISO_LOCAL_TIME`: 25:00:00",
+          "`struct_root.binary` (binary) doesn't match pattern `base64`: not base64!",
           "`struct_root.string` (string) doesn't match pattern `.*CONTAINS.*`: string value\nthis is not the expected keyword: MISSING in \n the pattern.",
           "`struct_root.boolean` (boolean) doesn't match pattern `(?i)true|yes|[y1]|t<-TF->(?i)false|no|[n0]|f`: vrai"
         )
@@ -854,7 +889,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "validate all primitive types with string type within an array of struct" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
 
       val (primitiveInputRow, primitiveInputSchema, primitiveIngestionSchema) =
@@ -884,7 +919,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "reject when pattern is invalid or overflow within an array of struct" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       import spark.implicits._
 
@@ -921,6 +956,9 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           "`array_root[0].decimal` (decimal) doesn't match pattern `[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*`: 012.5F-5",
           "`array_root[0].byte` (byte) doesn't match pattern `.`: more than one byte",
           "`array_root[0].short` (short) doesn't match pattern `-?\\d+`: +",
+          "`array_root[0].datetime` (datetime) doesn't match pattern `SQL_DATE_TIME`: 2023-10-27 25:15:30",
+          "`array_root[0].time` (time) doesn't match pattern `ISO_LOCAL_TIME`: 25:00:00",
+          "`array_root[0].binary` (binary) doesn't match pattern `base64`: not base64!",
           "`array_root[0].string` (string) doesn't match pattern `.*CONTAINS.*`: string value\nthis is not the expected keyword: MISSING in \n the pattern.",
           "`array_root[0].boolean` (boolean) doesn't match pattern `(?i)true|yes|[y1]|t<-TF->(?i)false|no|[n0]|f`: vrai"
         )
@@ -930,7 +968,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "reject on array or struct type mistmatch and missing required fields" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       import spark.implicits._
 
@@ -983,7 +1021,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "reject with the correct indexes in array" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       import spark.implicits._
 
@@ -1015,7 +1053,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   "fitToSchema" should "convert string type to native type" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       // ensure timezone doesn't makes unit test fail
       spark.conf.set("spark.sql.session.timeZone", "+06:00")
@@ -1048,6 +1086,9 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           .put("byte", 1)
           .put("date", "2023-10-27")
           .put("timestamp", "2011-12-03T11:15:30.000+06:00")
+          .put("datetime", "2023-10-27T10:15:30.000")
+          .put("time", "10:15:30")
+          .put("binary", "SGk=")
 
         val emptyRow = mapper.createObjectNode()
         validatedDF.toJSON.collect().map(mapper.readTree) should contain theSameElementsAs List(
@@ -1061,7 +1102,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
   it should "keep all primitive types" in {
     // allows to support files such as parquet where timestamp or date are already defined
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       spark.conf.set("spark.sql.session.timeZone", "+06:00")
 
@@ -1091,6 +1132,9 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
           .put("byte", 1)
           .put("date", "2023-10-27")
           .put("timestamp", "2011-12-03T11:15:30.000+06:00")
+          .put("datetime", "2023-10-27T10:15:30.000")
+          .put("time", "10:15:30")
+          .put("binary", "SGk=")
 
         val emptyRow = mapper.createObjectNode()
         validatedDF.toJSON.collect().map(mapper.readTree) should contain theSameElementsAs List(
@@ -1104,7 +1148,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
   it should "create missing columns with default value if defined" in {
     // allows to support files such as parquet where timestamp or date are already defined
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
       spark.conf.set("spark.sql.session.timeZone", "+06:00")
 
@@ -1182,7 +1226,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   "validate workflow" should "validate native input" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
 
       val (inputRow, inputSchema, ingestionSchema) = primitiveNativeType()
@@ -1207,7 +1251,7 @@ class RowValidatorSpec extends TestHelper with BeforeAndAfterAll {
 
   it should "validate string input" in {
     new WithSettings() {
-      implicit val schemaHandler: SchemaHandler = settings.schemaHandler()
+      implicit val schemaHandler: SchemaHandler = withBuiltInTypes(this)
       implicit val spark: SparkSession = sparkSession
 
       val (inputRow, inputSchema, ingestionSchema) = primitiveStringType()

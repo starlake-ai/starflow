@@ -398,9 +398,11 @@ class InferSchemaJob(implicit settings: Settings) extends LazyLogging {
             })
             .getOrElse(Map.empty)
           val attributes: List[TableAttribute] =
-            InferSchemaHandler.createAttributes(
-              adjustedAttributesTypeMap,
-              dataframeWithFormat.schema
+            withProjectTypeNames(
+              InferSchemaHandler.createAttributes(
+                adjustedAttributesTypeMap,
+                dataframeWithFormat.schema
+              )
             )
           val preciseFormat =
             format match {
@@ -477,6 +479,31 @@ class InferSchemaJob(implicit settings: Settings) extends LazyLogging {
 
       InferSchemaHandler.generateYaml(domain, saveDir, clean)
     }.flatten
+  }
+
+  /** @return
+    *   the attributes, where those of the datetime, time and binary primitive types get the name of
+    *   their type in the project: a project type may replace the built-in type of the same name
+    */
+  private def withProjectTypeNames(attributes: List[TableAttribute]): List[TableAttribute] = {
+    val newPrimitiveTypes = List(PrimitiveType.datetime, PrimitiveType.time, PrimitiveType.binary)
+    attributes.map { attribute =>
+      if (attribute.attributes.nonEmpty)
+        attribute.copy(attributes = withProjectTypeNames(attribute.attributes))
+      else
+        newPrimitiveTypes.find(_.value == attribute.`type`) match {
+          case Some(primitiveType) =>
+            settings.schemaHandler().typeNameOf(primitiveType) match {
+              case Some(typeName) => attribute.copy(`type` = typeName)
+              case None =>
+                logger.warn(
+                  s"The attribute ${attribute.name} is of type ${attribute.`type`}, which the project defines with another primitive type than $primitiveType"
+                )
+                attribute
+            }
+          case None => attribute
+        }
+    }
   }
 
   private def inferJsonSchema(inputPath: String, encoding: Charset): List[TableAttribute] = {

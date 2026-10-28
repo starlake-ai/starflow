@@ -1,0 +1,8 @@
+---
+version: 1
+load:
+  name: "privacy"
+  metadata:
+    directory: "__SL_TEST_ROOT__/privacy"
+    writeStrategy:
+      type: "APPEND"

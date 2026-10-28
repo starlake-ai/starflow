@@ -1,0 +1,21 @@
+---
+version: 1
+table:
+  name: "builtin"
+  pattern: "builtin-.*.json"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "civil"
+      type: "datetime"
+    - name: "wall"
+      type: "time"
+    - name: "payload"
+      type: "binary"
+    - name: "big"
+      type: "bignumeric"
+    - name: "area"
+      type: "geography"
+    - name: "duration"
+      type: "interval"

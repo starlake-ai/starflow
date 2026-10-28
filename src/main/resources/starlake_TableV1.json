@@ -440,7 +440,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Optional path attribute if you want to save the file outside of the default location (datasets folder)"
+          "description": "FS: Cloud Storage folder (gs://...) where a transform running on BigQuery exports its Parquet, Avro or JSON files with EXPORT DATA, in the subfolder of its domain, or the URI of these files with a single * wildcard in their name"
         },
         "options": {
           "$ref": "#/definitions/MapString",

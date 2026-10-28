@@ -1,0 +1,20 @@
+---
+version: 1
+table:
+  name: "typed"
+  pattern: "typed.*.parquet"
+  metadata:
+    format: "PARQUET"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "civil"
+      type: "datetime"
+    - name: "instant"
+      type: "datetime"
+    - name: "payload"
+      type: "binary"
+    - name: "fallback"
+      type: "binary"
+      default: "AAE="

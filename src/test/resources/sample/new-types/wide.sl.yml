@@ -1,0 +1,15 @@
+---
+version: 1
+table:
+  name: "wide"
+  pattern: "wide.*.dsv"
+  metadata:
+    format: "DSV"
+    withHeader: true
+    separator: ";"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "amount"
+      type: "bignumeric"

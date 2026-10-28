@@ -403,7 +403,8 @@ object Settings extends LazyLogging {
     syncSqlWithYaml: Boolean,
     syncYamlWithDb: Boolean,
     onExceptionRetries: Int,
-    pythonLibsDir: String
+    pythonLibsDir: String,
+    bigqueryNativeSchemaFromDdlMapping: Boolean = true
     // createTableIfNotExists: Boolean
   ) extends Serializable {
 

@@ -70,6 +70,8 @@ object DataTypesToInt extends Enumeration {
   val NULL, BYTE, BOOLEAN, DATE, BASIC_ISO_DATE, ISO_OFFSET_DATE, ISO_DATE_TIME, ISO_ORDINAL_DATE,
     ISO_WEEK_DATE, RFC_1123_DATE_TIME, TIMESTAMP, SHORT, INT, LONG, DOUBLE, DECIMAL, STRING, STRUCT,
     VARIANT = Value
+  // Only read from typed inputs, never guessed from a text: they only combine with themselves
+  val DATETIME, TIME, BINARY = Value
 
   def dataTypeToTypeInt(dataType: DataType) = PrimitiveType.from(dataType) match {
     case PrimitiveType.string    => DataTypesToInt.STRING.id
@@ -84,6 +86,9 @@ object DataTypesToInt extends Enumeration {
     case PrimitiveType.struct    => DataTypesToInt.STRUCT.id
     case PrimitiveType.date      => DataTypesToInt.DATE.id
     case PrimitiveType.timestamp => DataTypesToInt.TIMESTAMP.id
+    case PrimitiveType.datetime  => DataTypesToInt.DATETIME.id
+    case PrimitiveType.time      => DataTypesToInt.TIME.id
+    case PrimitiveType.binary    => DataTypesToInt.BINARY.id
   }
 
   def typeIntToTypeStr(primitiveTypeInt: Int): String = DataTypesToInt(primitiveTypeInt) match {
@@ -99,6 +104,9 @@ object DataTypesToInt extends Enumeration {
     case DataTypesToInt.STRUCT             => PrimitiveType.struct.value
     case DataTypesToInt.DATE               => PrimitiveType.date.value
     case DataTypesToInt.TIMESTAMP          => PrimitiveType.timestamp.value
+    case DataTypesToInt.DATETIME           => PrimitiveType.datetime.value
+    case DataTypesToInt.TIME               => PrimitiveType.time.value
+    case DataTypesToInt.BINARY             => PrimitiveType.binary.value
     case DataTypesToInt.ISO_DATE_TIME      => "iso_date_time"
     case DataTypesToInt.BASIC_ISO_DATE     => "basic_iso_date"
     case DataTypesToInt.ISO_OFFSET_DATE    => "iso_offset_date"
@@ -123,6 +131,9 @@ object DataTypesToInt extends Enumeration {
     case DataTypesToInt.STRUCT             => PrimitiveType.struct.value
     case DataTypesToInt.DATE               => PrimitiveType.date.value
     case DataTypesToInt.TIMESTAMP          => PrimitiveType.timestamp.value
+    case DataTypesToInt.DATETIME           => PrimitiveType.datetime.value
+    case DataTypesToInt.TIME               => PrimitiveType.time.value
+    case DataTypesToInt.BINARY             => PrimitiveType.binary.value
     case DataTypesToInt.ISO_DATE_TIME      => "iso_date_time"
     case DataTypesToInt.BASIC_ISO_DATE     => "basic_iso_date"
     case DataTypesToInt.ISO_OFFSET_DATE    => "iso_offset_date"

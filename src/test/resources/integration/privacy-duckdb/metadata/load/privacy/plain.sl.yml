@@ -1,0 +1,11 @@
+---
+version: 1
+table:
+  name: "plain"
+  pattern: "plain.*.csv"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "email"
+      type: "string"

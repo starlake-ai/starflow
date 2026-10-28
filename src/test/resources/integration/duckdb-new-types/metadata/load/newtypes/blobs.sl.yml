@@ -1,0 +1,11 @@
+---
+version: 1
+table:
+  name: "blobs"
+  pattern: "blobs.*.csv"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "payload"
+      type: "binary"

@@ -1,0 +1,13 @@
+---
+version: 1
+table:
+  name: "events"
+  pattern: "events.*.csv"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "civil"
+      type: "datetime"
+    - name: "wall"
+      type: "time"

@@ -1,0 +1,6 @@
+version: 1
+load:
+  name: "starlake_it_bq_native_types"
+  metadata:
+    format: "JSON"
+    directory: "{{root_path}}/incoming/starlake_it_bq_native_types"

@@ -1,0 +1,28 @@
+---
+version: 1
+types:
+  - name: "civil_datetime"
+    primitiveType: "timestamp"
+    pattern: "yyyy-MM-dd HH:mm:ss"
+    ddlMapping:
+      bigquery: "DATETIME"
+  - name: "wall_time"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "TIME"
+  - name: "json_text"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "JSON"
+  - name: "area"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "GEOGRAPHY"
+  - name: "code10"
+    primitiveType: "string"
+    pattern: ".*"
+    ddlMapping:
+      bigquery: "STRING(10)"

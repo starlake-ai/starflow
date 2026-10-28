@@ -1,0 +1,8 @@
+---
+version: 1
+load:
+  name: "newtypes"
+  metadata:
+    directory: "__SL_TEST_ROOT__/newtypes"
+    writeStrategy:
+      type: "APPEND"

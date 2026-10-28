@@ -1,10 +1,15 @@
+{%- set partition = sinkPartition | first -%}
+{# The SELECT is evaluated once, before the DELETE: it may read the partitions it replaces #}
+DROP TABLE IF EXISTS #SL_INCOMING;
 
+CREATE TABLE #SL_INCOMING AS {{ selectStatement }};
 
-CREATE OR REPLACE VIEW #SL_INCOMING AS {{ selectStatement }};
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM #SL_INCOMING WHERE {{ partition }} IS NOT NULL);
 
-DELETE FROM {{ tableFullName }} 
-WHERE {{ sinkPartition | first }} IN (SELECT DISTINCT {{ sinkPartition | first }} FROM #SL_INCOMING);
+DELETE FROM {{ tableFullName }}
+WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM #SL_INCOMING WHERE {{ partition }} IS NULL);
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ renderTableColumns('#SL_INCOMING', tableColumnNames) }} FROM #SL_INCOMING;
 
-DROP VIEW IF EXISTS #SL_INCOMING;
+DROP TABLE IF EXISTS #SL_INCOMING;

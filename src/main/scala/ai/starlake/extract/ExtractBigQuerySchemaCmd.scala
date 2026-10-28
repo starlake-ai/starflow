@@ -75,11 +75,20 @@ object ExtractBigQuerySchemaCmd extends TablesExtractCmd {
   ): List[DomainInfo] = {
     if (config.external) {
       val extractor = new ExtractBigQuerySchema(config)
-      val externalDomains = extractor.extractSchemasAndTables(schemaHandler, config.tables)
+      val externalDomains =
+        extractor.extractSchemasAndTables(
+          schemaHandler,
+          config.tables,
+          withParameterizedTypes = true
+        )
       schemaHandler.saveToExternals(externalDomains)
       externalDomains
     } else {
-      ExtractBigQuerySchema.extractAndSaveToExternal(config, schemaHandler)
+      ExtractBigQuerySchema.extractAndSaveToExternal(
+        config,
+        schemaHandler,
+        withParameterizedTypes = true
+      )
     }
   }
 }

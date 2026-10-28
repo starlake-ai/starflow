@@ -604,6 +604,9 @@ public class BigQuerySchemaConverters {
         if (elementType instanceof TimestampType) {
             return LegacySQLTypeName.TIMESTAMP;
         }
+        if (elementType instanceof TimestampNTZType) {
+            return LegacySQLTypeName.DATETIME;
+        }
         if (elementType instanceof DateType) {
             return LegacySQLTypeName.DATE;
         }

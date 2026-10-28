@@ -502,6 +502,54 @@ class InferSchemaInfoJobSpec extends TestHelper {
         }
       }
     }
+    "Infer parquet Schema" should "give the TIMESTAMP_NTZ and binary columns the datetime and binary types" in {
+      import org.apache.spark.sql.Row
+      import org.apache.spark.sql.types._
+      // Without the datetime type of the test project, a timestamp
+      cleanMetadata
+      deliverTestFile(
+        "/sample/new-types/types.sl.yml",
+        new Path(ai.starlake.config.DatasetArea.types, "types.sl.yml")
+      )
+      settings.schemaHandler(reload = true)
+      for {
+        written   <- File.temporaryDirectory()
+        targetDir <- File.temporaryDirectory()
+      } {
+        sparkSession
+          .createDataFrame(
+            sparkSession.sparkContext.parallelize(
+              Seq(Row(java.time.LocalDateTime.of(2019, 12, 31, 23, 59, 2), Array[Byte](0, 1)))
+            ),
+            StructType(
+              List(StructField("civil", TimestampNTZType), StructField("payload", BinaryType))
+            )
+          )
+          .coalesce(1)
+          .write
+          .mode("overwrite")
+          .parquet(written.pathAsString)
+        val parquetFile = written.list.find(_.name.endsWith(".parquet")).get
+        inferSchemaJob.infer(
+          domainName = "parquet",
+          tableName = "typed",
+          pattern = None,
+          comment = None,
+          inputPath = parquetFile.pathAsString,
+          saveDir = targetDir.pathAsString,
+          forceFormat = None,
+          writeMode = WriteMode.OVERWRITE,
+          rowTag = None,
+          encoding = StandardCharsets.UTF_8,
+          clean = false
+        )(settings.storageHandler())
+        val targetFile = File(targetDir, "parquet", "typed.sl.yml")
+        YamlSerde
+          .deserializeYamlTables(targetFile.contentAsString, targetFile.pathAsString)
+          .flatMap(_.table.attributes.map(attribute => attribute.name -> attribute.`type`)) shouldBe
+        List("civil" -> "datetime", "payload" -> "binary")
+      }
+    }
   }
   "Infer Table name" should "succeed" in {
     InferSchemaJob.inferTableName("hello world") shouldBe "hello"

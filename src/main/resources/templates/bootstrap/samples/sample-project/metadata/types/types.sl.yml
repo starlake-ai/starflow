@@ -1,4 +1,29 @@
 ---
+# Besides the types declared here and in default.sl.yml, Starflow ships these built-in types.
+# They are always available and are not listed in any file of the project:
+#
+#   datetime         date and time without time zone, pattern SQL_DATE_TIME
+#                    (2019-12-31 23:59:02.123456)
+#                    bigquery DATETIME, snowflake TIMESTAMP_NTZ, postgres TIMESTAMP, duckdb TIMESTAMP
+#   time             time of day without time zone, pattern ISO_LOCAL_TIME (23:59:02.123456)
+#                    bigquery TIME, snowflake TIME, postgres TIME, duckdb TIME
+#   binary           bytes encoded in base64 (SGVsbG8gV29ybGQ=)
+#                    bigquery BYTES, snowflake BINARY, postgres BYTEA, duckdb BLOB
+#                    For hex input, declare a type of primitiveType binary with pattern "hex".
+#   numeric          decimal of zone 38,9: bigquery NUMERIC, snowflake DECIMAL,
+#                    postgres DECIMAL, duckdb DECIMAL (an unparameterized BigQuery NUMERIC)
+#   bignumeric       decimal of zone 76,38: bigquery BIGNUMERIC, postgres NUMERIC
+#                    Only the native BigQuery loader loads it.
+#   geography        WKT or GeoJSON text: bigquery GEOGRAPHY
+#   interval         text: bigquery INTERVAL
+#   range_date       text: bigquery RANGE<DATE>
+#   range_datetime   text: bigquery RANGE<DATETIME>
+#   range_timestamp  text: bigquery RANGE<TIMESTAMP>
+#                    These five are strings, stored as text on the other engines.
+#
+# To change one, declare a type of the same name in this file: it replaces the built-in type.
+# Keep its primitiveType, or `starlake validate` warns that every attribute of that type,
+# those written by infer-schema and extract-bq-schema included, now uses yours.
 version: 1
 types:
   - name: "email"

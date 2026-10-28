@@ -1,0 +1,32 @@
+---
+version: 1
+table:
+  name: "events"
+  pattern: "events.*.dsv"
+  metadata:
+    format: "DSV"
+    withHeader: true
+    separator: ";"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "created"
+      type: "datetime"
+      required: true
+    - name: "civil"
+      type: "datetime"
+    - name: "civil_iso"
+      type: "iso_civil"
+    - name: "since"
+      type: "datetime"
+      default: "2000-01-01 00:00:00"
+    - name: "wall"
+      type: "time"
+    - name: "payload"
+      type: "binary"
+    - name: "hex"
+      type: "hex_bytes"
+    - name: "fallback"
+      type: "binary"
+      default: "AAE="

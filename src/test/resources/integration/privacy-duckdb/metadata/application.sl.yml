@@ -1,0 +1,10 @@
+version: 1
+application:
+  connectionRef: "duckdb"
+  loader: "native"
+  connections:
+    duckdb:
+      type: "jdbc"
+      options:
+        url: "jdbc:duckdb:{{SL_ROOT}}/datasets/duckdb.db"
+        driver: "org.duckdb.DuckDBDriver"

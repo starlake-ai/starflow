@@ -1,0 +1,114 @@
+---
+# Built-in types added after the types of default.sl.yml. They come after the types of the
+# project, so that a project with a copy of default.sl.yml finds its types first.
+version: 1
+types:
+  - name: "datetime"
+    primitiveType: "datetime"
+    pattern: "SQL_DATE_TIME"
+    sample: "2019-12-31 23:59:02.123456"
+    comment: "Date and time without time zone"
+    ddlMapping:
+      bigquery: DATETIME
+      snowflake: TIMESTAMP_NTZ
+      postgres: TIMESTAMP
+      synapse: datetime2
+      duckdb: TIMESTAMP
+  - name: "time"
+    primitiveType: "time"
+    pattern: "ISO_LOCAL_TIME"
+    sample: "23:59:02.123456"
+    comment: "Time of day without time zone"
+    ddlMapping:
+      bigquery: TIME
+      snowflake: TIME
+      postgres: TIME
+      synapse: time
+      duckdb: TIME
+  - name: "binary"
+    primitiveType: "binary"
+    pattern: "base64"
+    sample: "SGVsbG8gV29ybGQ="
+    comment: "Bytes encoded in base64"
+    ddlMapping:
+      bigquery: BYTES
+      snowflake: BINARY
+      postgres: BYTEA
+      synapse: varbinary(max)
+      duckdb: BLOB
+  - name: "bignumeric"
+    primitiveType: "decimal"
+    pattern: "[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*"
+    zone: "76,38"
+    sample: "-45.787686786876"
+    comment: "Decimal of 76 digits, 38 of them after the point, such as BigQuery BIGNUMERIC: loaded by the native BigQuery loader only"
+    ddlMapping:
+      bigquery: BIGNUMERIC
+      postgres: NUMERIC
+  - name: "geography"
+    primitiveType: "string"
+    pattern: ".*"
+    sample: "POINT(1 2)"
+    comment: "Geography, such as BigQuery GEOGRAPHY, as its WKT or GeoJSON text"
+    ddlMapping:
+      bigquery: GEOGRAPHY
+      snowflake: STRING
+      postgres: TEXT
+      synapse: Varchar(max)
+      duckdb: VARCHAR
+  - name: "interval"
+    primitiveType: "string"
+    pattern: ".*"
+    sample: "1-2 3 4:5:6.789"
+    comment: "Duration, such as BigQuery INTERVAL, as its text"
+    ddlMapping:
+      bigquery: INTERVAL
+      snowflake: STRING
+      postgres: varchar(8000)
+      synapse: Varchar(8000)
+      duckdb: VARCHAR
+  - name: "range_date"
+    primitiveType: "string"
+    pattern: ".*"
+    sample: "[2019-01-01, 2019-12-31)"
+    comment: "Range of dates, such as BigQuery RANGE<DATE>, as its text"
+    ddlMapping:
+      bigquery: RANGE<DATE>
+      snowflake: STRING
+      postgres: varchar(8000)
+      synapse: Varchar(8000)
+      duckdb: VARCHAR
+  - name: "range_datetime"
+    primitiveType: "string"
+    pattern: ".*"
+    sample: "[2019-01-01 00:00:00, 2019-12-31 23:59:59)"
+    comment: "Range of dates and times without time zone, such as BigQuery RANGE<DATETIME>, as its text"
+    ddlMapping:
+      bigquery: RANGE<DATETIME>
+      snowflake: STRING
+      postgres: varchar(8000)
+      synapse: Varchar(8000)
+      duckdb: VARCHAR
+  - name: "range_timestamp"
+    primitiveType: "string"
+    pattern: ".*"
+    sample: "[2019-01-01 00:00:00 UTC, UNBOUNDED)"
+    comment: "Range of timestamps, such as BigQuery RANGE<TIMESTAMP>, as its text"
+    ddlMapping:
+      bigquery: RANGE<TIMESTAMP>
+      snowflake: STRING
+      postgres: varchar(8000)
+      synapse: Varchar(8000)
+      duckdb: VARCHAR
+  - name: "numeric"
+    primitiveType: "decimal"
+    pattern: "[-+]?\\d*\\.?\\d+[Ee]?[-+]?\\d*"
+    zone: "38,9"
+    sample: "-45.787686786"
+    comment: "Decimal of 38 digits, 9 of them after the point, such as an unparameterized BigQuery NUMERIC, where the type decimal creates a NUMERIC(38, 9)"
+    ddlMapping:
+      bigquery: NUMERIC
+      snowflake: DECIMAL
+      synapse: decimal
+      postgres: DECIMAL
+      duckdb: DECIMAL

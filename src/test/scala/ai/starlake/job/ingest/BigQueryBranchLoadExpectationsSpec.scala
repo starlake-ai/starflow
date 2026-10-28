@@ -10,8 +10,8 @@ import java.util.regex.Pattern
 import scala.collection.mutable.ListBuffer
 
 /** Expectations of a load run on a data branch must check the table the load wrote to: the branch
-  * copy for a native BigQuery load, production for a Spark load (which never branches). No
-  * BigQuery access: the assertion handler only records the SQL it gets.
+  * copy for a native BigQuery load, production for a Spark load (which never branches). No BigQuery
+  * access: the assertion handler only records the SQL it gets.
   */
 class BigQueryBranchLoadExpectationsSpec extends TestHelper {
 

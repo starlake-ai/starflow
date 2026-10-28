@@ -1,0 +1,14 @@
+---
+version: 1
+table:
+  name: "customers"
+  pattern: "customers.*.csv"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "email"
+      type: "string"
+      privacy: "SHA256"
+    - name: "city"
+      type: "string"

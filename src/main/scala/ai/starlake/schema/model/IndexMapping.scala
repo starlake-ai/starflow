@@ -90,6 +90,9 @@ object IndexMapping {
       case PrimitiveType.byte      => IndexMapping.Byte
       case PrimitiveType.date      => IndexMapping.Date
       case PrimitiveType.timestamp => IndexMapping.Date
+      case PrimitiveType.datetime  => IndexMapping.Date
+      case PrimitiveType.time      => IndexMapping.Keyword
+      case PrimitiveType.binary    => IndexMapping.Binary
       case PrimitiveType.decimal   => IndexMapping.Long
       case PrimitiveType.struct    => IndexMapping.Object
       case _ =>

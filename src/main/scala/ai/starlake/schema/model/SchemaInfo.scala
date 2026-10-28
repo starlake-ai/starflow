@@ -27,7 +27,7 @@ import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.Format.{DSV, XML}
 import ai.starlake.schema.model.Severity.*
 import ai.starlake.utils.Formatter.*
-import ai.starlake.utils.conversion.BigQueryUtils
+import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryType, BigQueryUtils}
 import ai.starlake.utils.{SparkUtils, Utils}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.google.cloud.bigquery.Schema as BQSchema
@@ -234,6 +234,17 @@ case class SchemaInfo(
   def sourceSparkSchemaUntypedEpochWithoutScriptedFields(
     schemaHandler: SchemaHandler
   ): StructType = {
+    // The datetime, time and binary values are read from their text by the validation, at every
+    // level: the readers would not apply the pattern of their type
+    def isReadAsText(attr: TableAttribute): Boolean =
+      attr.attributes.isEmpty && attr
+        .`type`(schemaHandler)
+        .exists(tpe =>
+          Set[PrimitiveType](PrimitiveType.datetime, PrimitiveType.time, PrimitiveType.binary)
+            .contains(tpe.primitiveType)
+        )
+    def readAsText(attr: TableAttribute): DataType =
+      if (attr.resolveArray()) ArrayType(StringType, !attr.resolveRequired()) else StringType
     val fields = attributesWithoutScriptedFields.map { attr =>
       val metadata =
         if (attr.`type` == "variant")
@@ -246,7 +257,15 @@ case class SchemaInfo(
             case (PrimitiveType.timestamp, "epoch_second") => LongType
             case (PrimitiveType.timestamp, "epoch_milli")  => LongType
             case (PrimitiveType.date, _)                   => StringType
-            case (_, _)                                    => attr.sparkType(schemaHandler)
+            case (PrimitiveType.datetime | PrimitiveType.time | PrimitiveType.binary, _) =>
+              readAsText(attr)
+            case (_, _) =>
+              attr.sparkType(
+                schemaHandler,
+                (field, structField) =>
+                  if (isReadAsText(field)) structField.copy(dataType = readAsText(field))
+                  else structField
+              )
           }
         }
 
@@ -732,7 +751,28 @@ case class SchemaInfo(
       )
       val raw = SchemaInfo.positionSlice(pos)
       val finalName = s"$attributeQuote${field.getFinalName()}$attributeQuote"
+      // BigQuery cannot cast a string to these types: it parses them. Only BigQuery, whose cast
+      // function is SAFE_CAST, gets these parsers: DuckDB maps variant to JSON and casts to it.
+      val bigQueryParsing = safeCastFunction == "SAFE_CAST"
       SchemaInfo.castableDdlType(ddlTypesByAttribute, field.name) match {
+        case Some(ddlType) if bigQueryParsing && ddlType.trim.toUpperCase.startsWith("GEOGRAPHY") =>
+          s"SAFE.ST_GEOGFROM($raw) as $finalName"
+        case Some(ddlType) if bigQueryParsing && ddlType.trim.toUpperCase.startsWith("JSON") =>
+          s"SAFE.PARSE_JSON($raw) as $finalName"
+        case Some(ddlType) if bigQueryParsing && ddlType.trim.toUpperCase.startsWith("RANGE") =>
+          BigQueryType
+            .parse(ddlType)
+            .flatMap(_.rangeElementType)
+            .map(elementType =>
+              s"${BigQueryNativeSchema.rangeFromText(raw, elementType.name(), safe = true)} as $finalName"
+            )
+            .getOrElse(s"$raw as $finalName")
+        // BigQuery refuses parameterized types in CAST, such as STRING(10) or NUMERIC(10, 2)
+        case Some(ddlType)
+            if bigQueryParsing && BigQueryType
+              .parse(ddlType)
+              .exists(t => t.hasParameters && t.rangeElementType.isEmpty) =>
+          s"${BigQueryNativeSchema.castWithinParameters(raw, BigQueryType.parse(ddlType).get)} as $finalName"
         case Some(ddlType) =>
           s"$safeCastFunction($raw AS $ddlType) as $finalName"
         case None =>
@@ -922,6 +962,13 @@ object SchemaInfo {
             TableAttribute(
               obj.name,
               "decimal",
+              required = Some(!obj.nullable),
+              comment = obj.getComment()
+            )
+          case BinaryType | TimestampNTZType =>
+            TableAttribute(
+              obj.name,
+              PrimitiveType.from(obj.dataType).value,
               required = Some(!obj.nullable),
               comment = obj.getComment()
             )

@@ -7,6 +7,7 @@ import ai.starlake.schema.model.{
   FieldPartitionInfo,
   Format,
   Materialization,
+  Metadata,
   SchemaInfo,
   TableInfo as SLTableInfo
 }
@@ -27,6 +28,14 @@ import java.nio.file.Files
 import java.util.UUID
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try, Using}
+
+/** A load job that BigQuery ran and that failed: its execution errors may report bad records
+  *
+  * @param paths
+  *   the files that the job loaded
+  */
+class BigQueryLoadJobException(message: String, val job: Job, val paths: List[String])
+    extends Exception(message)
 
 class BigQueryNativeJob(
   override val cliConfig: BigQueryLoadConfig,
@@ -89,17 +98,35 @@ class BigQueryNativeJob(
                   .flatMap { job =>
                     logger.info(s"Waiting for job ${job.getJobId}")
                     // Blocks until this load table job completes its execution, either failing or succeeding.
-                    BigQueryJobBase.recoverBigqueryException(
-                      settings.appConfig.onExceptionRetries
-                    )(
-                      job.waitFor(
-                        RetryOption.totalTimeout(
-                          org.threeten.bp.Duration.ofMillis(
-                            jobTimeoutMs.getOrElse(settings.appConfig.longJobTimeoutMs)
+                    BigQueryJobBase
+                      .recoverBigqueryException(
+                        settings.appConfig.onExceptionRetries
+                      )(
+                        job.waitFor(
+                          RetryOption.totalTimeout(
+                            org.threeten.bp.Duration.ofMillis(
+                              jobTimeoutMs.getOrElse(settings.appConfig.longJobTimeoutMs)
+                            )
                           )
                         )
                       )
-                    )
+                      .recoverWith {
+                        // waitFor throws when the job fails: the failed job reports its bad
+                        // records, kept by the native loader
+                        case exception: BigQueryException =>
+                          Try(
+                            bigquery(accessToken = cliConfig.accessToken).getJob(job.getJobId)
+                          ).toOption
+                            .flatMap(scala.Option(_))
+                            .filter(failed =>
+                              scala
+                                .Option(failed.getStatus)
+                                .flatMap(s => scala.Option(s.getError))
+                                .isDefined
+                            )
+                            .map(Success(_))
+                            .getOrElse(Failure(exception))
+                      }
                   }
                   .map { jobResult =>
                     if (scala.Option(jobResult.getStatus.getError()).isEmpty) {
@@ -109,15 +136,22 @@ class BigQueryNativeJob(
                         throw e
                       }
                       BqLoadInfo(
-                        stats.getOutputRows,
-                        stats.getBadRecords,
+                        scala.Option(stats.getOutputRows).map(_.longValue).getOrElse(0L),
+                        // Parquet loads set no maximum of bad records
+                        scala.Option(stats.getBadRecords).map(_.longValue).getOrElse(0L),
                         sourceURIList,
-                        BigQueryJobResult(None, stats.getInputBytes, Some(jobResult))
+                        BigQueryJobResult(
+                          None,
+                          scala.Option(stats.getInputBytes).map(_.longValue).getOrElse(0L),
+                          Some(jobResult)
+                        )
                       )
                     } else
-                      throw new Exception(
+                      throw new BigQueryLoadJobException(
                         "BigQuery was unable to load into the table due to an error:" + jobResult.getStatus
-                          .getError()
+                          .getError(),
+                        jobResult,
+                        sourceURIList
                       )
                   }
               case Right(_) =>
@@ -208,7 +242,13 @@ class BigQueryNativeJob(
       .setCreateDisposition(JobInfo.CreateDisposition.valueOf(cliConfig.createDisposition))
       .setWriteDisposition(JobInfo.WriteDisposition.valueOf(cliConfig.writeDisposition))
       .setSchema(bqSchema)
-    if (cliConfig.writeDisposition == JobInfo.WriteDisposition.WRITE_APPEND.toString) {
+    val format = cliConfig.starlakeSchema.flatMap(_.metadata).map(_.resolveFormat())
+    // ALLOW_FIELD_ADDITION and ignoreUnknownValues cannot both be set for self-describing formats:
+    // the native loader adds and relaxes the columns of the target of a Parquet load itself
+    if (
+      cliConfig.writeDisposition == JobInfo.WriteDisposition.WRITE_APPEND.toString &&
+      !format.contains(Format.PARQUET)
+    ) {
       loadConfig.setSchemaUpdateOptions(
         List(
           SchemaUpdateOption.ALLOW_FIELD_ADDITION,
@@ -216,7 +256,7 @@ class BigQueryNativeJob(
         ).asJava
       )
     }
-    if (!settings.appConfig.rejectAllOnError)
+    if (!settings.appConfig.rejectAllOnError && format.forall(BigQueryNativeJob.supportsBadRecords))
       loadConfig.setMaxBadRecords(settings.appConfig.rejectMaxRecords)
 
     cliConfig.outputPartition match {
@@ -246,50 +286,21 @@ class BigQueryNativeJob(
     loadConfig
   }
 
-  private def bqLoadFormatOptions(): FormatOptions = {
-    val formatOptions = cliConfig.starlakeSchema.flatMap(_.metadata) match {
-      case Some(metadata) =>
-        metadata.resolveFormat() match {
-          case Format.DSV =>
-            val formatOptions =
-              CsvOptions.newBuilder.setAllowQuotedNewLines(true).setAllowJaggedRows(true)
-            if (metadata.resolveWithHeader())
-              formatOptions.setSkipLeadingRows(1).build
-            formatOptions.setEncoding(metadata.resolveEncoding())
-            formatOptions.setFieldDelimiter(metadata.resolveSeparator())
-            metadata.quote.map(quote => formatOptions.setQuote(quote))
-            formatOptions.setAllowJaggedRows(true)
-            formatOptions.build()
-          case Format.JSON | Format.JSON_FLAT =>
-            FormatOptions.json()
-          case Format.POSITION =>
-            // Load each line of the fixed-width file as a single VARCHAR column named `value`.
-            // The field delimiter is set to SOH () — a control char vanishingly unlikely
-            // to appear in fixed-width data, so each line becomes one field.
-            // Quote is disabled (empty) so any `"` in the data is treated as a literal byte.
-            val formatOptions = CsvOptions.newBuilder
-              .setFieldDelimiter("")
-              .setQuote("")
-              .setAllowJaggedRows(true)
-              .setAllowQuotedNewLines(false)
-              .setEncoding(metadata.resolveEncoding())
-            if (metadata.resolveWithHeader())
-              formatOptions.setSkipLeadingRows(1)
-            formatOptions.build()
-          case _ =>
-            throw new Exception(s"Should never happen: ${metadata.resolveFormat()}")
-        }
-      case None =>
-        throw new Exception("Should never happen")
+  private def bqLoadFormatOptions(): FormatOptions =
+    cliConfig.starlakeSchema.flatMap(_.metadata) match {
+      case Some(metadata) => BigQueryNativeJob.loadFormatOptions(metadata)
+      case None           => throw new Exception("Should never happen")
     }
-    formatOptions
-  }
 
+  /** @param queryParameters
+    *   the named parameters of the statement (`@name`), whose values need no SQL escaping
+    */
   def runBigQueryJob(
     thisSql: scala.Option[String] = None,
     pageSize: scala.Option[Long] = None,
     queryJobTimeoutMs: scala.Option[Long] = None,
-    dryRun: Boolean = false
+    dryRun: Boolean = false,
+    queryParameters: Map[String, QueryParameterValue] = Map.empty
   ): Try[BigQueryJobResult] = {
     val targetSQL = thisSql.getOrElse(sql).trim()
     if (targetSQL.startsWith("DESCRIBE")) {
@@ -325,6 +336,7 @@ class BigQueryNativeJob(
         .format(targetSQL, JSQLFormatter.OutputFormat.PLAIN)
       logger.info(s"running BigQuery statement with Id $sqlId: $formattedSQL")
 
+      if (queryParameters.nonEmpty) queryConfig.setNamedParameters(queryParameters.asJava)
       val queryConfigWithUDF = addUDFToQueryConfig(queryConfig)
       val finalConfiguration =
         queryConfigWithUDF.setPriority(Priority.INTERACTIVE).setDryRun(dryRun).build()
@@ -649,4 +661,58 @@ class BigQueryNativeJob(
       }
     }
   }
+}
+
+object BigQueryNativeJob {
+
+  /** @return
+    *   the options of a BigQuery load job reading files of this metadata format
+    */
+  def loadFormatOptions(metadata: Metadata): FormatOptions =
+    metadata.resolveFormat() match {
+      case Format.DSV =>
+        val formatOptions =
+          CsvOptions.newBuilder.setAllowQuotedNewLines(true).setAllowJaggedRows(true)
+        if (metadata.resolveWithHeader())
+          formatOptions.setSkipLeadingRows(1).build
+        formatOptions.setEncoding(metadata.resolveEncoding())
+        formatOptions.setFieldDelimiter(metadata.resolveSeparator())
+        metadata.quote.map(quote => formatOptions.setQuote(quote))
+        formatOptions.setAllowJaggedRows(true)
+        formatOptions.build()
+      case Format.JSON | Format.JSON_FLAT =>
+        FormatOptions.json()
+      case Format.POSITION =>
+        // Load each line of the fixed-width file as a single VARCHAR column named `value`.
+        // The field delimiter is set to SOH () — a control char vanishingly unlikely
+        // to appear in fixed-width data, so each line becomes one field.
+        // Quote is disabled (empty) so any `"` in the data is treated as a literal byte.
+        val formatOptions = CsvOptions.newBuilder
+          .setFieldDelimiter("")
+          .setQuote("")
+          .setAllowJaggedRows(true)
+          .setAllowQuotedNewLines(false)
+          .setEncoding(metadata.resolveEncoding())
+        if (metadata.resolveWithHeader())
+          formatOptions.setSkipLeadingRows(1)
+        formatOptions.build()
+      case Format.PARQUET =>
+        // Parquet columns are matched by name with the explicit schema of the load. List
+        // inference loads Parquet LIST columns, as written by EXPORT DATA or Spark, as REPEATED
+        // fields instead of records of `list.element`, and ENUM columns are strings, not bytes.
+        // Only load jobs reading Cloud Storage URIs send these options: local uploads lose them.
+        ParquetOptions.newBuilder().setEnableListInference(true).setEnumAsString(true).build()
+      case format =>
+        throw new Exception(s"Should never happen: $format")
+    }
+
+  /** @return
+    *   true if BigQuery can skip bad records of this format: it only can for CSV and JSON files,
+    *   any invalid row fails the load of the other formats
+    */
+  def supportsBadRecords(format: Format): Boolean =
+    format match {
+      case Format.DSV | Format.JSON | Format.JSON_FLAT | Format.POSITION => true
+      case _                                                             => false
+    }
 }

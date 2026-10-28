@@ -1,0 +1,19 @@
+---
+version: 1
+table:
+  name: "events_json"
+  pattern: "events_json.*.json"
+  metadata:
+    format: "JSON"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "civil"
+      type: "datetime"
+    - name: "stamp"
+      type: "datetime"
+    - name: "wall"
+      type: "time"
+    - name: "payload"
+      type: "binary"
