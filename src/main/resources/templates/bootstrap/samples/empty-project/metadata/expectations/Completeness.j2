@@ -40,12 +40,7 @@ FROM null_count, total_count;
 -- column_name: The name of the column to check for non-null values.
 --
 -- Returns:
--- The values in the specified column that are null.
---
--- This will generate a query like:
--- SELECT column_name
--- FROM table_name
--- WHERE column_name IS NULL;
+-- 0 if the specified column holds no null value, 1 otherwise.
 
 SELECT 
     CASE 

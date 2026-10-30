@@ -33,22 +33,6 @@ SELECT
 FROM {{ table_name }}
 {% endmacro %}
 
-{% macro expect_column_values_to_be_in_set(table_name, column_name, values) %}
--- This macro generates a SQL query that checks if the values in a specified column are within a given set.
---
--- Parameters:
--- table_name: The name of the table to query.
--- column_name: The name of the column to check the values for.
--- values: A list of values that the column values should be within.
---
--- Returns:
--- The values in the specified column that are not within the given set.
-
-SELECT {{ column_name }}
-FROM {{ table_name }}
-WHERE {{ column_name }} NOT IN ({{ values | join(', ') }});
-{% endmacro %}
-
 {% macro expect_column_values_to_be_of_type(table_name, column_name, expected_type) %}
 -- This macro generates a SQL query that checks if the values in a specified column are of a given data type.
 --

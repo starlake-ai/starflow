@@ -21,6 +21,7 @@ import com.google.cloud.bigquery.{
   LegacySQLTypeName,
   Schema as BQSchema,
   StandardTableDefinition,
+  TableDefinition,
   TableId
 }
 import org.apache.hadoop.fs.Path
@@ -737,32 +738,33 @@ class BigQueryAutoTask(
     runNative()
   }
 
-  private def bqSchemaWithSCD2(incomingTableSchema: BQSchema): BQSchema = {
-    val isSCD2 = writeStrategy.getEffectiveType() == WriteStrategyType.SCD2
-    if (
-      isSCD2 && !incomingTableSchema.getFields.asScala.exists(
-        _.getName().toLowerCase() == settings.appConfig.scd2StartTimestamp.toLowerCase()
-      )
-    ) {
-      val startCol = Field
-        .newBuilder(
-          settings.appConfig.scd2StartTimestamp,
-          LegacySQLTypeName.TIMESTAMP
+  private def bqSchemaWithSCD2(
+    incomingTableSchema: BQSchema,
+    existingTableSchema: Option[BQSchema] = None
+  ): BQSchema =
+    BigQueryAutoTask.withSCD2Columns(incomingTableSchema, writeStrategy, existingTableSchema)
+
+  /** Whether the target table requires a partition filter, for the OVERWRITE_BY_PARTITION template,
+    * which turns the filter off around its transaction and on again after it, failed or not
+    * (#1880). It is read before the run, so that a retry of the script, after a failure to turn it
+    * on again, still knows it. Absent when the table cannot be read: the template then goes by the
+    * sink.
+    */
+  override protected def strategyTemplateVariables(): Map[String, Any] =
+    if (writeStrategy.getEffectiveType() != WriteStrategyType.OVERWRITE_BY_PARTITION)
+      Map.empty
+    else {
+      val job =
+        bqNativeJob(bigQuerySinkConfig, "ignore sql", Some(settings.appConfig.shortJobTimeoutMs))
+      // The table of the branch is cloned after the SQL is built
+      List(targetTableId, originalTargetTableId).distinct.view
+        .flatMap(tableId => job.getTable(tableId).toOption.flatMap(Option(_)))
+        .headOption
+        .map(table =>
+          "tableRequirePartitionFilter" -> BigQueryAutoTask.requiresPartitionFilter(table).toString
         )
-        .setMode(Field.Mode.NULLABLE)
-        .build()
-      val endCol = Field
-        .newBuilder(
-          settings.appConfig.scd2EndTimestamp,
-          LegacySQLTypeName.TIMESTAMP
-        )
-        .setMode(Field.Mode.NULLABLE)
-        .build()
-      val allFields = incomingTableSchema.getFields.asScala.toList :+ startCol :+ endCol
-      BQSchema.of(allFields.asJava)
-    } else
-      incomingTableSchema
-  }
+        .toMap
+    }
 
   def buildACLQueries(): List[String] = {
     val tableId = BigQueryJobBase.extractProjectDatasetAndTable(
@@ -916,7 +918,10 @@ class BigQueryAutoTask(
                   logger.info(finalSchema.toString)
                 }
 
-                val newBqSchema = bqSchemaWithSCD2(finalSchema)
+                val newBqSchema = bqSchemaWithSCD2(
+                  finalSchema,
+                  Some(table.getDefinition[StandardTableDefinition].getSchema)
+                )
                 val updatedTableDefinition =
                   table
                     .getDefinition[StandardTableDefinition]
@@ -1035,6 +1040,62 @@ object BigQueryAutoTask {
       case _                        => false
     }
   }
+
+  /** The schema of the table of an SCD2 strategy, with the validity columns of the strategy:
+    * `startTs` and `endTs`, or the global `scd2StartTimestamp` and `scd2EndTimestamp`. Each one is
+    * added as a nullable TIMESTAMP when the schema does not have it (#1878). Other strategies keep
+    * the schema.
+    *
+    * @param existingSchema
+    *   the schema of the existing table, whose global validity columns, which earlier versions
+    *   added next to those of the strategy, are kept: a schema update cannot drop a column
+    */
+  def withSCD2Columns(
+    schema: BQSchema,
+    strategy: WriteStrategy,
+    existingSchema: Option[BQSchema] = None
+  )(implicit settings: Settings): BQSchema =
+    if (strategy.getEffectiveType() != WriteStrategyType.SCD2)
+      schema
+    else {
+      val fields = schema.getFields.asScala.toList
+      def lacks(fields: List[Field], column: String): Boolean =
+        !fields.exists(_.getName.equalsIgnoreCase(column))
+      val validity = List(
+        strategy.startTs.getOrElse(settings.appConfig.scd2StartTimestamp),
+        strategy.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
+      ).filter(_.nonEmpty)
+        .distinctBy(_.toLowerCase)
+        .filter(lacks(fields, _))
+        .map { column =>
+          Field
+            .newBuilder(column, LegacySQLTypeName.TIMESTAMP)
+            .setMode(Field.Mode.NULLABLE)
+            .build()
+        }
+      val globals = List(settings.appConfig.scd2StartTimestamp, settings.appConfig.scd2EndTimestamp)
+      val earlier = existingSchema.toList
+        .flatMap(_.getFields.asScala)
+        .filter(field => globals.exists(_.equalsIgnoreCase(field.getName)))
+        .filter(field => lacks(fields ++ validity, field.getName))
+      if (validity.isEmpty && earlier.isEmpty)
+        schema
+      else
+        BQSchema.of((fields ++ validity ++ earlier).asJava)
+    }
+
+  /** Whether a table requires a partition filter: an option of the table, or of its time
+    * partitioning in the tables that older clients created
+    */
+  def requiresPartitionFilter(table: com.google.cloud.bigquery.TableInfo): Boolean =
+    Option(table.getRequirePartitionFilter)
+      .orElse(
+        Option(table.getDefinition[TableDefinition])
+          .collect { case definition: StandardTableDefinition => definition }
+          .flatMap(definition => Option(definition.getTimePartitioning))
+          .flatMap(partitioning => Option(partitioning.getRequirePartitionFilter))
+      )
+      .exists(_.booleanValue())
 
   /** The single multi-statement script submitted on the native, unsharded path. Every presql
     * statement carries its own terminator: presql entries have theirs stripped at load time

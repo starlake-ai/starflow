@@ -213,6 +213,11 @@ abstract class AutoTask(
 
   protected def writeStrategy: WriteStrategy = taskDesc.getStrategy()
 
+  /** Variables of the engine that its write strategy templates receive besides those of the task,
+    * read once before the run.
+    */
+  protected def strategyTemplateVariables(): Map[String, Any] = Map.empty
+
   protected def isMerge(sql: String): Boolean = {
     sql.toLowerCase().contains("merge into")
   }
@@ -457,7 +462,8 @@ abstract class AutoTask(
           truncate = truncate,
           materializedView = resolveMaterializedView(),
           jdbcRunEngine,
-          sinkConfig
+          sinkConfig,
+          strategyTemplateVariables()
         )
         // When syncSqlWithYaml is enabled (SL_SYNC_SQL_WITH_YAML=true), align the task's YAML
         // attributes with the SQL before running, so that a column added to the SELECT flows into

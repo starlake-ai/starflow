@@ -1,5 +1,5 @@
 {% macro unexpected_rows_expectation(table1_name, table2_name, key_column) %}
--- This macro generates a SQL query that identifies rows in one table that do not have a matching row in another table based on a specified key.
+-- This macro generates a SQL query that counts the rows in one table that do not have a matching row in another table based on a specified key.
 --
 -- Parameters:
 -- table1_name: The name of the first table to check.
@@ -7,18 +7,25 @@
 -- key_column: The key column to join the tables on.
 --
 -- Returns:
--- The rows in the first table that do not have a matching row in the second table based on the specified key.
+-- The number of rows in the first table that do not have a matching row in the second table based on the specified key:
+-- 0 when they all have one.
 --
 -- This will generate a query like:
--- SELECT table1.*
--- FROM table1_name AS table1
--- LEFT JOIN table2_name AS table2
--- ON table1.key_column = table2.key_column
--- WHERE table2.key_column IS NULL;
+-- SELECT COUNT(*)
+-- FROM (
+--     SELECT table1.*
+--     FROM table1_name AS table1
+--     LEFT JOIN table2_name AS table2
+--     ON table1.key_column = table2.key_column
+--     WHERE table2.key_column IS NULL
+-- ) AS unexpected_rows;
 
-SELECT table1.*
-FROM {{ table1_name }} AS table1
-LEFT JOIN {{ table2_name }} AS table2
-ON table1.{{ key_column }} = table2.{{ key_column }}
-WHERE table2.{{ key_column }} IS NULL;
+SELECT COUNT(*) AS result
+FROM (
+    SELECT table1.*
+    FROM {{ table1_name }} AS table1
+    LEFT JOIN {{ table2_name }} AS table2
+    ON table1.{{ key_column }} = table2.{{ key_column }}
+    WHERE table2.{{ key_column }} IS NULL
+) AS unexpected_rows;
 {% endmacro %}
