@@ -57,6 +57,11 @@ UPDATE {{ tableUpdateSetExpression }}
 {% set createTable = 'CREATE MATERIALIZED VIEW ' + tableFullName %}
 {% else %}
 {% set createTable = 'CREATE TABLE ' + tableFullName + ' ' + sinkTablePartitionClause + ' ' + sinkTableClusteringClause %}
+{#- The partition expiration of the sink, which a load sets on the table it creates too (#1883).
+    BigQuery expires the partitions of a time-partitioned table only, not those of an integer range. -#}
+{% if sinkDays is defined and (sinkDays | int) > 0 and sinkTablePartitionClause != '' and not ('RANGE_BUCKET' in (sinkTablePartitionClause | upper)) %}
+{% set createTable = createTable + ' OPTIONS (partition_expiration_days = ' + sinkDays + ')' %}
+{% endif %}
 {% endif %}
 
 {% if strategyOn == 'TARGET' %}
