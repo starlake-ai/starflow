@@ -931,7 +931,7 @@ trait BigQueryJobBase extends LazyLogging {
 
     days match {
       case Some(d) =>
-        partitioned.setExpirationMs(d * 24 * 3600 * 1000L)
+        partitioned.setExpirationMs(d.toLong * 24 * 3600 * 1000)
       case _ =>
         partitioned
     }

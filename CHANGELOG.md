@@ -1,6 +1,14 @@
 
 # Release notes
 
+# 1.7.9:
+__Bug fix__:
+- **A BigQuery transform task creates its table with the partition expiration of its sink** (#1883): `sink.days` was ignored when a task running natively on BigQuery created its table, through the `create.j2` template. The table was partitioned, but its partitions never expired, whereas a load sets the expiration on the table it creates. The `CREATE TABLE` statement now carries `OPTIONS (partition_expiration_days = <days>)` when the sink of the task, possibly inherited from the `_config.sl.yml` of its folder, declares a partition and a positive `days`. A `days` of 0 or less sets no expiration, nor does a partitioning by integer range (`RANGE_BUCKET`), which BigQuery does not expire.
+  - **Data**: BigQuery drops the partitions older than `days` as soon as the table is created, so a task that loads history into a new table keeps only the partitions of the last `days` days, as a load does.
+  - As for a load, the expiration is set at creation only. The tables that earlier versions created keep no expiration: run `ALTER TABLE <table> SET OPTIONS (partition_expiration_days = <days>)` once.
+  - A project that overrides `bigquery/create.j2` must add the option to its own template, from the `sinkDays` variable, after the `CLUSTER BY` clause.
+  - A load computed a wrong expiration for a `days` beyond 24855 (68 years), which overflowed.
+
 # 1.7.8:
 __Bug fix__:
 - **The write strategy templates receive the `sink.options` of BigQuery and JDBC tasks** (#1877): the `sinkOptions` variable, which a template of the project can read to take parameters from the task, was never set on BigQuery and JDBC connections (DuckDB, PostgreSQL, Snowflake, ...): their sinks had no options, so those of the task were dropped without a warning. They now carry the options of the `sink` of the task. The options of the connection (URL, credentials), which the other sinks fall back to when the task declares none, are never passed. The built-in templates do not render them: they are not table options of the engine, and `sinkTableOptionsClause` stays empty for these sinks (Databricks over JDBC, for example, runs the Spark templates). `xls2ymljob` keeps them in the tasks it writes for these sinks.
