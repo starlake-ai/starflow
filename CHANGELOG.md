@@ -20,6 +20,11 @@ __Bug fix__:
   - Reloading tasks of a job from several threads could lose or duplicate tasks, and a task was missing for other threads while it reloaded.
   - `SL_THIS` keeps its name, since python scripts and pre and post SQL refer to it, so python tasks and the Spark pre and post SQL of loads now run one at a time.
   - `CREATE SCHEMA IF NOT EXISTS` failed with a write-write conflict on DuckDB when two tasks created the same schema.
+- **A BigQuery transform task creates its table with the partition expiration of its sink** (#1883): `sink.days` was ignored when a task running natively on BigQuery created its table, through the `create.j2` template. The table was partitioned, but its partitions never expired, whereas a load sets the expiration on the table it creates. The `CREATE TABLE` statement now carries `OPTIONS (partition_expiration_days = <days>)` when the sink of the task, possibly inherited from the `_config.sl.yml` of its folder, declares a partition and a positive `days`. A `days` of 0 or less sets no expiration, nor does a partitioning by integer range (`RANGE_BUCKET`), which BigQuery does not expire.
+  - **Data**: BigQuery drops the partitions older than `days` as soon as the table is created, so a task that loads history into a new table keeps only the partitions of the last `days` days, as a load does.
+  - As for a load, the expiration is set at creation only. The tables that earlier versions created keep no expiration: run `ALTER TABLE <table> SET OPTIONS (partition_expiration_days = <days>)` once.
+  - A project that overrides `bigquery/create.j2` must add the option to its own template, from the `sinkDays` variable, after the `CLUSTER BY` clause.
+  - A load computed a wrong expiration for a `days` beyond 24855 (68 years), which overflowed.
 
 # 1.8.15:
 __New feature__:
