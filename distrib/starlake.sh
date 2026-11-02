@@ -186,6 +186,7 @@ APPCDS_ARCHIVE="$APPCDS_DIR/starlake.jsa"
 APPCDS_FINGERPRINT="$APPCDS_DIR/starlake.fingerprint"
 APPCDS_CONF_DIR="$APPCDS_DIR/conf"
 APPCDS_LAUNCH="$APPCDS_DIR/starlake.launch"
+APPCDS_CLASSPATH="$APPCDS_DIR/starlake.classpath"
 APPCDS_LOCK="$APPCDS_DIR/build.lock"
 APPCDS_FAILED="$APPCDS_DIR/build.failed"
 
@@ -672,6 +673,47 @@ enable_jdbc_c1() {
   fi
 }
 
+# What spark-submit gets as its driver classpath on a local master.
+local_driver_classpath() {
+  local classpath="$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME"
+  if [ $(ls "$DEPS_EXTRA_LIB_FOLDER/"*.jar | wc -l) -ne 0 ]
+  then
+    classpath="$classpath:$(echo "$DEPS_EXTRA_LIB_FOLDER/"*.jar | tr ' ' ':')"
+  fi
+  echo "$classpath"
+}
+
+# Spark lists slf4j-api before jars/*, so this jar comes twice once the JVM expands the
+# wildcard. An archive records it once, and JDK 21 to 24 then reject it at startup, silently
+# with -Xshare:auto. So the archive gets its own classpath, without the duplicate: the expansion
+# by the JVM keeps its order, and a class found in two jars still comes from the same one.
+appcds_classpath() {
+  local spark_classpath
+  spark_classpath="$(
+    SPARK_HOME="$SCRIPT_DIR/bin/spark" "$SPARK_TARGET_FOLDER/bin/spark-submit" --driver-class-path "$(local_driver_classpath)" --class "$SL_MAIN" --master "$SPARK_MASTER_URL" --version 2>&1 |
+      awk '/^Spark Command: / { for (i = 1; i <= NF; i++) if ($i == "-cp") { print $(i + 1); break } }'
+  )"
+  [ -n "$spark_classpath" ] || return 0
+  java -cp "$spark_classpath" -XshowSettings:properties -version 2>&1 |
+    awk '
+      / = / { listing = ($1 == "java.class.path"); if (listing) print $3; next }
+      listing { print $1 }' |
+    awk '!seen[$0]++' |
+    paste -sd: -
+}
+
+# Spark puts the driver options after its own -cp and the JVM keeps the last one. This replaces
+# the classpath of Spark, so it steps aside when Spark would add entries to it: the archive may
+# then go unused, but no entry goes missing.
+use_appcds_classpath() {
+  [ "$SPARK_CONF_DIR" = "$APPCDS_CONF_DIR" ] && [ -s "$APPCDS_CLASSPATH" ] || return 0
+  [ -z "$HADOOP_CONF_DIR$YARN_CONF_DIR$SPARK_DIST_CLASSPATH" ] || return 0
+  case "$SPARK_CONF_OPTIONS" in
+    *driver-class-path*|*extraClassPath*) return 0 ;;
+  esac
+  SPARK_DRIVER_OPTIONS="@$APPCDS_CLASSPATH $SPARK_DRIVER_OPTIONS"
+}
+
 # Keeps what SL_RUN_MODE=main needs from the command spark-class really ran, so that it
 # follows Spark upgrades: the classpath, then one JVM flag per line, without the flags that
 # belong to the training.
@@ -696,6 +738,16 @@ record_appcds_launch() {
   fi
 }
 
+# Training and its classpath do not depend on the environment of the caller.
+enter_appcds_training() {
+  cd "$1"
+  unset SL_ENV SPARK_CONF_OPTIONS SPARK_EXTRA_PACKAGES SL_DEBUG SL_RUN_MODE HADOOP_CONF_DIR YARN_CONF_DIR SPARK_DIST_CLASSPATH
+  SL_ROOT="$1"
+  export SPARK_PRINT_LAUNCH_COMMAND=1
+  # Training only loads classes: no need for the heap of the user's jobs.
+  export SPARK_MASTER_URL="local[*]" SPARK_CONF_DIR="$APPCDS_CONF_DIR" SPARK_DRIVER_MEMORY=1g
+}
+
 build_appcds_archive() {
   if [ "$SL_APPCDS" = "false" ] || [ "$SL_DRY_RUN" = "true" ]
   then
@@ -715,11 +767,11 @@ build_appcds_archive() {
   fi
   trap 'rmdir "$APPCDS_LOCK" 2>/dev/null' EXIT
   echo "Building the AppCDS archive to speed up startup (set SL_APPCDS=false to skip)..."
-  rm -f "$APPCDS_ARCHIVE.tmp"
+  rm -f "$APPCDS_ARCHIVE.tmp" "$APPCDS_CLASSPATH.tmp"
   appcds_fingerprint >"$APPCDS_FINGERPRINT.tmp"
   # Train on a throwaway project that opens a Spark session: no user project exists at
   # install time, and this trains nearly as well as a real one.
-  local training_root training_status=0
+  local training_root training_status=0 classpath
   SPARK_DRIVER_OPTIONS_TRAINING="${JAVA_ARGS[*]} -Dlog4j.configurationFile=$SPARK_TARGET_FOLDER/conf/log4j2.properties -XX:ArchiveClassesAtExit=$APPCDS_ARCHIVE.tmp"
   training_root=$(mktemp -d)
   mkdir -p "$training_root/metadata"
@@ -731,20 +783,21 @@ application:
     sparkLocal:
       type: fs
 EOF
+  classpath="$(enter_appcds_training "$training_root"; appcds_classpath)"
+  if [ -n "$classpath" ]
+  then
+    printf -- '-cp %s\n' "$classpath" >"$APPCDS_CLASSPATH.tmp"
+    SPARK_DRIVER_OPTIONS_TRAINING="@$APPCDS_CLASSPATH.tmp $SPARK_DRIVER_OPTIONS_TRAINING"
+  fi
   (
-    cd "$training_root"
-    unset SL_ENV SPARK_CONF_OPTIONS SPARK_EXTRA_PACKAGES SL_DEBUG SL_RUN_MODE
-    SL_ROOT="$training_root"
-    export SPARK_PRINT_LAUNCH_COMMAND=1
-    # Training only loads classes: no need for the heap of the user's jobs.
-    export SPARK_MASTER_URL="local[*]" SPARK_CONF_DIR="$APPCDS_CONF_DIR" SPARK_DRIVER_MEMORY=1g
+    enter_appcds_training "$training_root"
     SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS_TRAINING"
     launch_starlake validate
   ) >"$training_root/training.log" 2>&1 || training_status=$?
   if [ "$training_status" -ne 0 ] || [ ! -s "$APPCDS_ARCHIVE.tmp" ]
   then
     tail -n 5 "$training_root/training.log" >&2
-    rm -rf "$training_root" "$APPCDS_ARCHIVE.tmp"
+    rm -rf "$training_root" "$APPCDS_ARCHIVE.tmp" "$APPCDS_CLASSPATH.tmp"
     mv -f "$APPCDS_FINGERPRINT.tmp" "$APPCDS_FAILED"
     echo "Warning: could not build the AppCDS archive, startup will be slower." >&2
     return 1
@@ -752,6 +805,12 @@ EOF
   record_appcds_launch "$training_root/training.log"
   rm -rf "$training_root"
   rm -f "$APPCDS_FAILED"
+  if [ -s "$APPCDS_CLASSPATH.tmp" ]
+  then
+    mv -f "$APPCDS_CLASSPATH.tmp" "$APPCDS_CLASSPATH"
+  else
+    rm -f "$APPCDS_CLASSPATH"
+  fi
   mv -f "$APPCDS_ARCHIVE.tmp" "$APPCDS_ARCHIVE"
   mv -f "$APPCDS_FINGERPRINT.tmp" "$APPCDS_FINGERPRINT"
 }
@@ -765,7 +824,7 @@ build_appcds_after_setup() {
 # The JVM of spark-submit without spark-submit: same classpath order, flags and archive. Only
 # what needs a Spark session may behave differently, so this is for the user to choose.
 launch_main() {
-  local classpath extra_classpath memory_flag=() flags=(
+  local classpath memory_flag=() flags=(
     --add-opens=java.base/java.lang=ALL-UNNAMED
     --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
     --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
@@ -789,15 +848,11 @@ launch_main() {
   if [ "$SPARK_CONF_DIR" = "$APPCDS_CONF_DIR" ] && [ -n "$SPARK_CONF_DIR" ]
   then
     classpath="$(sed -n 1p "$APPCDS_LAUNCH")"
+    if [ -s "$APPCDS_CLASSPATH" ]; then classpath="$(sed 's/^-cp //' "$APPCDS_CLASSPATH")"; fi
     # shellcheck disable=SC2207
     flags=($(sed -n '2,$p' "$APPCDS_LAUNCH"))
   else
-    extra_classpath="$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME"
-    if [ $(ls "$DEPS_EXTRA_LIB_FOLDER/"*.jar | wc -l) -ne 0 ]
-    then
-      extra_classpath="$extra_classpath:$(echo "$DEPS_EXTRA_LIB_FOLDER/"*.jar | tr ' ' ':')"
-    fi
-    classpath="$extra_classpath:${SPARK_CONF_DIR:-$SPARK_TARGET_FOLDER/conf}:$SPARK_TARGET_FOLDER/jars/*"
+    classpath="$(local_driver_classpath):${SPARK_CONF_DIR:-$SPARK_TARGET_FOLDER/conf}:$SPARK_TARGET_FOLDER/jars/*"
   fi
   classpath="$classpath${HADOOP_CONF_DIR:+:$HADOOP_CONF_DIR}${YARN_CONF_DIR:+:$YARN_CONF_DIR}${SPARK_DIST_CLASSPATH:+:$SPARK_DIST_CLASSPATH}"
   if [ -n "$SL_USER_DRIVER_MEMORY" ]; then memory_flag=("-Xmx$SL_USER_DRIVER_MEMORY"); fi
@@ -809,9 +864,23 @@ launch_main() {
     -cp "$classpath" "$SL_MAIN" "$@"
 }
 
+# The Hadoop that Spark bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM
+# flag brings it back. Without this, users only get a stack trace. Read from the release file of
+# the JDK to start no JVM: a JDK that has none gets no warning.
+warn_if_jdk_unsupported() {
+  local java_home="$JAVA_HOME" major
+  if [ -z "$java_home" ]; then java_home="$(dirname "$(dirname "$(command -v java)")")"; fi
+  major="$(sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$java_home/release" 2>/dev/null || true)"
+  if [ -n "$major" ] && [ "$major" -ge 24 ]
+  then
+    echo "Warning: Java $major cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21." >&2
+  fi
+}
+
 launch_starlake() {
   if [ -f "$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME" ]
   then
+    warn_if_jdk_unsupported
     if  [ -n "$SL_LOG_LEVEL" ] && [ "$SL_LOG_LEVEL" != "error" ]; then
       echo "- JAVA_HOME=$JAVA_HOME"
       echo "- SL_ROOT=$SL_ROOT"
@@ -866,11 +935,9 @@ launch_starlake() {
       if [[ $SPARK_MASTER_URL == local* ]]
       then
         enable_appcds
+        use_appcds_classpath
         enable_jdbc_c1 "$@"
-        if [ $(ls "$DEPS_EXTRA_LIB_FOLDER/"*.jar | wc -l) -ne 0 ]
-        then
-          extra_classpath="$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME:$(echo "$DEPS_EXTRA_LIB_FOLDER/"*.jar | tr ' ' ':')"
-        fi
+        extra_classpath="$(local_driver_classpath)"
         SPARK_LOCAL_HOSTNAME="127.0.0.1" SPARK_HOME="$SCRIPT_DIR/bin/spark" SL_ROOT="$SL_ROOT" "$SPARK_SUBMIT" $SPARK_EXTRA_PACKAGES --driver-java-options "$SPARK_DRIVER_OPTIONS" $SPARK_CONF_OPTIONS --driver-class-path "$extra_classpath" --class "$SL_MAIN" --master "$SPARK_MASTER_URL" "$SPARK_TARGET_FOLDER/README.md" "$@"
       else
         if [ $(ls "$DEPS_EXTRA_LIB_FOLDER/"*.jar | wc -l) -ne 0 ]
