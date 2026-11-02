@@ -10,9 +10,9 @@ import java.util.concurrent.{ConcurrentLinkedQueue, TimeUnit}
 import scala.io.Source
 import scala.jdk.CollectionConverters._
 
-/** Setup resolves the latest release while its class loads, before main configures the HTTP
-  * client. Without SL_VERSION, a lookup that ignores the proxy times out on a network that needs
-  * one, and the installer then tried to download releases/download/vnull.
+/** Setup resolves the latest release while its class loads, before main configures the HTTP client.
+  * Without SL_VERSION, a lookup that ignores the proxy times out on a network that needs one, and
+  * the installer then tried to download releases/download/vnull.
   *
   * Runs the real installer in its own JVM against a local proxy that refuses every tunnel.
   */
@@ -41,7 +41,12 @@ class SetupProxySpec extends AnyFlatSpec with Matchers {
 
     val target = Files.createTempDirectory("setup-proxy-spec")
     val classes = Paths.get(
-      Class.forName("Setup", false, getClass.getClassLoader).getProtectionDomain.getCodeSource.getLocation.toURI
+      Class
+        .forName("Setup", false, getClass.getClassLoader)
+        .getProtectionDomain
+        .getCodeSource
+        .getLocation
+        .toURI
     )
     val javaBin = Paths.get(System.getProperty("java.home"), "bin", "java").toString
     val builder =
@@ -55,7 +60,9 @@ class SetupProxySpec extends AnyFlatSpec with Matchers {
 
     val process = builder.start()
     val output = new StringBuilder
-    val reader = new Thread(() => output.append(Source.fromInputStream(process.getInputStream).mkString))
+    val reader = new Thread(() =>
+      output.append(Source.fromInputStream(process.getInputStream).mkString)
+    )
     reader.start()
     try {
       withClue(s"Setup did not stop in time. Output:\n$output\n") {
