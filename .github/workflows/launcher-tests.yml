@@ -1,0 +1,42 @@
+name: Launcher tests
+# Runs the real distrib/starlake.sh with spark-submit, java and curl stubbed: no build, no
+# network. macOS is here for its BSD tools and its old bash, which the launcher must support.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+      - branch-*
+    paths:
+      - 'distrib/starlake.sh'
+      - 'src/test/shell/**'
+      - '.github/workflows/launcher-tests.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'distrib/starlake.sh'
+      - 'src/test/shell/**'
+      - '.github/workflows/launcher-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Install bats (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core
+      - name: Run the launcher tests
+        run: bats src/test/shell/starlake_appcds.bats
