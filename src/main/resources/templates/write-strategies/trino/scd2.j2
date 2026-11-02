@@ -14,7 +14,7 @@ SELECT * FROM (
 );
 
 UPDATE {{ tableFullName }}
-SET {{ strategyEndTs }} = current_timestamp
+SET {{ strategyEndTs }} = {{ scd2Now('current_timestamp', strategyEndTsType) }}
 WHERE {{ strategyEndTs }} IS NULL
 AND EXISTS (
   SELECT 1 FROM {{ tableFullName }}_scd2_staging S
@@ -22,8 +22,8 @@ AND EXISTS (
   AND S.{{ strategyTimestamp }} > {{ tableFullName }}.{{ strategyTimestamp }}
 );
 
-INSERT INTO {{ tableFullName }} ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }})
-SELECT {{ renderColumnsWithoutScd2(tableColumnNames, 'S.') }}, current_timestamp, NULL
+INSERT INTO {{ tableFullName }} ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }})
+SELECT {{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'S.') }}, {{ scd2Now('current_timestamp', strategyStartTsType) }}, NULL
 FROM {{ tableFullName }}_scd2_staging S
 LEFT JOIN {{ tableFullName }} T
 ON {{ renderStrategyKeyJoinCondition('T', 'S', strategyKey) }} AND T.{{ strategyEndTs }} IS NULL

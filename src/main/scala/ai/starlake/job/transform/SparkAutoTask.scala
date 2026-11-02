@@ -15,7 +15,7 @@ import ai.starlake.utils.repackaged.BigQuerySchemaConverters
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
-import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
 import org.apache.spark.sql.{DataFrame, SaveMode}
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
@@ -535,34 +535,19 @@ class SparkAutoTask(
   private def updateSparkTableSchema(incomingSchema: StructType): Unit = {
     val incomingSchemaWithSCD2Support =
       if (writeStrategy.getEffectiveType() == WriteStrategyType.SCD2) {
-        val startTs = writeStrategy.startTs.getOrElse(settings.appConfig.scd2StartTimestamp)
-        val endTs = writeStrategy.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
-
-        val scd2FieldsFound =
-          incomingSchema.fields.exists(_.name.toLowerCase() == startTs.toLowerCase())
-
-        if (!scd2FieldsFound) {
-          val incomingSchemaWithScd2 =
-            incomingSchema
-              .add(
-                StructField(
-                  startTs,
-                  TimestampType,
-                  nullable = true
-                )
+        // Each validity column that the incoming schema lacks, with its type (#1884, #1885)
+        val (startTs, endTs) = writeStrategy.validityColumns()
+        val (startType, endType) = writeStrategy.validityColumnTypes()
+        List(startTs -> startType, endTs -> endType)
+          .filter(_._1.nonEmpty)
+          .distinctBy(_._1.toLowerCase)
+          .foldLeft(incomingSchema) { case (schema, (column, primitiveType)) =>
+            if (schema.fields.exists(_.name.equalsIgnoreCase(column))) schema
+            else
+              schema.add(
+                StructField(column, WriteStrategy.validitySparkType(primitiveType), nullable = true)
               )
-              .add(
-                StructField(
-                  endTs,
-                  TimestampType,
-                  nullable = true
-                )
-              )
-          incomingSchemaWithScd2
-        } else {
-          incomingSchema
-        }
-
+          }
       } else {
         incomingSchema
       }

@@ -30,3 +30,5 @@
     {% for columnName in columnNames %}{{ table }}.{{ quote }}{{ unquote(columnName, quote) }}{{ quote }}{% if not loop.last %}, {% endif %}{%endfor%}
 {% endmacro %}
 
+{# The value of an SCD2 validity column at the time of the run: a date for a DATE column (#1885) #}
+{% macro scd2Now(now, columnType) %}{% if columnType == 'DATE' %}CAST({{ now }} AS DATE){% else %}{{ now }}{% endif %}{% endmacro %}

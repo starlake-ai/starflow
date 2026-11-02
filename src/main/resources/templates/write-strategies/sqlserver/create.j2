@@ -19,6 +19,6 @@
 {% endif %}
 
 {% if strategyType == 'SCD2' %}
-ALTER TABLE {{ tableFullName }} ADD {{ strategyStartTs }} DATETIME2;
-ALTER TABLE {{ tableFullName }} ADD {{ strategyEndTs }} DATETIME2;
+{% if not strategyStartTsSelected %}ALTER TABLE {{ tableFullName }} ADD {{ strategyStartTs }} {{ strategyStartTsType }};{% endif %}
+{% if not strategyEndTsSelected %}ALTER TABLE {{ tableFullName }} ADD {{ strategyEndTs }} {{ strategyEndTsType }};{% endif %}
 {% endif %}

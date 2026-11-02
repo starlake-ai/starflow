@@ -232,6 +232,14 @@
         "endTs": {
           "$ref": "#/definitions/ConvertibleToString",
           "description": "column name to use for the end timestamp.\n This is used to update existing records in the target table by strategy SCD2."
+        },
+        "startTsType": {
+          "$ref": "#/definitions/ConvertibleToString",
+          "description": "name of a type of the project (metadata/types) for the start column of strategy SCD2: a date or a timestamp type.\n The type of the column when the attributes do not declare it. TIMESTAMP by default."
+        },
+        "endTsType": {
+          "$ref": "#/definitions/ConvertibleToString",
+          "description": "name of a type of the project (metadata/types) for the end column of strategy SCD2: a date or a timestamp type.\n The type of the column when the attributes do not declare it. TIMESTAMP by default."
         }
       }
     },

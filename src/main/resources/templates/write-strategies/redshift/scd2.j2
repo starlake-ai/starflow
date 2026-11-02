@@ -26,10 +26,10 @@ CREATE TABLE {{ tableFullNameIncoming }} AS
 
 MERGE INTO {{ tableFullName }} USING {{ tableFullNameIncoming }}
 ON ({{ renderStrategyJoinConditionWithPseudo(tableFullNameIncoming, '{{ tableFullName }}', strategyKey) }})
-WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = CURRENT_TIMESTAMP
+WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP', strategyEndTsType) }}
 WHEN NOT MATCHED THEN
-    INSERT ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
-    VALUES ({{ renderColumnsWithoutScd2(tableColumnNames, tableFullNameIncoming + '.') }}, CURRENT_TIMESTAMP, NULL);
+    INSERT ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
+    VALUES ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, tableFullNameIncoming + '.') }}, {{ scd2Now('CURRENT_TIMESTAMP', strategyStartTsType) }}, NULL);
 
 DROP VIEW IF EXISTS #SL_INCOMING;
 DROP TABLE {{ tableFullNameIncoming }};
@@ -56,10 +56,10 @@ CREATE TABLE {{ tableFullName }}_INCOMING AS
 MERGE INTO {{ tableFullName }} USING {{ tableFullName }}_INCOMING
 ON ({{ renderStrategyJoinConditionWithPseudo(tableFullNameIncoming, '{{ tableFullName }}', strategyKey) }})
 WHEN MATCHED THEN
-    UPDATE SET {{ strategyEndTs }} = CURRENT_TIMESTAMP
+    UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP', strategyEndTsType) }}
 WHEN NOT MATCHED THEN
-    INSERT ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
-    VALUES ({{ renderColumnsWithoutScd2(tableColumnNames, tableFullNameIncoming + '.') }}, CURRENT_TIMESTAMP, NULL);
+    INSERT ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
+    VALUES ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, tableFullNameIncoming + '.') }}, {{ scd2Now('CURRENT_TIMESTAMP', strategyStartTsType) }}, NULL);
 
 
 DROP VIEW IF EXISTS #SL_INCOMING;
