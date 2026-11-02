@@ -38,6 +38,10 @@ for ((i = 0; i < $#; i++)); do
 done
 printf 'SUBMIT\topts=%s\tmaster=%s\tconf_dir=%s\tsl_env=%s\tsl_root=%s\tmemory=%s\tnice=%s\tconf_options=%s\n' \
   "$opts" "$master" "${SPARK_CONF_DIR:-}" "${SL_ENV:-}" "${SL_ROOT:-}" "${SPARK_DRIVER_MEMORY:-}" "$(nice)" "${SPARK_CONF_OPTIONS:-}" >>"$STUB_LOG"
+# As spark-class does, on stderr and before running anything.
+if [ -n "${SPARK_PRINT_LAUNCH_COMMAND:-}" ] && [ -z "${STUB_NO_LAUNCH:-}" ]; then
+  echo "Spark Command: $JAVA_HOME/bin/java -cp /stub/sl.jar:/stub/jars/* -Xmx${SPARK_DRIVER_MEMORY:-} $opts --add-opens=java.base/stub=ALL-UNNAMED -Djdk.stub=true org.apache.spark.deploy.SparkSubmit --master $master" >&2
+fi
 [ -n "${STUB_SUBMIT_EXIT:-}" ] && exit "$STUB_SUBMIT_EXIT"
 case "$opts" in
   *-XX:ArchiveClassesAtExit=*)
@@ -53,7 +57,8 @@ exit "${STUB_EXIT_AFTER_DUMP:-0}"
 EOF
   cat >"$ROOT/jdk/bin/java" <<'EOF'
 #!/usr/bin/env bash
-printf 'JAVA\t%s\n' "$*" >>"$STUB_LOG"
+last="${!#}"
+printf 'JAVA\tspark_home=%s\thostname=%s\tlast=%s\t%s\n' "${SPARK_HOME:-}" "${SPARK_LOCAL_HOSTNAME:-}" "$last" "$*" >>"$STUB_LOG"
 exit 0
 EOF
   chmod +x "$ROOT/bin/spark/bin/spark-submit" "$ROOT/jdk/bin/java"
@@ -283,15 +288,6 @@ assert_cds_inactive() {
   SPARK_MASTER_URL=spark://cluster:7077 run "$INSTALL/starlake.sh" validate
   [ "$status" -eq 0 ]
   assert_cds_inactive
-}
-
-@test "SL_RUN_MODE=main does not use it" {
-  "$INSTALL/starlake.sh" appcds-build
-  : >"$STUB_LOG"
-  SL_RUN_MODE=main run "$INSTALL/starlake.sh" validate
-  [ "$status" -eq 0 ]
-  grep -q '^JAVA.*ai.starlake.job.Main validate' "$STUB_LOG"
-  ! grep -q 'SharedArchiveFile' "$STUB_LOG"
 }
 
 @test "spark config beyond logging disables it so the config is not ignored" {
@@ -573,7 +569,6 @@ EOF
   SPARK_MASTER_URL=spark://cluster:7077 "$INSTALL/starlake.sh" validate
   SPARK_CONF_DIR=/my/conf "$INSTALL/starlake.sh" validate
   SPARK_DRIVER_OPTIONS="-XX:SharedArchiveFile=/mine.jsa" "$INSTALL/starlake.sh" validate
-  SL_RUN_MODE=main "$INSTALL/starlake.sh" validate
   assert_no_new_training 1
 }
 
@@ -1037,4 +1032,158 @@ YML
   printf 'application:\r\n  connectionRef: duck\r\n  connections:\r\n    duck:\r\n      type: jdbc\r\n' >metadata/application.sl.yml
   transform
   assert_c1
+}
+
+# SL_RUN_MODE=main: the JVM of spark-submit without spark-submit
+
+last_java() { grep '^JAVA' "$STUB_LOG" | tail -1; }
+main() { SL_RUN_MODE=main run "$INSTALL/starlake.sh" "$@"; [ "$status" -eq 0 ]; }
+assert_main_archive() {
+  [[ "$(last_java)" == *"-XX:SharedArchiveFile=$(archive)"* ]]
+  [[ "$(last_java)" == *"-cp /stub/sl.jar:/stub/jars/*"* ]]
+  [[ "$(last_java)" == *"--add-opens=java.base/stub=ALL-UNNAMED -Djdk.stub=true"* ]]
+}
+assert_main_plain() {
+  [[ "$(last_java)" != *"SharedArchiveFile"* ]]
+  [[ "$(last_java)" == *"sun.security.krb5"* ]]
+}
+
+@test "main runs the Starlake main class without spark-submit" {
+  main validate
+  [[ "$(last_java)" == *"ai.starlake.job.Main validate" ]]
+  [ -z "$(last_submit)" ]
+}
+
+@test "main without an archive has the classpath order of spark-submit" {
+  main validate
+  sl="$INSTALL/bin/sl/starlake-core_2.13-9.9.9-assembly.jar"
+  [[ "$(last_java)" == *"-cp $sl:$INSTALL/bin/deps/dep.jar:$INSTALL/bin/spark/conf:$INSTALL/bin/spark/jars/*"* ]]
+  assert_main_plain
+}
+
+@test "main uses the archive with the JVM flags and classpath recorded from spark-submit" {
+  "$INSTALL/starlake.sh" appcds-build
+  main validate
+  assert_main_archive
+  [[ "$(last_java)" != *"sun.security.krb5"* ]]
+}
+
+@test "main does not inherit the flags of the training" {
+  "$INSTALL/starlake.sh" appcds-build
+  main validate
+  [[ "$(last_java)" != *"ArchiveClassesAtExit"* ]]
+  [[ "$(last_java)" != *"-Xmx"* ]]
+  [[ "$(last_java)" != *"org.apache.spark.deploy.SparkSubmit"* ]]
+}
+
+@test "main sets SPARK_HOME and SPARK_LOCAL_HOSTNAME as the default mode does" {
+  main validate
+  [[ "$(last_java)" == *"spark_home=$INSTALL/bin/spark"* ]]
+  [[ "$(last_java)" == *"hostname=127.0.0.1"* ]]
+}
+
+@test "main with a stale archive rebuilds it and uses it next time" {
+  "$INSTALL/starlake.sh" appcds-build
+  touch "$INSTALL/bin/deps/added.jar"
+  main validate
+  assert_main_plain
+  wait_for_rebuild 2
+  main validate
+  assert_main_archive
+}
+
+@test "an archive built without a recorded launch command leaves main plain" {
+  STUB_NO_LAUNCH=1 "$INSTALL/starlake.sh" appcds-build
+  [ -s "$(archive)" ]
+  main validate
+  assert_main_plain
+  run "$INSTALL/starlake.sh" validate
+  assert_cds_active
+}
+
+@test "a rebuild without a recorded launch command does not keep the previous one" {
+  "$INSTALL/starlake.sh" appcds-build
+  STUB_NO_LAUNCH=1 "$INSTALL/starlake.sh" appcds-build
+  main validate
+  assert_main_plain
+}
+
+@test "a failed rebuild keeps main on the previous archive" {
+  "$INSTALL/starlake.sh" appcds-build
+  STUB_NO_DUMP=1 run "$INSTALL/starlake.sh" appcds-build
+  [ "$status" -ne 0 ]
+  main validate
+  assert_main_archive
+}
+
+@test "training ignores SL_RUN_MODE=main, as only spark-submit can record the command" {
+  SL_RUN_MODE=main run "$INSTALL/starlake.sh" appcds-build
+  [ "$status" -eq 0 ]
+  [ -s "$(archive)" ]
+  [ -n "$(last_training)" ]
+}
+
+@test "main applies SPARK_DRIVER_OPTIONS after its own flags" {
+  SPARK_DRIVER_OPTIONS="-Dmine=1 -Dlog4j.configurationFile=/mine" main validate
+  [[ "$(last_java)" == *"log4j2.properties"*"-Dmine=1 -Dlog4j.configurationFile=/mine"* ]]
+}
+
+@test "main sets the heap only when SPARK_DRIVER_MEMORY is set by the user" {
+  main validate
+  [[ "$(last_java)" != *"-Xmx"* ]]
+  SPARK_DRIVER_MEMORY=2g main validate
+  [[ "$(last_java)" == *"-Xmx2g"* ]]
+}
+
+@test "main appends the Hadoop configuration as Spark does" {
+  "$INSTALL/starlake.sh" appcds-build
+  HADOOP_CONF_DIR=/hadoop YARN_CONF_DIR=/yarn SPARK_DIST_CLASSPATH=/dist.jar main validate
+  [[ "$(last_java)" == *"-cp /stub/sl.jar:/stub/jars/*:/hadoop:/yarn:/dist.jar "* ]]
+  assert_main_archive
+}
+
+@test "main puts a custom SPARK_CONF_DIR on the classpath and does not use the archive" {
+  "$INSTALL/starlake.sh" appcds-build
+  SPARK_CONF_DIR=/my/conf main validate
+  [[ "$(last_java)" == *":/my/conf:$INSTALL/bin/spark/jars/*"* ]]
+  assert_main_plain
+}
+
+@test "main uses C1 for a transform on JDBC and not for other commands" {
+  write_project
+  main transform --name dom.t
+  [[ "$(last_java)" == *"$C1_FLAG"* ]]
+  main validate
+  [[ "$(last_java)" != *"TieredStopAtLevel"* ]]
+}
+
+@test "main on a non-local master uses neither the archive nor C1" {
+  write_project
+  "$INSTALL/starlake.sh" appcds-build
+  SPARK_MASTER_URL=spark://cluster:7077 main transform --name dom.t
+  assert_main_plain
+  [[ "$(last_java)" != *"TieredStopAtLevel"* ]]
+}
+
+@test "SL_APPCDS=false keeps main away from the archive" {
+  "$INSTALL/starlake.sh" appcds-build
+  SL_APPCDS=false main validate
+  assert_main_plain
+}
+
+@test "import, xls2yml and yml2xls run through main with the archive" {
+  "$INSTALL/starlake.sh" appcds-build
+  for command in import xls2yml yml2xls; do
+    : >"$STUB_LOG"
+    run "$INSTALL/starlake.sh" "$command"
+    [ "$status" -eq 0 ]
+    [[ "$(last_java)" == *"ai.starlake.job.Main $command" ]]
+    assert_main_archive
+    [ -z "$(last_submit)" ]
+  done
+}
+
+@test "main keeps arguments with spaces together" {
+  main validate --name "a b"
+  [[ "$(last_java)" == *$'last=a b\t'* ]]
 }
