@@ -1036,12 +1036,14 @@ object BigQueryAutoTask {
 
   /** The schema of the table of an SCD2 strategy, with the validity columns of the strategy:
     * `startTs` and `endTs`, or the global `scd2StartTimestamp` and `scd2EndTimestamp`. Each one is
-    * added as a nullable TIMESTAMP when the schema does not have it (#1878). Other strategies keep
-    * the schema.
+    * added as a nullable column of its type, DATE or TIMESTAMP (#1885), when the schema does not
+    * have it (#1878). Other strategies keep the schema.
     *
     * @param existingSchema
-    *   the schema of the existing table, whose global validity columns, which earlier versions
-    *   added next to those of the strategy, are kept: a schema update cannot drop a column
+    *   the schema of the existing table. Its validity columns keep their definition, whatever the
+    *   type that the strategy now gives them: a schema update cannot change the type of a column.
+    *   Its global validity columns, which earlier versions added next to those of the strategy, are
+    *   kept: a schema update cannot drop a column.
     */
   def withSCD2Columns(
     schema: BQSchema,
@@ -1054,21 +1056,26 @@ object BigQueryAutoTask {
       val fields = schema.getFields.asScala.toList
       def lacks(fields: List[Field], column: String): Boolean =
         !fields.exists(_.getName.equalsIgnoreCase(column))
-      val validity = List(
-        strategy.startTs.getOrElse(settings.appConfig.scd2StartTimestamp),
-        strategy.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
-      ).filter(_.nonEmpty)
-        .distinctBy(_.toLowerCase)
-        .filter(lacks(fields, _))
-        .map { column =>
-          Field
-            .newBuilder(column, LegacySQLTypeName.TIMESTAMP)
-            .setMode(Field.Mode.NULLABLE)
-            .build()
+      val existingFields = existingSchema.toList.flatMap(_.getFields.asScala)
+      val (startTs, endTs) = strategy.validityColumns()
+      val (startType, endType) = strategy.validityColumnTypes()
+      val validity = List(startTs -> startType, endTs -> endType)
+        .filter(_._1.nonEmpty)
+        .distinctBy(_._1.toLowerCase)
+        .filter { case (column, _) => lacks(fields, column) }
+        .map { case (column, primitiveType) =>
+          existingFields.find(_.getName.equalsIgnoreCase(column)).getOrElse {
+            val columnType =
+              if (primitiveType == PrimitiveType.date) LegacySQLTypeName.DATE
+              else LegacySQLTypeName.TIMESTAMP
+            Field
+              .newBuilder(column, columnType)
+              .setMode(Field.Mode.NULLABLE)
+              .build()
+          }
         }
       val globals = List(settings.appConfig.scd2StartTimestamp, settings.appConfig.scd2EndTimestamp)
-      val earlier = existingSchema.toList
-        .flatMap(_.getFields.asScala)
+      val earlier = existingFields
         .filter(field => globals.exists(_.equalsIgnoreCase(field.getName)))
         .filter(field => lacks(fields ++ validity, field.getName))
       if (validity.isEmpty && earlier.isEmpty)

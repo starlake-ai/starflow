@@ -654,23 +654,22 @@ abstract class AutoTask(
       .getOrElse(Materialization.TABLE)
   }
 
-  private def buildAddSCD2ColumnsSqls(engineName: Engine): List[String] = {
-    this.taskDesc.writeStrategy match {
-      case Some(strategyOptions) if strategyOptions.getEffectiveType() == WriteStrategyType.SCD2 =>
-        val startTsCol = strategyOptions.startTs.getOrElse(settings.appConfig.scd2StartTimestamp)
-        val endTsCol = strategyOptions.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
-        val scd2Columns = List(startTsCol, endTsCol)
-        val alterTableSqls = scd2Columns.map { column =>
-          if (engineName.toString.toLowerCase() == "redshift")
-            s"ALTER TABLE $fullTableName ADD COLUMN $column TIMESTAMP"
-          else
-            s"ALTER TABLE $fullTableName ADD COLUMN IF NOT EXISTS $column TIMESTAMP NULL"
-        }
-        alterTableSqls
-      case _ =>
-        List.empty
-    }
-  }
+  /** The statements that add the SCD2 validity columns that the table lacks, with their types
+    * (#1885)
+    */
+  protected def buildAddSCD2ColumnsSqls(engineName: Engine): List[String] =
+    if (this.taskDesc.writeStrategy.exists(_.getEffectiveType() == WriteStrategyType.SCD2)) {
+      val (startTsCol, endTsCol) = writeStrategy.validityColumns()
+      val (startType, endType) = writeStrategy.validityColumnTypes()
+      List(startTsCol -> startType, endTsCol -> endType).map { case (column, primitiveType) =>
+        val columnType = WriteStrategy.validityColumnDdl(primitiveType, engineName.toString)
+        if (engineName.toString.toLowerCase() == "redshift")
+          s"ALTER TABLE $fullTableName ADD COLUMN $column $columnType"
+        else
+          s"ALTER TABLE $fullTableName ADD COLUMN IF NOT EXISTS $column $columnType NULL"
+      }
+    } else
+      List.empty
 
   def expectationStatements(): List[ExpectationSQL] = {
     if (settings.appConfig.expectations.active) {

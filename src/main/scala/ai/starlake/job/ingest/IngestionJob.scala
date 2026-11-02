@@ -69,6 +69,7 @@ trait IngestionJob
     val startTs = s.startTs.getOrElse(settings.appConfig.scd2StartTimestamp)
     val endTs = s.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
     s.copy(startTs = Some(startTs), endTs = Some(endTs))
+      .withDeclaredValidityTypes(schema.attributes)
   }
 
   def targetTableName: String = domain.finalName + "." + schema.finalName

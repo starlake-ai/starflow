@@ -25,10 +25,10 @@ CREATE TEMPORARY VIEW SL_INCOMING_ALL AS
 
 MERGE INTO {{ tableFullName }} USING SL_INCOMING_ALL
 ON ({{ renderStrategyJoinConditionWithPseudo('SL_INCOMING_ALL', '{{ tableFullName }}', strategyKey) }})
-WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = CURRENT_TIMESTAMP
+WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP', strategyEndTsType) }}
 WHEN NOT MATCHED THEN
-    INSERT ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
-    VALUES ({{ renderColumnsWithoutScd2(tableColumnNames, 'SL_INCOMING_ALL.') }}, CURRENT_TIMESTAMP, NULL);
+    INSERT ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
+    VALUES ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'SL_INCOMING_ALL.') }}, {{ scd2Now('CURRENT_TIMESTAMP', strategyStartTsType) }}, NULL);
 
 {%  else  %}
 CREATE TEMPORARY VIEW SL_INCOMING AS 
@@ -52,10 +52,10 @@ CREATE TEMPORARY VIEW SL_INCOMING_ALL AS
 MERGE INTO {{ tableFullName }} USING {{ tableFullName }}_INCOMING
 ON ({{ renderStrategyJoinConditionWithPseudo('SL_INCOMING_ALL', '{{ tableFullName }}', strategyKey) }})
 WHEN MATCHED THEN
-    UPDATE SET {{ strategyEndTs }} = CURRENT_TIMESTAMP
+    UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP', strategyEndTsType) }}
 WHEN NOT MATCHED THEN
-    INSERT ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
-    VALUES ({{ renderColumnsWithoutScd2(tableColumnNames, 'SL_INCOMING_ALL.') }}, CURRENT_TIMESTAMP, NULL);
+    INSERT ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
+    VALUES ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'SL_INCOMING_ALL.') }}, {{ scd2Now('CURRENT_TIMESTAMP', strategyStartTsType) }}, NULL);
 
 {% endif %}
 

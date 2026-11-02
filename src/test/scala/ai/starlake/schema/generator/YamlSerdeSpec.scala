@@ -797,6 +797,8 @@ object YamlConfigGenerators {
       on           <- Gen.option(arbitrary[MergeOn])
       startTs      <- Gen.option(arbitrary[String])
       endTs        <- Gen.option(arbitrary[String])
+      startTsType  <- Gen.option(arbitrary[String])
+      endTsType    <- Gen.option(arbitrary[String])
     } yield {
       WriteStrategy(
         `type` = strategyType,
@@ -806,7 +808,9 @@ object YamlConfigGenerators {
         queryFilter = queryFilter,
         on = on,
         startTs = startTs,
-        endTs = endTs
+        endTs = endTs,
+        startTsType = startTsType,
+        endTsType = endTsType
       )
     }
   }

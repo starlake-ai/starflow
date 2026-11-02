@@ -91,7 +91,7 @@ case class AutoTaskInfo(
     val st1 = writeStrategy.getOrElse(WriteStrategy(Some(WriteStrategyType.APPEND)))
     val startTs = st1.startTs.getOrElse(settings.appConfig.scd2StartTimestamp)
     val endTs = st1.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
-    st1.copy(startTs = Some(startTs), endTs = Some(endTs))
+    st1.copy(startTs = Some(startTs), endTs = Some(endTs)).withDeclaredValidityTypes(attributes)
   }
 
   @JsonIgnore
@@ -139,7 +139,8 @@ case class AutoTaskInfo(
       .map(
         _.checkValidity(
           this.domain,
-          Some(emptySchema.copy(name = this.name, metadata = Some(Metadata(sink = this.sink))))
+          Some(emptySchema.copy(name = this.name, metadata = Some(Metadata(sink = this.sink)))),
+          this.attributes
         )
       )
       .getOrElse(Right(true))
