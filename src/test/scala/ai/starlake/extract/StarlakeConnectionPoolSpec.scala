@@ -1,7 +1,11 @@
 package ai.starlake.extract
 
+import org.duckdb.DuckDBDriver
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import java.sql.DriverManager
+import scala.jdk.CollectionConverters._
 
 class StarlakeConnectionPoolSpec extends AnyFlatSpec with Matchers {
 
@@ -28,6 +32,22 @@ class StarlakeConnectionPoolSpec extends AnyFlatSpec with Matchers {
 
     // only the surviving entry remains in the pool
     StarlakeConnectionPool.clearDuckdbPool(_ => true) shouldBe 1
+  }
+
+  "getConnection" should "open DuckDB without DriverManager, whose scan loads every JDBC driver" in {
+    val registered = DriverManager.getDrivers.asScala.collect { case d: DuckDBDriver => d }.toList
+    registered.foreach(DriverManager.deregisterDriver)
+    StarlakeConnectionPool.clearDuckdbPool()
+    try {
+      val conn = StarlakeConnectionPool.getConnection(None, options("no_scan"))
+      val rs = conn.createStatement().executeQuery("select 42")
+      rs.next() shouldBe true
+      rs.getInt(1) shouldBe 42
+      conn.close()
+    } finally {
+      StarlakeConnectionPool.clearDuckdbPool()
+      registered.foreach(DriverManager.registerDriver)
+    }
   }
 
   "withQodToken" should "add the QoD token to a tokenless Flight SQL connection" in {

@@ -9,6 +9,12 @@ class UtilsSpec extends TestHelper {
       val expected = "java.lang.Exception: test"
       Utils.exceptionAsString(new Exception("test")) should startWith(expected)
     }
+    "moduleExists" should "find a Scala object on the classpath and not a missing one" in {
+      Utils.moduleExists("ai.starlake.utils.Utils") shouldBe true
+      Utils.moduleExists("ai.starlake.utils.NoSuchObject") shouldBe false
+      Utils.moduleExists("java.lang.String") shouldBe false
+    }
+
     "BigQuery Table Creation / Write Mapping" should "Map to correct BQ Mappings" in {
       Utils.getDBDisposition(WriteMode.OVERWRITE) should equal(
         ("CREATE_IF_NEEDED", "WRITE_TRUNCATE")
