@@ -178,6 +178,14 @@ then
   SL_JAR_NAME=$SL_ARTIFACT_NAME-$SL_VERSION-assembly.jar
 fi
 
+# Outside bin/: the Docker image copies bin/, and an archive built for another path is unusable.
+APPCDS_DIR="$SCRIPT_DIR/.appcds"
+APPCDS_ARCHIVE="$APPCDS_DIR/starlake.jsa"
+APPCDS_FINGERPRINT="$APPCDS_DIR/starlake.fingerprint"
+APPCDS_CONF_DIR="$APPCDS_DIR/conf"
+APPCDS_LOCK="$APPCDS_DIR/build.lock"
+APPCDS_FAILED="$APPCDS_DIR/build.failed"
+
 if [[ -n "${https_proxy}" ]] || [[ -n "${http_proxy}" ]]; then
   PROXY=${https_proxy:-$http_proxy}
 fi
@@ -280,11 +288,9 @@ if [ -n "$HTTP_PROXY" ]; then
     fi
 fi
 
-if [ -n "$SPARK_DRIVER_OPTIONS" ]; then
-  SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS "
-else
-  SPARK_DRIVER_OPTIONS="${JAVA_ARGS[@]}"
-fi
+# Launcher flags first: on a repeated -D the JVM keeps the last one, so the user's
+# options win.
+SPARK_DRIVER_OPTIONS="${JAVA_ARGS[*]} $SPARK_DRIVER_OPTIONS"
 
 export JAVA_OPTS="$JAVA_OPTS ${JAVA_ARGS[@]}"
 
@@ -493,6 +499,147 @@ launch_setup() {
   fi
 }
 
+# AppCDS: an archive of parsed classes, memory-mapped by the JVM to cut startup. It
+# needs an empty SPARK_CONF_DIR, because the JVM refuses to dump or use an archive
+# with a non-empty directory on the classpath, and spark-submit puts the conf dir there.
+appcds_jars() {
+  # Trailing slashes: find does not descend into a symlink given without one.
+  find "$SPARK_TARGET_FOLDER/jars/" "$DEPS_EXTRA_LIB_FOLDER/" "$STARLAKE_EXTRA_LIB_FOLDER/" -maxdepth 1 -name '*.jar' "$@"
+}
+
+appcds_fingerprint() {
+  {
+    command -v java
+    if [ -f "$JAVA_HOME/release" ]; then cat "$JAVA_HOME/release"; fi
+    appcds_jars | LC_ALL=C sort
+  } | cksum
+}
+
+# Compares with a record of a build, which holds the fingerprint and is dated from the
+# start of that build: a jar changed while it ran still counts as a change.
+appcds_changed_since() {
+  [ "$(appcds_fingerprint)" != "$(cat "$1" 2>/dev/null)" ] ||
+    [ -n "$(appcds_jars -newer "$1" | head -n 1)" ]
+}
+
+# The JVM silently ignores an archive that no longer matches, so detect it here.
+appcds_is_stale() {
+  appcds_changed_since "$APPCDS_FINGERPRINT"
+}
+
+# Anything but the logging config would be ignored once SPARK_CONF_DIR points elsewhere.
+spark_conf_is_default() {
+  local file
+  for file in "$SPARK_TARGET_FOLDER/conf/"*; do
+    case "$(basename "$file")" in
+      log4j2.properties|*.template|'*') ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# A build killed before releasing its lock must not block the next ones forever.
+clear_dead_appcds_lock() {
+  if [ -n "$(find "$APPCDS_LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]
+  then
+    rmdir "$APPCDS_LOCK" 2>/dev/null || true
+  fi
+}
+
+# Rebuilds behind the command, which goes on at normal speed. Returns non-zero only when
+# no rebuild can happen: a read-only install, an install path with spaces, or a build
+# that already failed on these jars.
+start_appcds_rebuild() {
+  [ -w "$APPCDS_DIR" ] || return 1
+  [[ "$SCRIPT_DIR" != *[[:space:]]* ]] || return 1
+  clear_dead_appcds_lock
+  [ ! -d "$APPCDS_LOCK" ] || return 0
+  appcds_changed_since "$APPCDS_FAILED" || return 1
+  echo "The jars or the JDK changed: rebuilding the AppCDS archive in the background." >&2
+  nohup nice -n 10 bash "${BASH_SOURCE[0]}" appcds-build </dev/null >"$APPCDS_DIR/build.log" 2>&1 &
+}
+
+enable_appcds() {
+  if [ "$SL_APPCDS" = "false" ] || [ ! -f "$APPCDS_ARCHIVE" ] || [ -n "$SPARK_CONF_DIR" ]
+  then
+    return 0
+  fi
+  case "$SPARK_DRIVER_OPTIONS" in
+    *SharedArchiveFile*|*ArchiveClassesAtExit*|*-Xshare*) return 0 ;;
+  esac
+  spark_conf_is_default || return 0
+  if appcds_is_stale
+  then
+    start_appcds_rebuild || echo "Warning: the AppCDS archive is out of date and could not be rebuilt automatically, startup will be slower. Run '${BASH_SOURCE[0]} appcds-build' to retry, or set SL_APPCDS=false to silence this." >&2
+    return 0
+  fi
+  export SPARK_CONF_DIR="$APPCDS_CONF_DIR"
+  SPARK_DRIVER_OPTIONS="-Dlog4j.configurationFile=$SPARK_TARGET_FOLDER/conf/log4j2.properties -XX:SharedArchiveFile=$APPCDS_ARCHIVE -Xshare:auto -Xlog:cds=off -Xlog:cds+dynamic=off $SPARK_DRIVER_OPTIONS"
+}
+
+build_appcds_archive() {
+  if [ "$SL_APPCDS" = "false" ] || [ "$SL_DRY_RUN" = "true" ]
+  then
+    return 0
+  fi
+  if [[ "$SCRIPT_DIR" == *[[:space:]]* ]]
+  then
+    echo "Skipping the AppCDS archive: Spark driver options cannot quote an install path with spaces ($SCRIPT_DIR)." >&2
+    return 0
+  fi
+  mkdir -p "$APPCDS_CONF_DIR"
+  clear_dead_appcds_lock
+  if ! mkdir "$APPCDS_LOCK" 2>/dev/null
+  then
+    echo "An AppCDS archive build is already running."
+    return 0
+  fi
+  trap 'rmdir "$APPCDS_LOCK" 2>/dev/null' EXIT
+  echo "Building the AppCDS archive to speed up startup (set SL_APPCDS=false to skip)..."
+  rm -f "$APPCDS_ARCHIVE.tmp"
+  appcds_fingerprint >"$APPCDS_FINGERPRINT.tmp"
+  # Train on a throwaway project that opens a Spark session: no user project exists at
+  # install time, and this trains nearly as well as a real one.
+  local training_root training_status=0
+  training_root=$(mktemp -d)
+  mkdir -p "$training_root/metadata"
+  cat >"$training_root/metadata/application.sl.yml" <<'EOF'
+version: 1
+application:
+  connectionRef: sparkLocal
+  connections:
+    sparkLocal:
+      type: fs
+EOF
+  (
+    cd "$training_root"
+    unset SL_ENV SPARK_CONF_OPTIONS SPARK_EXTRA_PACKAGES SL_DEBUG
+    SL_ROOT="$training_root"
+    # Training only loads classes: no need for the heap of the user's jobs.
+    export SPARK_MASTER_URL="local[*]" SPARK_CONF_DIR="$APPCDS_CONF_DIR" SPARK_DRIVER_MEMORY=1g
+    SPARK_DRIVER_OPTIONS="${JAVA_ARGS[*]} -Dlog4j.configurationFile=$SPARK_TARGET_FOLDER/conf/log4j2.properties -XX:ArchiveClassesAtExit=$APPCDS_ARCHIVE.tmp"
+    launch_starlake validate
+  ) >"$training_root/training.log" 2>&1 || training_status=$?
+  if [ "$training_status" -ne 0 ] || [ ! -s "$APPCDS_ARCHIVE.tmp" ]
+  then
+    tail -n 5 "$training_root/training.log" >&2
+    rm -rf "$training_root" "$APPCDS_ARCHIVE.tmp"
+    mv -f "$APPCDS_FINGERPRINT.tmp" "$APPCDS_FAILED"
+    echo "Warning: could not build the AppCDS archive, startup will be slower." >&2
+    return 1
+  fi
+  rm -rf "$training_root"
+  rm -f "$APPCDS_FAILED"
+  mv -f "$APPCDS_ARCHIVE.tmp" "$APPCDS_ARCHIVE"
+  mv -f "$APPCDS_FINGERPRINT.tmp" "$APPCDS_FINGERPRINT"
+}
+
+# Runs in a new process to read the versions.sh that setup just wrote. Never fails the
+# install: the archive only makes startup faster.
+build_appcds_after_setup() {
+  bash "${BASH_SOURCE[0]}" appcds-build || true
+}
+
 launch_starlake() {
   if [ -f "$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME" ]
   then
@@ -565,6 +712,7 @@ launch_starlake() {
       # the command below requires --jars "$extra_jars" to run on distributed modes
       if [[ $SPARK_MASTER_URL == local* ]]
       then
+        enable_appcds
         if [ $(ls "$DEPS_EXTRA_LIB_FOLDER/"*.jar | wc -l) -ne 0 ]
         then
           extra_classpath="$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME:$(echo "$DEPS_EXTRA_LIB_FOLDER/"*.jar | tr ' ' ':')"
@@ -654,6 +802,7 @@ case "$1" in
       export SL_VERSION
     fi
     launch_setup "$TARGET_REF"
+    build_appcds_after_setup
     echo
     echo "Installation done. You're ready to enjoy Starflow!"
     echo If any errors happen during installation. Please try to install again or open an issue.
@@ -712,9 +861,13 @@ case "$1" in
         # skips bin/spark when it is already present (handled above), and writes
         # a brand new versions.sh from scratch (no line-by-line sed patching).
         launch_setup "$TARGET_REF"
+        build_appcds_after_setup
 
         echo "Upgrade complete."
     fi
+    ;;
+  appcds-build)
+    build_appcds_archive
     ;;
   serve)
     chmod +x $SCRIPT_DIR/bin/api/git/*.sh
