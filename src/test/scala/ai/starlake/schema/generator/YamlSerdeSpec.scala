@@ -128,6 +128,45 @@ class YamlSerdeSpec extends TestHelper with ScalaCheckPropertyChecks with TryVal
     }
   }
 
+  "Config validation" should "parse the schema only once" in {
+    val schema = YamlSerde.starlakeSchema
+    YamlSerde.deserializeYamlTask(
+      "version: 1\ntask:\n  name: \"t\"\n  domain: \"d\"\n  table: \"t\"\n",
+      "t.sl.yml"
+    )
+    YamlSerde.starlakeSchema should be theSameInstanceAs schema
+  }
+
+  it should "still reject an invalid file after a valid one" in {
+    val valid = "version: 1\ntask:\n  name: \"t\"\n  domain: \"d\"\n  table: \"t\"\n"
+    val invalid = "version: 1\ntask:\n  name: 42\n  domain: [\"d\"]\n"
+    YamlSerde.deserializeYamlTask(valid, "valid.sl.yml").name shouldBe "t"
+    a[Exception] should be thrownBy YamlSerde.deserializeYamlTask(invalid, "invalid.sl.yml")
+    YamlSerde.deserializeYamlTask(valid, "valid.sl.yml").name shouldBe "t"
+  }
+
+  it should "give the same result from concurrent threads" in {
+    val content = "version: 1\ntask:\n  name: \"t\"\n  domain: \"d\"\n  table: \"t\"\n"
+    val expected = YamlSerde.deserializeYamlTask(content, "t.sl.yml")
+    val threads = (1 to 8).map { _ =>
+      val result = new java.util.concurrent.atomic.AtomicReference[Any]()
+      val thread = new Thread(() =>
+        result.set(
+          scala.util.Try((1 to 20).map(_ => YamlSerde.deserializeYamlTask(content, "t.sl.yml")))
+        )
+      )
+      thread.start()
+      thread -> result
+    }
+    threads.foreach { case (thread, result) =>
+      thread.join()
+      result.get() match {
+        case Success(tasks: Seq[_]) => tasks.distinct shouldBe Seq(expected)
+        case other                  => fail(s"Validation failed: $other")
+      }
+    }
+  }
+
   "YamlSerializer" should "round-trip any Yaml Extract Config" in {
     import YamlConfigGenerators.*
     forAll { (yamlExtractConfig: ExtractDesc) =>

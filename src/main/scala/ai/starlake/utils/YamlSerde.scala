@@ -57,6 +57,32 @@ object YamlSerde extends LazyLogging with YamlUtils {
     mapper.readValue(jsonContent, classOf[Map[String, Any]])
   }
 
+  /** Built once: this means parsing a 110 KB file, and a project validates many config files. */
+  private[starlake] lazy val starlakeSchema: Schema = forceLocaleIn(Locale.ROOT) {
+    // javaSemantics no longer exists in 2.0.4: losslessNarrowing(true) reproduces the same
+    // effect, since TypeFactory's only javaSemantics check was `isJavaSemantics() || isLosslessNarrowing()`.
+    val schemaRegistryConfig = SchemaRegistryConfig
+      .builder()
+      .pathType(PathType.JSON_PATH)
+      .formatAssertionsEnabled(true)
+      .losslessNarrowing(true)
+      .build()
+
+    val registry = SchemaRegistry.withDefaultDialect(
+      SpecificationVersion.DRAFT_2019_09,
+      (builder: SchemaRegistry.Builder) => {
+        builder.schemaRegistryConfig(schemaRegistryConfig); ()
+      }
+    )
+
+    // The file is plain JSON, which the JSON parser reads far faster than the YAML one.
+    registry.getSchema(
+      adaptSchemaV7ToStrictV201909(
+        new ObjectMapper().readTree(getClass.getResourceAsStream("/starlake.json"))
+      )
+    )
+  }
+
   private def forceLocaleIn[T](locale: Locale)(func: => T) = {
     val previousDefault = Locale.getDefault
     Locale.setDefault(locale)
@@ -159,26 +185,7 @@ object YamlSerde extends LazyLogging with YamlUtils {
     }
     val validationResult: Result =
       forceLocaleIn(Locale.ROOT) { // Use root instead of ENGLISH otherwise it fallbacks to local language if it exists. ROOT messages are in ENGLISH.
-        // javaSemantics no longer exists in 2.0.4: losslessNarrowing(true) reproduces the same
-        // effect, since TypeFactory's only javaSemantics check was `isJavaSemantics() || isLosslessNarrowing()`.
-        val schemaRegistryConfig = SchemaRegistryConfig
-          .builder()
-          .pathType(PathType.JSON_PATH)
-          .formatAssertionsEnabled(true)
-          .losslessNarrowing(true)
-          .build()
-
-        val registry = SchemaRegistry.withDefaultDialect(
-          SpecificationVersion.DRAFT_2019_09,
-          (builder: SchemaRegistry.Builder) => {
-            builder.schemaRegistryConfig(schemaRegistryConfig); ()
-          }
-        )
-
-        val starlakeSchema = adaptSchemaV7ToStrictV201909(
-          mapper.readTree(getClass.getResourceAsStream("/starlake.json"))
-        )
-        val schema = registry.getSchema(starlakeSchema)
+        val schema = starlakeSchema
         val executionContext = schema.createExecutionContext()
         executionContext.setWalkConfig(
           WalkConfig

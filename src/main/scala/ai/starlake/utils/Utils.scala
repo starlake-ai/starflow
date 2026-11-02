@@ -73,6 +73,12 @@ object Utils extends LazyLogging {
     obj.instance.asInstanceOf[T]
   }
 
+  /** Whether a Scala object is on the classpath. Starting scala-reflect, as loadInstance does,
+    * takes a large part of the startup of the CLI.
+    */
+  def moduleExists(objectName: String): Boolean =
+    Try(Class.forName(objectName + "$", false, getClass.getClassLoader)).isSuccess
+
   private def closeAndAddSuppressed(e: Throwable, resource: Closeable): Unit = {
     import scala.language.reflectiveCalls
     if (e != null) {

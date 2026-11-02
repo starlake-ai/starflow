@@ -37,8 +37,7 @@ import scala.util.Try
   */
 trait StorageHandler extends LazyLogging {
   val starApiIsActive: Boolean = {
-    Try(Utils.loadInstance("ai.starlake.api.Application")).isSuccess
-
+    Utils.moduleExists("ai.starlake.api.Application")
   }
   protected def pathSecurityCheck(path: Path): Unit = {
     if (starApiIsActive && path.toString.contains("..")) {

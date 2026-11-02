@@ -45,6 +45,11 @@ __Improvement__:
   - `starlake serve`, `starlake.cmd` and the Docker image do not use it.
 - **Faster `transform` on JDBC connections, DuckDB included**: the launcher starts the JVM with the C1 compiler only when the task runs on a `jdbc` connection, since the database does the work and the JVM only orchestrates it. Measured on the quickstart: a transform from 3.3s to 2.6s of real time and from 9.9s to 3.4s of CPU, a 400 million row DuckDB query from 10.2s to 8.0s. Spark and BigQuery are unchanged.
   - The launcher reads the connection from `application.sl.yml` and the env files. It keeps the default compilers when it cannot tell, or when a file under `metadata/transform` holds a `connectionRef`, or `SL_CONNECTION_REF`, `SL_ACTIVE_CONNECTION_REF`, `SL_TRANSFORM_CONNECTION_REF` or `SL_METADATA` is set. Set `SL_JDBC_C1=false` to turn it off.
+  - A task on a JDBC connection that sinks elsewhere without any `connectionRef` under `metadata/transform` still runs on Spark, and does so with C1: the results are the same, but it may be slower. Set `SL_JDBC_C1=false` for such a project.
+- **Less startup work on every CLI command, and on DuckDB connections**: on the quickstart, a DuckDB transform takes about 23% less time (5.0s to 3.9s on the same machine and settings).
+  - A DuckDB connection opens its driver directly, so the other JDBC drivers on the classpath no longer load. Other JDBC databases are unchanged.
+  - The JSON schema of the config files is parsed once, not once per validated file.
+  - The check for the API server no longer starts Scala reflection.
 - **`SPARK_DRIVER_OPTIONS` no longer drops the launcher's JVM flags**: the `HTTP_PROXY`, `HTTPS_PROXY` and IPv6 flags now reach the driver when this variable is set. Your own options come last, so they still win.
 - **DuckDB JDBC driver upgraded to 2.0.0.0**, along with the installer pin. DuckDB 2.0 changes behavior in ways that reach Starflow projects:
   - **Database files written by Starflow can no longer be opened by DuckDB 1.x** (CLI, Python package, UI): new databases use storage version 69. Existing files created by 1.x are read and written without being upgraded, so they stay readable by 1.x. To keep a file readable by 1.x tools, set `storage_compatibility_version` (or `STORAGE_VERSION` in `ATTACH`) in the connection `preActions`.

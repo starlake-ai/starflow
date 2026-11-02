@@ -4,7 +4,7 @@ import ai.starlake.config.ConnectionInfo
 import ai.starlake.utils.StarlakeJdbcOps
 import com.typesafe.scalalogging.LazyLogging
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
-import org.duckdb.DuckDBConnection
+import org.duckdb.{DuckDBConnection, DuckDBDriver}
 
 import java.sql.{Connection, DriverManager}
 import java.util.Properties
@@ -12,6 +12,14 @@ import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
 object StarlakeConnectionPool extends LazyLogging {
+
+  /** DriverManager initializes every JDBC driver of the classpath on first use: about 1100
+    * Snowflake classes for a project that only needs DuckDB.
+    */
+  private def openDuckDb(url: String, properties: Properties): Connection =
+    Option[Connection](new DuckDBDriver().connect(url, properties))
+      .getOrElse(DriverManager.getConnection(url, properties))
+
   private val hikariPools = scala.collection.concurrent.TrieMap[String, HikariDataSource]()
   private case class DuckDbPoolEntry(connection: Connection, lastAccessTime: Long)
   private val duckDbPool = scala.collection.concurrent.TrieMap[String, DuckDbPoolEntry]()
@@ -200,7 +208,7 @@ object StarlakeConnectionPool extends LazyLogging {
           case Some(entry) =>
             logger.debug(s"Removing closed DuckDB connection for $url")
             duckDbPool.remove(dbKey)
-            val sqlConn = DriverManager.getConnection(url, properties)
+            val sqlConn = openDuckDb(url, properties)
             duckDbPool.put(dbKey, DuckDbPoolEntry(sqlConn, System.currentTimeMillis()))
             sqlConn
           case _ =>
@@ -213,7 +221,7 @@ object StarlakeConnectionPool extends LazyLogging {
                 duckDbPool.remove(key)
               case None =>
             }
-            val sqlConn = DriverManager.getConnection(url, properties)
+            val sqlConn = openDuckDb(url, properties)
             duckDbPool.put(dbKey, DuckDbPoolEntry(sqlConn, System.currentTimeMillis()))
             sqlConn
         }
