@@ -325,36 +325,38 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final String SL_API_VERSION = getEnv("SL_API_VERSION").orElse(SL_VERSION);
 
     /**
-     * Fetch the latest released version of starlake from the GitHub Releases API.
-     * Falls back to the SL_VERSION environment variable if the fetch fails.
+     * Fetch the latest released version of starlake from the GitHub Releases API, or null when
+     * that fails: main then asks for SL_VERSION. This runs while the class loads, before the
+     * static proxy selector exists, hence a client of its own configured like the downloads one.
      */
     private static String getLatestGithubRelease() {
         try {
             String releaseUrl = "https://api.github.com/repos/starlake-ai/starflow/releases/latest";
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                    new java.net.URL(releaseUrl).openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                StringBuilder body = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    body.append(line);
-                }
-                // Parse: "tag_name": "v1.5.16"
-                java.util.regex.Matcher matcher = java.util.regex.Pattern
-                        .compile("\"tag_name\"\\s*:\\s*\"v([^\"]+)\"")
-                        .matcher(body.toString());
-                if (matcher.find()) {
-                    String version = matcher.group(1);
-                    System.out.println("Latest starlake release on GitHub: " + version);
-                    return version;
-                }
-            } finally {
-                conn.disconnect();
+            Setup selectorAndTrust = new Setup();
+            HttpClient.Builder builder = HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(5))
+                    .followRedirects(HttpClient.Redirect.ALWAYS);
+            configureClient(builder, selectorAndTrust, selectorAndTrust);
+            HttpRequest request = HttpRequest.newBuilder(URI.create(releaseUrl))
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = builder.build().send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                throw new IOException("HTTP status " + response.statusCode());
             }
+            // Parse: "tag_name": "v1.5.16"
+            java.util.regex.Matcher matcher = java.util.regex.Pattern
+                    .compile("\"tag_name\"\\s*:\\s*\"v([^\"]+)\"")
+                    .matcher(response.body());
+            if (matcher.find()) {
+                String version = matcher.group(1);
+                System.out.println("Latest starlake release on GitHub: " + version);
+                return version;
+            }
+            throw new IOException("no tag_name in the response");
         } catch (Exception e) {
-            System.err.println("Could not fetch the latest version from GitHub releases: " + e.getMessage());
+            System.err.println("Could not fetch the latest version from GitHub releases: " + e);
             System.err.println("Please set the SL_VERSION environment variable manually.");
         }
         return null;
@@ -743,21 +745,26 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final ProxySelector proxySelector = instance;
 
     private static void setHttpClient() throws NoSuchAlgorithmException, KeyManagementException {
+        configureClient(clientBuilder, proxySelector, alwaysTrustManager);
+    }
+
+    private static void configureClient(HttpClient.Builder builder, ProxySelector selector, TrustManager trustManager)
+            throws NoSuchAlgorithmException, KeyManagementException {
         setProxy();
-        clientBuilder.proxy(proxySelector);
+        builder.proxy(selector);
         if (username != null && password != null) {
             Authenticator authenticator = new UserPwdAuth();
-            clientBuilder.authenticator(authenticator);
+            builder.authenticator(authenticator);
         }
         if (host != null && envIsTrue("SL_INSECURE")) {
             System.out.println("Enabling insecure mode for SSL connections using proxy " + protocol + "://" + host + ":" + port);
             // Create a trust manager that does not validate certificate chains
-            TrustManager[] trustAllCerts = new TrustManager[]{alwaysTrustManager};
+            TrustManager[] trustAllCerts = new TrustManager[]{trustManager};
 
             // Install the all-trusting trust manager
             SSLContext sc = SSLContext.getInstance("SSL");
             sc.init(null, trustAllCerts, new java.security.SecureRandom());
-            clientBuilder.sslContext(sc);
+            builder.sslContext(sc);
         }
     }
 
@@ -1038,6 +1045,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
         try {
             if (args.length == 0) {
                 System.out.println("Please specify the target directory");
+                System.exit(1);
+            }
+
+            if (SL_VERSION == null) {
+                System.err.println("Error: could not determine the Starflow version to install. "
+                        + "Set SL_VERSION to the version you want, for example SL_VERSION=1.8.13.");
                 System.exit(1);
             }
 
