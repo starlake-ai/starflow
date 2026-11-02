@@ -37,7 +37,7 @@ for ((i = 0; i < $#; i++)); do
   esac
 done
 printf 'SUBMIT\topts=%s\tmaster=%s\tconf_dir=%s\tsl_env=%s\tsl_root=%s\tmemory=%s\tnice=%s\tconf_options=%s\n' \
-  "$opts" "$master" "${SPARK_CONF_DIR:-}" "${SL_ENV:-}" "${SL_ROOT:-}" "${SPARK_DRIVER_MEMORY:-}" "$(nice)" "${SPARK_CONF_OPTIONS:-}" >>"$STUB_LOG"
+  "$opts" "$master" "${SPARK_CONF_DIR:-}" "${SL_ENV:-}" "${SL_ROOT:-}" "${SPARK_DRIVER_MEMORY:-}" "$(ps -o ni= -p $$ | tr -d ' ')" "${SPARK_CONF_OPTIONS:-}" >>"$STUB_LOG"
 # As spark-class does, on stderr and before running anything.
 if [ -n "${SPARK_PRINT_LAUNCH_COMMAND:-}" ] && [ -z "${STUB_NO_LAUNCH:-}" ]; then
   echo "Spark Command: $JAVA_HOME/bin/java -cp /stub/sl.jar:/stub/jars/* -Xmx${SPARK_DRIVER_MEMORY:-} $opts --add-opens=java.base/stub=ALL-UNNAMED -Djdk.stub=true org.apache.spark.deploy.SparkSubmit --master $master" >&2
@@ -195,7 +195,7 @@ assert_cds_inactive() {
   run "$INSTALL/starlake.sh" appcds-build
   [ "$status" -eq 0 ]
   [ -z "$(ls -A "$BATS_TEST_TMPDIR/cwd")" ]
-  training_root="$(last_training | sed -E 's/.*sl_root=([^\t]*).*/\1/')"
+  training_root="$(last_training | tr '\t' '\n' | sed -n 's/^sl_root=//p')"
   [ -n "$training_root" ]
   [ ! -e "$training_root" ]
 }
@@ -712,7 +712,7 @@ EOF
   touch "$INSTALL/bin/deps/added.jar"
   "$INSTALL/starlake.sh" validate
   wait_for_rebuild 2
-  expected=$(( $(nice) + 10 ))
+  expected=$(( $(ps -o ni= -p $$) + 10 ))
   [ "$expected" -le 19 ] || expected=19
   [[ "$(last_training)" == *"nice=$expected"* ]]
 }
