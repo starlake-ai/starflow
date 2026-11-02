@@ -3,9 +3,12 @@
 # Runs the real distrib/starlake.sh in a throwaway install tree. Only the process
 # boundaries are stubbed: spark-submit, java and curl.
 #
+# The last section runs a real JVM, because only a JVM can tell whether it accepts an archive.
+#
 # Run with: bats src/test/shell/starlake_appcds.bats
 
 LAUNCHER="$BATS_TEST_DIRNAME/../../../distrib/starlake.sh"
+REAL_JAVA_HOME="${JAVA_HOME:-}"
 
 make_install() {
   ROOT="$1"
@@ -29,19 +32,25 @@ EOF
   # Records one tab-separated line per call. Dumps an archive the way the JVM does.
   cat >"$ROOT/bin/spark/bin/spark-submit" <<'EOF'
 #!/usr/bin/env bash
-opts=""; master=""; args=("$@")
+opts=""; master=""; version=""; args=("$@")
 for ((i = 0; i < $#; i++)); do
   case "${args[$i]}" in
     --driver-java-options) opts="${args[$((i + 1))]}" ;;
     --master) master="${args[$((i + 1))]}" ;;
+    --version) version=1 ;;
   esac
 done
-printf 'SUBMIT\topts=%s\tmaster=%s\tconf_dir=%s\tsl_env=%s\tsl_root=%s\tmemory=%s\tnice=%s\tconf_options=%s\n' \
-  "$opts" "$master" "${SPARK_CONF_DIR:-}" "${SL_ENV:-}" "${SL_ROOT:-}" "${SPARK_DRIVER_MEMORY:-}" "$(ps -o ni= -p $$ | tr -d ' ')" "${SPARK_CONF_OPTIONS:-}" >>"$STUB_LOG"
+if [ -n "$version" ]; then
+  printf 'PROBE\tconf_dir=%s\tcwd=%s\n' "${SPARK_CONF_DIR:-}" "$PWD" >>"$STUB_LOG"
+else
+  printf 'SUBMIT\topts=%s\tmaster=%s\tconf_dir=%s\tsl_env=%s\tsl_root=%s\tmemory=%s\tnice=%s\tconf_options=%s\thadoop=%s\n' \
+    "$opts" "$master" "${SPARK_CONF_DIR:-}" "${SL_ENV:-}" "${SL_ROOT:-}" "${SPARK_DRIVER_MEMORY:-}" "$(ps -o ni= -p $$ | tr -d ' ')" "${SPARK_CONF_OPTIONS:-}" "${HADOOP_CONF_DIR:-}${YARN_CONF_DIR:-}${SPARK_DIST_CLASSPATH:-}" >>"$STUB_LOG"
+fi
 # As spark-class does, on stderr and before running anything.
 if [ -n "${SPARK_PRINT_LAUNCH_COMMAND:-}" ] && [ -z "${STUB_NO_LAUNCH:-}" ]; then
-  echo "Spark Command: $JAVA_HOME/bin/java -cp /stub/sl.jar:/stub/jars/* -Xmx${SPARK_DRIVER_MEMORY:-} $opts --add-opens=java.base/stub=ALL-UNNAMED -Djdk.stub=true org.apache.spark.deploy.SparkSubmit --master $master" >&2
+  echo "Spark Command: $JAVA_HOME/bin/java -cp /stub/sl.jar:/stub/slf4j.jar:/stub/jars/* -Xmx${SPARK_DRIVER_MEMORY:-} $opts --add-opens=java.base/stub=ALL-UNNAMED -Djdk.stub=true org.apache.spark.deploy.SparkSubmit --master $master" >&2
 fi
+[ -n "$version" ] && exit 0
 [ -n "${STUB_SUBMIT_EXIT:-}" ] && exit "$STUB_SUBMIT_EXIT"
 case "$opts" in
   *-XX:ArchiveClassesAtExit=*)
@@ -57,6 +66,25 @@ exit "${STUB_EXIT_AFTER_DUMP:-0}"
 EOF
   cat >"$ROOT/jdk/bin/java" <<'EOF'
 #!/usr/bin/env bash
+# The wildcard of the Spark command, expanded with the jar Spark also lists on its own.
+case "$*" in
+  *-XshowSettings:properties*)
+    printf 'SETTINGS\t%s\n' "$*" >>"$STUB_LOG"
+    [ -z "${STUB_NO_SETTINGS:-}" ] || exit 1
+    cat >&2 <<'OUT'
+Property settings:
+    file.encoding = UTF-8
+    java.class.path = /stub/sl.jar
+        /stub/slf4j.jar
+        /stub/jars/b.jar
+        /stub/slf4j.jar
+        /stub/jars/a.jar
+    java.class.version = 65.0
+    java.home = /stub
+OUT
+    exit 0
+    ;;
+esac
 last="${!#}"
 printf 'JAVA\tspark_home=%s\thostname=%s\tlast=%s\t%s\n' "${SPARK_HOME:-}" "${SPARK_LOCAL_HOSTNAME:-}" "$last" "$*" >>"$STUB_LOG"
 exit 0
@@ -92,7 +120,7 @@ EOF
   cd "$BATS_TEST_TMPDIR/cwd"
 
   unset SPARK_CONF_DIR SPARK_DRIVER_OPTIONS SPARK_MASTER_URL SPARK_CONF_OPTIONS \
-    SL_APPCDS SL_ENV SL_ROOT SL_RUN_MODE SL_DRY_RUN SL_DEBUG SL_HTTP_PORT HTTP_PROXY HTTPS_PROXY
+    HADOOP_CONF_DIR YARN_CONF_DIR SPARK_DIST_CLASSPATH SL_APPCDS SL_ENV SL_ROOT SL_RUN_MODE SL_DRY_RUN SL_DEBUG SL_HTTP_PORT HTTP_PROXY HTTPS_PROXY
   export -n JAVA_OPTS 2>/dev/null || true
   unset JAVA_OPTS
 }
@@ -152,6 +180,7 @@ assert_cds_active() {
 assert_cds_inactive() {
   [[ "$(last_submit)" != *"SharedArchiveFile"* ]]
   [[ "$(last_submit)" != *"conf_dir=$INSTALL/.appcds/conf"* ]]
+  [[ "$(last_submit)" != *"starlake.classpath"* ]]
 }
 
 # JVM flag merging
@@ -187,7 +216,7 @@ assert_cds_inactive() {
   [[ "$(last_training)" == *"master=local[*]"* ]]
   [[ "$(last_training)" == *"sl_env="$'\t'* ]]
   [[ "$(last_training)" == *"memory=1g"* ]]
-  [[ "$(last_training)" == *"conf_options=" ]]
+  [[ "$(last_training)" == *"conf_options="$'\t'* ]]
   [[ "$(last_training)" != *"-Dmine=1"* ]]
 }
 
@@ -1036,11 +1065,12 @@ YML
 
 # SL_RUN_MODE=main: the JVM of spark-submit without spark-submit
 
+DEDUPLICATED_CLASSPATH="/stub/sl.jar:/stub/slf4j.jar:/stub/jars/b.jar:/stub/jars/a.jar"
 last_java() { grep '^JAVA' "$STUB_LOG" | tail -1; }
 main() { SL_RUN_MODE=main run "$INSTALL/starlake.sh" "$@"; [ "$status" -eq 0 ]; }
 assert_main_archive() {
   [[ "$(last_java)" == *"-XX:SharedArchiveFile=$(archive)"* ]]
-  [[ "$(last_java)" == *"-cp /stub/sl.jar:/stub/jars/*"* ]]
+  [[ "$(last_java)" == *"-cp $DEDUPLICATED_CLASSPATH"* ]]
   [[ "$(last_java)" == *"--add-opens=java.base/stub=ALL-UNNAMED -Djdk.stub=true"* ]]
 }
 assert_main_plain() {
@@ -1138,7 +1168,7 @@ assert_main_plain() {
 @test "main appends the Hadoop configuration as Spark does" {
   "$INSTALL/starlake.sh" appcds-build
   HADOOP_CONF_DIR=/hadoop YARN_CONF_DIR=/yarn SPARK_DIST_CLASSPATH=/dist.jar main validate
-  [[ "$(last_java)" == *"-cp /stub/sl.jar:/stub/jars/*:/hadoop:/yarn:/dist.jar "* ]]
+  [[ "$(last_java)" == *"-cp $DEDUPLICATED_CLASSPATH:/hadoop:/yarn:/dist.jar "* ]]
   assert_main_archive
 }
 
@@ -1186,4 +1216,298 @@ assert_main_plain() {
 @test "main keeps arguments with spaces together" {
   main validate --name "a b"
   [[ "$(last_java)" == *$'last=a b\t'* ]]
+}
+
+# The classpath of the archive
+
+argfile() { echo "$INSTALL/.appcds/starlake.classpath"; }
+assert_own_classpath() { [[ "$(last_submit)" == *"@$(argfile) "* ]]; }
+assert_spark_classpath() { [[ "$(last_submit)" != *"starlake.classpath"* ]]; }
+
+@test "the build expands the classpath of Spark without duplicates and in the order of the JVM" {
+  run "$INSTALL/starlake.sh" appcds-build
+  [ "$status" -eq 0 ]
+  [ "$(cat "$(argfile)")" = "-cp $DEDUPLICATED_CLASSPATH" ]
+}
+
+@test "the expansion starts from the classpath Spark computes" {
+  "$INSTALL/starlake.sh" appcds-build
+  grep -q '^SETTINGS.*-cp /stub/sl.jar:/stub/slf4j.jar:/stub/jars/\*' "$STUB_LOG"
+  grep -q "^PROBE.*conf_dir=$INSTALL/.appcds/conf" "$STUB_LOG"
+}
+
+@test "the training dumps the archive with the classpath of the commands" {
+  "$INSTALL/starlake.sh" appcds-build
+  [[ "$(last_training)" == *"@$(argfile).tmp "* ]]
+}
+
+@test "a command with a fresh archive uses the classpath of the archive" {
+  "$INSTALL/starlake.sh" appcds-build
+  run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  assert_cds_active
+  assert_own_classpath
+}
+
+@test "user driver options come after the classpath of the archive so they win" {
+  "$INSTALL/starlake.sh" appcds-build
+  SPARK_DRIVER_OPTIONS="-Dmine=1" run "$INSTALL/starlake.sh" validate
+  [[ "$(last_submit)" == *"@$(argfile) "*"-Dmine=1"* ]]
+}
+
+@test "without an archive the classpath stays the one of Spark" {
+  run "$INSTALL/starlake.sh" validate
+  assert_spark_classpath
+}
+
+@test "classpath entries of the environment keep the classpath of Spark, which adds them" {
+  "$INSTALL/starlake.sh" appcds-build
+  for variable in HADOOP_CONF_DIR YARN_CONF_DIR SPARK_DIST_CLASSPATH; do
+    run env "$variable=/added" "$INSTALL/starlake.sh" validate
+    [ "$status" -eq 0 ]
+    assert_cds_active
+    assert_spark_classpath
+  done
+}
+
+@test "a driver classpath in the Spark options keeps the classpath of Spark, which adds it" {
+  "$INSTALL/starlake.sh" appcds-build
+  for options in "--driver-class-path /added.jar" "--conf spark.driver.extraClassPath=/added.jar"; do
+    SPARK_CONF_OPTIONS="$options" run "$INSTALL/starlake.sh" validate
+    [ "$status" -eq 0 ]
+    assert_cds_active
+    assert_spark_classpath
+  done
+}
+
+@test "training ignores the classpath entries of the caller environment" {
+  HADOOP_CONF_DIR=/hadoop YARN_CONF_DIR=/yarn SPARK_DIST_CLASSPATH=/dist.jar run "$INSTALL/starlake.sh" appcds-build
+  [ "$status" -eq 0 ]
+  [[ "$(last_training)" == *"hadoop="* ]]
+  [[ "$(last_training)" != *"/hadoop"* ]]
+  [[ "$(last_training)" != *"/dist.jar"* ]]
+}
+
+@test "the expansion leaves nothing behind in the working directory" {
+  run "$INSTALL/starlake.sh" appcds-build
+  [ "$status" -eq 0 ]
+  ! grep "^PROBE.*cwd=$BATS_TEST_TMPDIR/cwd" "$STUB_LOG"
+}
+
+@test "an archive built without a Spark command is used with the classpath of Spark" {
+  STUB_NO_LAUNCH=1 "$INSTALL/starlake.sh" appcds-build
+  [ -s "$(archive)" ]
+  [ ! -e "$(argfile)" ]
+  run "$INSTALL/starlake.sh" validate
+  assert_cds_active
+  assert_spark_classpath
+}
+
+@test "an archive built when the JVM cannot expand the classpath is used with the classpath of Spark" {
+  STUB_NO_SETTINGS=1 "$INSTALL/starlake.sh" appcds-build
+  [ -s "$(archive)" ]
+  [ ! -e "$(argfile)" ]
+  [[ "$(last_training)" != *"starlake.classpath"* ]]
+  run "$INSTALL/starlake.sh" validate
+  assert_cds_active
+  assert_spark_classpath
+}
+
+@test "a rebuild without an expanded classpath does not keep the previous one" {
+  "$INSTALL/starlake.sh" appcds-build
+  STUB_NO_SETTINGS=1 "$INSTALL/starlake.sh" appcds-build
+  [ ! -e "$(argfile)" ]
+}
+
+@test "a failed rebuild keeps the classpath of the previous archive" {
+  "$INSTALL/starlake.sh" appcds-build
+  STUB_NO_DUMP=1 run "$INSTALL/starlake.sh" appcds-build
+  [ "$status" -ne 0 ]
+  [ "$(cat "$(argfile)")" = "-cp $DEDUPLICATED_CLASSPATH" ]
+  [ ! -e "$(argfile).tmp" ]
+  run "$INSTALL/starlake.sh" validate
+  assert_own_classpath
+}
+
+@test "main without an expanded classpath keeps the recorded one" {
+  STUB_NO_SETTINGS=1 "$INSTALL/starlake.sh" appcds-build
+  main validate
+  [[ "$(last_java)" == *"-cp /stub/sl.jar:/stub/slf4j.jar:/stub/jars/* "* ]]
+}
+
+# JDKs that the bundled Hadoop cannot run on
+
+jdk_warning="cannot run Starflow"
+set_java_version() { echo "JAVA_VERSION=\"$1\"" >"$INSTALL/jdk/release"; }
+
+@test "JDK 24 and newer print a warning that names the version, and the command still runs" {
+  for version in 24.0.2 25.0.5 27-ea; do
+    set_java_version "$version"
+    : >"$STUB_LOG"
+    run "$INSTALL/starlake.sh" validate
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$jdk_warning"* ]]
+    [[ "$output" == *"Java ${version%%[.-]*} "* ]]
+    [ -n "$(last_submit)" ]
+  done
+}
+
+@test "the JDK warning goes to stderr so that it does not pollute the output of a command" {
+  set_java_version 25.0.5
+  [ -z "$("$INSTALL/starlake.sh" validate 2>/dev/null)" ]
+}
+
+@test "supported JDKs print no warning" {
+  for version in 1.8.0_402 17.0.9 21.0.11 22.0.2 23.0.2; do
+    set_java_version "$version"
+    run "$INSTALL/starlake.sh" validate
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"$jdk_warning"* ]]
+  done
+}
+
+@test "a JDK without a version prints no warning" {
+  run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$jdk_warning"* ]]
+}
+
+@test "the JDK warning also applies to SL_RUN_MODE=main" {
+  set_java_version 25.0.5
+  SL_RUN_MODE=main run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$jdk_warning"* ]]
+}
+
+@test "the JDK warning finds the java on the PATH when JAVA_HOME is not set" {
+  set_java_version 25.0.5
+  mv "$INSTALL/jdk" "$BATS_TEST_TMPDIR/path-jdk"
+  PATH="$BATS_TEST_TMPDIR/path-jdk/bin:$PATH" JAVA_HOME="" run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$jdk_warning"* ]]
+}
+
+@test "commands that only manage the install print no JDK warning" {
+  set_java_version 25.0.5
+  run "$INSTALL/starlake.sh" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$jdk_warning"* ]]
+}
+
+# A real JVM
+
+# Jars with real classes and a spark-submit that builds its command as spark-class does: the
+# driver classpath, the conf dir, slf4j-api on its own, the wildcard, then the driver options.
+make_real_install() {
+  if [ ! -x "$REAL_JAVA_HOME/bin/javac" ]; then
+    [ -z "${CI:-}" ] || { echo "these tests need a JDK in JAVA_HOME" >&2; return 1; }
+    skip "needs a JDK in JAVA_HOME"
+  fi
+  export JAVA_HOME="$REAL_JAVA_HOME"
+  export REAL_LOG="$BATS_TEST_TMPDIR/classes.log"
+  local src="$BATS_TEST_TMPDIR/src" out="$BATS_TEST_TMPDIR/out" name
+  mkdir -p "$src/ai/starlake/job" "$src/org/apache/spark/deploy" "$src/stub" "$out"
+  cat >"$src/ai/starlake/job/Main.java" <<'EOF'
+package ai.starlake.job;
+public class Main {
+  public static void main(String[] args) {
+    new stub.Logger(); new stub.Dep(); new stub.SparkCore();
+    System.out.println("classpath=" + System.getProperty("java.class.path"));
+  }
+}
+EOF
+  cat >"$src/org/apache/spark/deploy/SparkSubmit.java" <<'EOF'
+package org.apache.spark.deploy;
+public class SparkSubmit {
+  public static void main(String[] args) { ai.starlake.job.Main.main(args); }
+}
+EOF
+  for name in Logger Dep SparkCore X1 X2 X3 X4 X5 X6; do
+    printf 'package stub; public class %s {}\n' "$name" >"$src/stub/$name.java"
+  done
+  "$JAVA_HOME/bin/javac" -d "$out" "$src"/stub/*.java "$src/ai/starlake/job/Main.java" "$src/org/apache/spark/deploy/SparkSubmit.java"
+  rm -f "$INSTALL"/bin/spark/jars/*.jar "$INSTALL"/bin/deps/*.jar "$INSTALL"/bin/sl/*.jar
+  real_jar() { "$JAVA_HOME/bin/jar" cf "$1" -C "$out" "$2"; }
+  real_jar "$INSTALL/bin/sl/starlake-core_2.13-9.9.9-assembly.jar" ai/starlake/job/Main.class
+  real_jar "$INSTALL/bin/deps/dep.jar" stub/Dep.class
+  real_jar "$INSTALL/bin/spark/jars/spark-core_2.13-4.1.3.jar" stub/SparkCore.class
+  real_jar "$INSTALL/bin/spark/jars/spark-launcher.jar" org/apache/spark/deploy/SparkSubmit.class
+  real_jar "$INSTALL/bin/spark/jars/slf4j-api-2.0.17.jar" stub/Logger.class
+  # Other jars after slf4j-api in the expansion, wherever the directory order puts it.
+  for name in X1 X2 X3 X4 X5 X6; do
+    real_jar "$INSTALL/bin/spark/jars/$name.jar" "stub/$name.class"
+  done
+  cat >"$INSTALL/bin/spark/bin/spark-submit" <<'EOF'
+#!/usr/bin/env bash
+opts=""; driver_cp=""; version=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --driver-java-options) opts="$2"; shift 2 ;;
+    --driver-class-path) driver_cp="$2"; shift 2 ;;
+    --class|--master) shift 2 ;;
+    --version) version=1; shift ;;
+    *) break ;;
+  esac
+done
+cp="$driver_cp:${SPARK_CONF_DIR:-$SPARK_HOME/conf}/:$SPARK_HOME/jars/slf4j-api-2.0.17.jar:$SPARK_HOME/jars/*"
+cp="$cp${HADOOP_CONF_DIR:+:$HADOOP_CONF_DIR}"
+[ -z "${SPARK_PRINT_LAUNCH_COMMAND:-}" ] || \
+  echo "Spark Command: $JAVA_HOME/bin/java -cp $cp $opts org.apache.spark.deploy.SparkSubmit" >&2
+[ -z "$version" ] || exit 0
+set -f
+exec "$JAVA_HOME/bin/java" -cp "$cp" $opts org.apache.spark.deploy.SparkSubmit
+EOF
+  "$INSTALL/starlake.sh" appcds-build
+  [ -s "$(archive)" ]
+}
+
+assert_loaded_from_archive() {
+  local class
+  for class in ai.starlake.job.Main stub.Dep stub.SparkCore stub.Logger; do
+    grep -q "$class source: shared objects file (top)" "$REAL_LOG"
+  done
+}
+
+real_classpath() { printf '%s\n' "$1" | sed -n 's/^classpath=//p' | tail -1; }
+
+@test "real JVM: spark-submit loads the classes from the archive" {
+  make_real_install
+  SPARK_DRIVER_OPTIONS="-Xlog:class+load:file=$REAL_LOG" run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  assert_loaded_from_archive
+}
+
+@test "real JVM: SL_RUN_MODE=main loads the classes from the archive" {
+  make_real_install
+  SL_RUN_MODE=main SPARK_DRIVER_OPTIONS="-Xlog:class+load:file=$REAL_LOG" run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  assert_loaded_from_archive
+}
+
+@test "real JVM: SL_RUN_MODE=main with Hadoop configuration still loads the classes from the archive" {
+  make_real_install
+  mkdir "$BATS_TEST_TMPDIR/hadoop"
+  HADOOP_CONF_DIR="$BATS_TEST_TMPDIR/hadoop" SL_RUN_MODE=main SPARK_DRIVER_OPTIONS="-Xlog:class+load:file=$REAL_LOG" run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [[ "$(real_classpath "$output")" == *":$BATS_TEST_TMPDIR/hadoop" ]]
+  assert_loaded_from_archive
+}
+
+@test "real JVM: the classpath keeps the entries and the order of Spark, without duplicates" {
+  make_real_install
+  run env SL_APPCDS=false "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  plain="$(real_classpath "$output" | tr ':' '\n' | grep '\.jar$' | awk '!seen[$0]++')"
+  [ "$(real_classpath "$output" | tr ':' '\n' | grep -c 'slf4j-api')" -eq 2 ]
+  run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [ "$(real_classpath "$output" | tr ':' '\n' | grep '\.jar$')" = "$plain" ]
+}
+
+@test "real JVM: Hadoop configuration stays on the classpath of a spark-submit" {
+  make_real_install
+  mkdir "$BATS_TEST_TMPDIR/hadoop"
+  HADOOP_CONF_DIR="$BATS_TEST_TMPDIR/hadoop" run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [[ "$(real_classpath "$output")" == *":$BATS_TEST_TMPDIR/hadoop" ]]
 }

@@ -1,6 +1,8 @@
 name: Launcher tests
 # Runs the real distrib/starlake.sh with spark-submit, java and curl stubbed: no build, no
 # network. macOS is here for its BSD tools and its old bash, which the launcher must support.
+# The JDKs are for the tests with a real JVM: whether it accepts an AppCDS archive depends on
+# its version. 21 rejects a classpath that 17 and 25 accept.
 on:
   workflow_dispatch:
   pull_request:
@@ -28,10 +30,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        java: ['17', '21', '25']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.java }}
       - name: Install bats (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y bats
