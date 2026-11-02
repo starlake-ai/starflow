@@ -577,6 +577,99 @@ enable_appcds() {
   SPARK_DRIVER_OPTIONS="-Dlog4j.configurationFile=$SPARK_TARGET_FOLDER/conf/log4j2.properties -XX:SharedArchiveFile=$APPCDS_ARCHIVE -Xshare:auto -Xlog:cds=off -Xlog:cds+dynamic=off $SPARK_DRIVER_OPTIONS"
 }
 
+# The value of the shallowest occurrence of a key in a YAML file. These helpers are no YAML
+# parser: a layout they do not expect yields nothing, which keeps the default compiler.
+yaml_top_value() {
+  [ -f "$2" ] || return 0
+  awk -v key="$1" '
+    {
+      sub(/\r$/, "")
+      line = $0
+      sub(/^[ \t]*/, "", line)
+      indent = length($0) - length(line)
+      if (index(line, key ":") != 1 || (seen && indent >= best)) next
+      value = substr(line, length(key) + 2)
+      sub(/[ \t]+#.*$/, "", value)
+      gsub(/^[ \t"\047]+|[ \t"\047]+$/, "", value)
+      seen = 1; best = indent; found = value
+    }
+    END { print found }' "$2"
+}
+
+# Same rule as ConnectionInfo.getEngine: the JDBC engine is a jdbc type without sparkFormat.
+yaml_connection_is_jdbc() {
+  awk -v name="$1" '
+    {
+      sub(/\r$/, "")
+      line = $0
+      sub(/^[ \t]*/, "", line)
+      if (line == "" || line ~ /^#/) next
+      indent = length($0) - length(line)
+      key = line
+      sub(/:.*/, "", key)
+      gsub(/["\047]/, "", key)
+      if (!in_connections) {
+        if (key == "connections") { in_connections = 1; connections_indent = indent }
+        next
+      }
+      if (indent <= connections_indent) exit
+      if (!in_connection) {
+        if (!connection_indent) connection_indent = indent
+        if (indent == connection_indent && key == name) in_connection = 1
+        next
+      }
+      if (indent <= connection_indent) exit
+      if (!field_indent) field_indent = indent
+      if (indent != field_indent) next
+      if (key == "sparkFormat") spark_format = 1
+      if (key == "type") {
+        type = line
+        sub(/^[^:]*:/, "", type)
+        sub(/[ \t]+#.*$/, "", type)
+        gsub(/[ \t"\047]/, "", type)
+      }
+    }
+    END { exit !(toupper(type) == "JDBC" && !spark_format) }' "$2"
+}
+
+# Follows AutoTaskInfo.getRunConnectionRef with the project files, before any JVM starts.
+# Anything that could send a task elsewhere answers no.
+transform_runs_on_jdbc() {
+  [ -z "$SL_CONNECTION_REF$SL_ACTIVE_CONNECTION_REF$SL_TRANSFORM_CONNECTION_REF$SL_METADATA" ] || return 1
+  local metadata="$SL_ROOT/metadata" application env_name ref name
+  local template='^\{\{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\}\}$'
+  application="$metadata/application.sl.yml"
+  [ -f "$application" ] || return 1
+  if grep -rqs connectionRef "$metadata/transform"; then return 1; fi
+  env_name="${SL_ENV:-$(yaml_top_value SL_ENV "$metadata/env.sl.yml")}"
+  ref="$(yaml_top_value transformConnectionRef "$application")"
+  [ -n "$ref" ] || ref="$(yaml_top_value connectionRef "$application")"
+  if [[ "$ref" =~ $template ]]
+  then
+    name="${BASH_REMATCH[1]}"
+    [ -z "$(printenv "$name")" ] || return 1
+    ref="$(yaml_top_value "$name" "$metadata/env.$env_name.sl.yml")"
+    [ -n "$ref" ] || ref="$(yaml_top_value "$name" "$metadata/env.sl.yml")"
+  fi
+  [ -n "$ref" ] && yaml_connection_is_jdbc "$ref" "$application"
+}
+
+# On JDBC the database does the work and the JVM only orchestrates it, so C2 costs far more
+# than it gives back: compile time is most of the CPU of a short transform.
+enable_jdbc_c1() {
+  if [ "$1" != "transform" ] || [ "$SL_JDBC_C1" = "false" ]
+  then
+    return 0
+  fi
+  case "$SPARK_DRIVER_OPTIONS" in
+    *Tiered*) return 0 ;;
+  esac
+  if transform_runs_on_jdbc
+  then
+    SPARK_DRIVER_OPTIONS="-XX:TieredStopAtLevel=1 $SPARK_DRIVER_OPTIONS"
+  fi
+}
+
 build_appcds_archive() {
   if [ "$SL_APPCDS" = "false" ] || [ "$SL_DRY_RUN" = "true" ]
   then
@@ -713,6 +806,7 @@ launch_starlake() {
       if [[ $SPARK_MASTER_URL == local* ]]
       then
         enable_appcds
+        enable_jdbc_c1 "$@"
         if [ $(ls "$DEPS_EXTRA_LIB_FOLDER/"*.jar | wc -l) -ne 0 ]
         then
           extra_classpath="$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME:$(echo "$DEPS_EXTRA_LIB_FOLDER/"*.jar | tr ' ' ':')"

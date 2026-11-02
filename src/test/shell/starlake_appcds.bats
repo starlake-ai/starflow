@@ -721,3 +721,276 @@ EOF
   [ "$expected" -le 19 ] || expected=19
   [[ "$(last_training)" == *"nice=$expected"* ]]
 }
+
+# C1 compiler for transforms on JDBC
+
+C1_FLAG="-XX:TieredStopAtLevel=1"
+
+# The launcher reads the project from the working directory, as SL_ROOT defaults to it.
+write_project() {
+  mkdir -p metadata/transform/dom
+  cat >metadata/application.sl.yml <<'YML'
+---
+version: 1
+application:
+  connectionRef: "{{connectionRef}}"
+  audit:
+    sink:
+      connectionRef: "{{connectionRef}}"
+  connections:
+    sparkLocal:
+      type: "fs"
+    duckdb:
+      type: "jdbc"
+      options:
+        url: "jdbc:duckdb:{{SL_ROOT}}/datasets/duckdb.db"
+    bigquery:
+      type: "bigquery"
+YML
+  printf 'version: 1\nenv:\n  connectionRef: "duckdb"\n' >metadata/env.sl.yml
+  printf 'version: 1\ntask:\n  name: "t"\n  domain: "dom"\n' >metadata/transform/dom/t.sl.yml
+}
+
+transform() { run "$INSTALL/starlake.sh" transform --name dom.t; [ "$status" -eq 0 ]; }
+assert_c1() { [[ "$(last_submit)" == *"$C1_FLAG"* ]]; }
+assert_no_c1() { [[ "$(last_submit)" != *"TieredStopAtLevel"* ]]; }
+
+@test "a transform on a jdbc connection uses C1" {
+  write_project
+  transform
+  assert_c1
+}
+
+@test "a transform on an fs connection does not use C1" {
+  write_project
+  printf 'env:\n  connectionRef: sparkLocal\n' >metadata/env.sl.yml
+  transform
+  assert_no_c1
+}
+
+@test "a transform on bigquery does not use C1" {
+  write_project
+  printf 'env:\n  connectionRef: bigquery\n' >metadata/env.sl.yml
+  transform
+  assert_no_c1
+}
+
+@test "the env file of SL_ENV overrides the default env file" {
+  write_project
+  printf 'env:\n  connectionRef: sparkLocal\n' >metadata/env.SPARK.sl.yml
+  printf 'env:\n  connectionRef: duckdb\n' >metadata/env.sl.yml
+  SL_ENV=SPARK run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+  printf 'env:\n  connectionRef: sparkLocal\n' >metadata/env.sl.yml
+  printf 'env:\n  connectionRef: duckdb\n' >metadata/env.DUCKDB.sl.yml
+  SL_ENV=DUCKDB run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_c1
+}
+
+@test "SL_ENV defined in the default env file selects the env file" {
+  write_project
+  printf 'env:\n  SL_ENV: DUCKDB\n  connectionRef: sparkLocal\n' >metadata/env.sl.yml
+  printf 'env:\n  connectionRef: duckdb\n' >metadata/env.DUCKDB.sl.yml
+  transform
+  assert_c1
+}
+
+@test "a literal connectionRef without env files works" {
+  write_project
+  rm metadata/env.sl.yml
+  sed -i.bak 's/connectionRef: "{{connectionRef}}"/connectionRef: duckdb/' metadata/application.sl.yml
+  transform
+  assert_c1
+}
+
+@test "transformConnectionRef wins over connectionRef" {
+  write_project
+  sed -i.bak 's/^  audit:/  transformConnectionRef: sparkLocal\n  audit:/' metadata/application.sl.yml
+  transform
+  assert_no_c1
+  printf 'env:\n  connectionRef: sparkLocal\n' >metadata/env.sl.yml
+  sed -i.bak 's/transformConnectionRef: sparkLocal/transformConnectionRef: duckdb/' metadata/application.sl.yml
+  transform
+  assert_c1
+}
+
+@test "a connectionRef nested before the top level one is not read" {
+  write_project
+  cat >metadata/application.sl.yml <<'YML'
+application:
+  audit:
+    sink:
+      connectionRef: duckdb
+  connectionRef: sparkLocal
+  connections:
+    sparkLocal:
+      type: fs
+    duckdb:
+      type: jdbc
+YML
+  transform
+  assert_no_c1
+}
+
+@test "only the type of the selected connection counts" {
+  write_project
+  cat >metadata/application.sl.yml <<'YML'
+application:
+  connectionRef: first
+  connections:
+    first:
+      options:
+        type: jdbc
+    second:
+      type: jdbc
+YML
+  transform
+  assert_no_c1
+}
+
+@test "a jdbc connection read through Spark does not use C1" {
+  write_project
+  sed -i.bak 's/type: "jdbc"/type: "jdbc"\n      sparkFormat: "jdbc"/' metadata/application.sl.yml
+  transform
+  assert_no_c1
+}
+
+@test "a connectionRef in the transforms may send a task elsewhere and disables C1" {
+  write_project
+  printf 'task:\n  connectionRef: sparkLocal\n' >metadata/transform/dom/other.sl.yml
+  transform
+  assert_no_c1
+}
+
+@test "an unresolved connection disables C1" {
+  write_project
+  rm metadata/env.sl.yml
+  transform
+  assert_no_c1
+  printf 'env:\n  connectionRef: nowhere\n' >metadata/env.sl.yml
+  transform
+  assert_no_c1
+}
+
+@test "a project that cannot be read leaves the command working without C1" {
+  transform
+  assert_no_c1
+  mkdir -p metadata
+  printf ': : not yaml\n\t{{{\n' >metadata/application.sl.yml
+  transform
+  assert_no_c1
+}
+
+@test "quotes, single quotes, comments, CRLF and case are understood" {
+  write_project
+  printf "application:\r\n  connectionRef: 'duck' # default\r\n  connections:\r\n    \"duck\":\r\n      type: JDBC\r\n" >metadata/application.sl.yml
+  rm metadata/env.sl.yml
+  transform
+  assert_c1
+}
+
+@test "only transform uses C1" {
+  write_project
+  run "$INSTALL/starlake.sh" validate
+  assert_no_c1
+}
+
+@test "environment overrides of the connection or the metadata disable C1" {
+  write_project
+  SL_CONNECTION_REF=sparkLocal run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+  SL_ACTIVE_CONNECTION_REF=sparkLocal run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+  SL_TRANSFORM_CONNECTION_REF=sparkLocal run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+  SL_METADATA=/elsewhere run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+  connectionRef=sparkLocal run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+}
+
+@test "SL_JDBC_C1=false turns C1 off" {
+  write_project
+  SL_JDBC_C1=false run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+}
+
+@test "user compiler flags are not overridden" {
+  write_project
+  SPARK_DRIVER_OPTIONS="-XX:-TieredCompilation" run "$INSTALL/starlake.sh" transform --name dom.t
+  [[ "$(last_submit)" == *"-XX:-TieredCompilation"* ]]
+  assert_no_c1
+}
+
+@test "a non-local master does not use C1" {
+  write_project
+  SPARK_MASTER_URL=spark://cluster:7077 run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_no_c1
+}
+
+@test "C1 and the AppCDS archive work together" {
+  write_project
+  "$INSTALL/starlake.sh" appcds-build
+  transform
+  assert_c1
+  assert_cds_active
+}
+
+@test "SL_ROOT locates the project" {
+  write_project
+  mkdir "$BATS_TEST_TMPDIR/other"
+  cd "$BATS_TEST_TMPDIR/other"
+  SL_ROOT="$BATS_TEST_TMPDIR/cwd" run "$INSTALL/starlake.sh" transform --name dom.t
+  assert_c1
+}
+
+@test "a key named like the connection nested in another connection is not read" {
+  write_project
+  rm metadata/env.sl.yml
+  cat >metadata/application.sl.yml <<'YML'
+application:
+  connectionRef: target
+  connections:
+    other:
+      options:
+        target:
+          type: jdbc
+YML
+  transform
+  assert_no_c1
+}
+
+@test "a key named like the connection outside the connections is not read" {
+  write_project
+  rm metadata/env.sl.yml
+  cat >metadata/application.sl.yml <<'YML'
+application:
+  connectionRef: target
+  connections:
+    other:
+      type: fs
+  dagRef:
+    target:
+      type: jdbc
+YML
+  transform
+  assert_no_c1
+}
+
+@test "comments and blank lines inside a connection are skipped" {
+  write_project
+  rm metadata/env.sl.yml
+  cat >metadata/application.sl.yml <<'YML'
+application:
+  connectionRef: duck
+  connections:
+
+# the local database
+    duck:
+
+# its type
+      type: jdbc # local
+YML
+  transform
+  assert_c1
+}

@@ -177,6 +177,7 @@ This document lists all environment variables that can be used to configure Star
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SL_APPCDS` | Build and use the AppCDS class archive that speeds up CLI startup on local Spark (set to `false` to turn it off) | `true` |
+| `SL_JDBC_C1` | Run `transform` on a JDBC connection with the C1 compiler only, which starts faster (set to `false` to keep the default compilers) | `true` |
 | `SL_SPARK_CATALOGS` | Spark catalog keys | `hive.metastore.uris,spark.sql.catalog.iceberg,...` |
 | `SL_SPARK_SERIALIZER` | Spark serializer | `org.apache.spark.serializer.KryoSerializer` |
 | `SL_SPARK_KRYO_REGISTRATOR` | Spark Kryo registrator | `ai.starlake.config.KryoSerialization` |
