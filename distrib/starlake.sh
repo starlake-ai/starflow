@@ -503,8 +503,8 @@ launch_setup() {
 # needs an empty SPARK_CONF_DIR, because the JVM refuses to dump or use an archive
 # with a non-empty directory on the classpath, and spark-submit puts the conf dir there.
 appcds_jars() {
-  # Trailing slashes: find does not descend into a symlink given without one.
-  find "$SPARK_TARGET_FOLDER/jars/" "$DEPS_EXTRA_LIB_FOLDER/" "$STARLAKE_EXTRA_LIB_FOLDER/" -maxdepth 1 -name '*.jar' "$@"
+  # -L: the dates that count are those of the targets of symlinks, as for the JVM.
+  find -L "$SPARK_TARGET_FOLDER/jars" "$DEPS_EXTRA_LIB_FOLDER" "$STARLAKE_EXTRA_LIB_FOLDER" -maxdepth 1 -name '*.jar' "$@"
 }
 
 appcds_fingerprint() {
@@ -639,7 +639,6 @@ transform_runs_on_jdbc() {
   local metadata="$SL_ROOT/metadata" application env_name ref name
   local template='^\{\{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\}\}$'
   application="$metadata/application.sl.yml"
-  [ -f "$application" ] || return 1
   if grep -rqs connectionRef "$metadata/transform"; then return 1; fi
   env_name="${SL_ENV:-$(yaml_top_value SL_ENV "$metadata/env.sl.yml")}"
   ref="$(yaml_top_value transformConnectionRef "$application")"

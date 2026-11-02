@@ -994,3 +994,47 @@ YML
   transform
   assert_c1
 }
+
+@test "a symlinked jar whose target changes makes the archive stale" {
+  touch "$BATS_TEST_TMPDIR/real.jar"
+  ln -s "$BATS_TEST_TMPDIR/real.jar" "$INSTALL/bin/deps/linked.jar"
+  "$INSTALL/starlake.sh" appcds-build
+  sleep 0.1
+  touch "$BATS_TEST_TMPDIR/real.jar"
+  run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  assert_cds_inactive
+}
+
+@test "a project without files prints no error" {
+  transform
+  [[ "$output" != *"awk"* ]]
+  [[ "$output" != *"No such file"* ]]
+}
+
+@test "a connectionRef nested after the top level one is not read" {
+  write_project
+  rm metadata/env.sl.yml
+  cat >metadata/application.sl.yml <<'YML'
+application:
+  connectionRef: sparkLocal
+  audit:
+    sink:
+      connectionRef: duckdb
+  connections:
+    sparkLocal:
+      type: fs
+    duckdb:
+      type: jdbc
+YML
+  transform
+  assert_no_c1
+}
+
+@test "CRLF line endings are understood without a trailing comment" {
+  write_project
+  rm metadata/env.sl.yml
+  printf 'application:\r\n  connectionRef: duck\r\n  connections:\r\n    duck:\r\n      type: jdbc\r\n' >metadata/application.sl.yml
+  transform
+  assert_c1
+}
