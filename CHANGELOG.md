@@ -39,6 +39,7 @@ __Bug fix__:
 - **A failing DuckDB transform reports its own error** instead of `cannot rollback - no transaction is active`: the rollback is now skipped when no transaction is open, and a failing rollback is logged rather than hiding the original error.
 
 __Improvement__:
+- **The API lists QoD pools as the signed-in user** (starlake-api): it sends the QoD session of the user to `GET /api/profile/pools` and shows the answer of QoD as is, so it holds no QoD credential anymore. `QOD_API_KEY`, `QOD_SERVICE_USERNAME` and `QOD_SERVICE_PASSWORD` are no longer read. This needs a QoD manager that serves this route: pool listing fails on an older one.
 - **`starlake.sh` warns on JDK 24 and newer**: the Hadoop bundled with Spark 4.1.3 fails on these JDKs with `UnsupportedOperationException: getSubject is not supported`, whatever the JVM flags. The launcher now says so and points to JDK 17 or 21. It reads the version from the `release` file of the JDK, so it starts no JVM. The command still runs.
 - **Faster startup of the CLI on local Spark**: `starlake.sh` now builds an AppCDS class archive during `install`, `reinstall` and `upgrade`, and uses it when `SPARK_MASTER_URL` is `local*`. Measured on the demo project: `settings` from 3.0s to 1.9s, `validate` from 8.6s to 5.2s. Real Spark loads and transforms gain about 2.5s.
   - The archive adds about 15s to the install and takes about 176 MB in `.appcds/`. A failed build only prints a warning. Set `SL_APPCDS=false` to turn it off, or run `starlake.sh appcds-build` to rebuild it.
