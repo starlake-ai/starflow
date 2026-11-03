@@ -67,28 +67,4 @@ case class TransformConfig(
 
   /** Only BigQuery has a dry run. The other engines ignore the flag and write their tables. */
   def dryRunSupportedOn(engine: Engine): Boolean = !dryRun || engine == Engine.BQ
-
-  override def toString: String = {
-    s"""
-       |name=$name
-       |options=$optionsAsString
-       |compile=$compile
-       |syncApply=$syncApply
-       |syncPreview=$syncPreview
-       |tags=$tags
-       |format=$format
-       |interactive=$interactive
-       |reload=$reload
-       |truncate=$truncate
-       |recursive=$recursive
-       |test=$test
-       |accessToken=$accessToken
-       |dryRun=$dryRun
-       |query=$query
-       |pageSize=$pageSize
-       |pageNumber=$pageNumber
-       |reportFormat=$reportFormat
-       |parallelism=$parallelism
-       |""".stripMargin
-  }
 }

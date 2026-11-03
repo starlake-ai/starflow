@@ -1,5 +1,6 @@
 package ai.starlake.job.sink.bigquery
 
+import ai.starlake.utils.RedactedToString
 import ai.starlake.schema.model._
 import com.google.cloud.bigquery.{JobInfo, TableId}
 import org.apache.spark.sql.DataFrame
@@ -30,4 +31,4 @@ case class BigQueryLoadConfig(
   refreshIntervalMs: Option[Long] = None,
   accessToken: Option[String] = None,
   forceIndirect: Boolean = false
-)
+) extends RedactedToString

@@ -1,5 +1,6 @@
 package ai.starlake.job.sink.bigquery
 
+import ai.starlake.utils.RedactedToString
 import ai.starlake.schema.model.{
   AccessControlEntry,
   Engine,
@@ -32,7 +33,7 @@ case class BigQueryLoadCliConfig(
   domainDescription: Option[String] = None,
   materialization: Materialization = Materialization.TABLE,
   accessToken: Option[String]
-) {
+) extends RedactedToString {
   /*
   def asBigqueryLoadConfig()(implicit settings: Settings) = BigQueryLoadConfig(
     connectionRef = connectionRef,

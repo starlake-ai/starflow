@@ -1,7 +1,7 @@
 package ai.starlake.extract
 
 import ai.starlake.config.ConnectionInfo
-import ai.starlake.utils.StarlakeJdbcOps
+import ai.starlake.utils.{StarlakeJdbcOps, Utils}
 import com.typesafe.scalalogging.LazyLogging
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import org.duckdb.{DuckDBConnection, DuckDBDriver}
@@ -153,7 +153,7 @@ object StarlakeConnectionPool extends LazyLogging {
   ): java.sql.Connection = {
     require(
       connectionOptionsIn.contains("driver"),
-      s"driver class not found in JDBC connection options $connectionOptionsIn"
+      s"driver class not found in JDBC connection options ${Utils.redact(connectionOptionsIn)}"
     )
     // Flight SQL connections are pure remote clients: any ducklake/quack attach
     // happens server-side, never on this JVM (see docs/quack.md isolation model)

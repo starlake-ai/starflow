@@ -299,17 +299,19 @@ object Utils extends LazyLogging {
     if (Main.cliMode) println(s)
   }
 
-  private val obfuscateKeys: Set[String] = Set("pass", "token", "access", "aes")
+  private val secretKeys: Set[String] =
+    Set("pass", "token", "access", "aes", "secret", "private", "credential")
 
-  def redact(options: Map[String, String]): Map[String, String] = {
-    options.map { case (key, value) =>
-      if (key.toLowerCase.contains("password")) key -> "********" else key -> value
-    }
-  }
+  /** Whether an option or a field with this name holds a credential. Masking too much in a log
+    * costs little, unlike leaking a credential.
+    */
+  def isSecret(key: String): Boolean = secretKeys.exists(key.toLowerCase.contains)
+
+  def redact(options: Map[String, String]): Map[String, String] = obfuscate(options)
 
   def obfuscate(map: Map[String, String]): Map[String, String] = {
     map.map { case (k, v) =>
-      if (obfuscateKeys.exists(k.toLowerCase.contains)) k -> "********" else k -> v
+      if (isSecret(k)) k -> "********" else k -> v
     }
   }
 
@@ -320,7 +322,7 @@ object Utils extends LazyLogging {
       if (isSensitiveKey) {
         result.append("********")
         isSensitiveKey = false
-      } else if (obfuscateKeys.exists(c.toLowerCase.contains)) {
+      } else if (isSecret(c)) {
         isSensitiveKey = true
         result.append(c)
       } else

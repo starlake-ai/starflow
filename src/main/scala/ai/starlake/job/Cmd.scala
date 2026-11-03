@@ -2,13 +2,13 @@ package ai.starlake.job
 
 import ai.starlake.config.Settings
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.utils.{CliConfig, JobResult}
+import ai.starlake.utils.{CliConfig, JobResult, RedactedToString}
 import ai.starlake.workflow.IngestionWorkflow
 import scopt.{OParser, OParserBuilder}
 
 import scala.util.{Failure, Try}
 
-trait ReportFormatConfig {
+trait ReportFormatConfig extends RedactedToString {
   def reportFormat: Option[String]
 }
 
