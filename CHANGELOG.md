@@ -1,6 +1,23 @@
 
 # Release notes
 
+# 1.8.15:
+__New feature__:
+- **Several transforms in one JVM**: `transform --name a.b,a.c` and `transform --tags x` run a set of tasks in a single process. Upstream tasks run first, whatever the order of the list. A task runs as many times as it is listed, so `--name a.b,a.b` runs it twice, and once when it is only read by other tasks. Measured with ten chained DuckDB tasks, without AppCDS: 22s for ten `transform` commands, 2.8s for one command with the ten names.
+  - Adding `--recursive` also runs what the listed or tagged tasks read. Without it, a task that is neither listed nor tagged does not run.
+  - The command ends with one line per task: succeeded, failed, or skipped because a task it reads failed. It exits with 1 when a task failed. A skipped task does not stop the tasks on other branches.
+  - An unknown name, or a tag no task has, fails before anything runs.
+  - `--compile`, `--sync-apply`, `--sync-preview`, `--format`, `--dry-run`, `--interactive` and `--query` apply to one task, and are refused with several names or with `--tags`.
+  - `--tags` could not be used before: `--name` was mandatory, and refused along with `--tags`.
+  - Tasks run one at a time, because the transform paths are not safe to run concurrently in one JVM (#1785).
+
+__Bug fix__:
+- **`transform` no longer writes when it is asked not to**:
+  - `--dry-run` is refused on engines other than BigQuery. They ignored it and wrote the table.
+  - `--recursive` refuses `--dry-run`, `--interactive` and `--query`. They were dropped: the tasks ran with their stored SQL and wrote their tables, and no rows came back.
+  - **Upgrade note**: these commands now exit with 1. Remove `--recursive` to preview one task or run another query on it.
+- **`transform --recursive` reports the failures of its tasks**: a task whose upstream failed still ran and the command exited with 0, and when a sibling failed first the command stopped on `Should never happen` instead of the error of the task. A task behind a failure is now skipped, and the command exits with 1 and reports the error.
+
 # 1.8.14:
 __Bug fix__:
 - **`install` and `upgrade` work behind a proxy without `SL_VERSION`**: the lookup of the latest release ignored `https_proxy`, timed out, and the installer then tried to download `releases/download/vnull`. It now uses the same proxy, credentials and `SL_INSECURE` settings as the downloads, and if the lookup still fails, the installer stops with an error asking for `SL_VERSION`.
