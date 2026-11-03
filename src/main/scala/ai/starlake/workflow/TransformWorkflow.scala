@@ -1,9 +1,16 @@
 package ai.starlake.workflow
 
 import ai.starlake.config.Settings
-import ai.starlake.extract.ParUtils
 import ai.starlake.job.sink.bigquery.BigQueryJobResult
-import ai.starlake.job.transform.{AutoTask, TransformAction, TransformConfig, TransformContext}
+import ai.starlake.job.transform.{
+  AutoTask,
+  TransformAction,
+  TransformBatchSummary,
+  TransformConfig,
+  TransformContext,
+  TransformTaskResult,
+  TransformTaskStatus
+}
 import ai.starlake.lineage.{
   AutoTaskDependencies,
   AutoTaskDependenciesConfig,
@@ -18,6 +25,7 @@ import ai.starlake.utils.Utils
 import com.manticore.jsqlformatter.JSQLFormatter
 import com.typesafe.scalalogging.LazyLogging
 
+import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 
 trait TransformWorkflow extends LazyLogging {
@@ -132,105 +140,134 @@ trait TransformWorkflow extends LazyLogging {
     result
   }
 
-  def transform(
-    dependencyTree: List[TaskViewDependencyNode],
-    options: Map[String, String],
-    scheduledDate: Option[String]
-  ): Try[String] = {
-    val executed = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
-    transform(dependencyTree, options, scheduledDate, executed)
-  }
+  /** Runs the selected tasks of the trees, upstream first, in this JVM. A task runs as many times
+    * as it is a root of the trees, and once when other tasks only read it.
+    *
+    * Serial on purpose: the transform paths are not safe to run concurrently in one JVM (#1785).
+    *
+    * A task behind a failure is skipped, and tasks on other branches still run, so that one run
+    * reports all the failures it can find. Nodes that are not run (tables, tasks not selected)
+    * still carry the order and the failures of what is upstream of them.
+    *
+    * @param selected
+    *   receives the name of a task as the trees spell it
+    * @param taskConfig
+    *   the config each task runs with, once given its name
+    */
+  private[workflow] def runTaskTrees(
+    trees: List[TaskViewDependencyNode],
+    selected: String => Boolean,
+    taskConfig: TransformConfig
+  ): TransformBatchSummary = {
+    // Node name -> the failed task blocking whatever reads this node. The trees repeat what several
+    // tasks read, so this is also what runs only once a task that several tasks read.
+    val visited = mutable.Map.empty[String, Option[String]]
+    val results = mutable.ListBuffer.empty[TransformTaskResult]
 
-  private def transform(
-    dependencyTree: List[TaskViewDependencyNode],
-    options: Map[String, String],
-    scheduledDate: Option[String],
-    executed: java.util.Set[String]
-  ): Try[String] = {
-
-    implicit val forkJoinTaskSupport: Option[scala.collection.parallel.ForkJoinTaskSupport] =
-      ParUtils.createForkSupport(Some(settings.appConfig.maxParTask))
-
-    val parJobs =
-      ParUtils.makeParallel(dependencyTree)
-    val res = parJobs.iterator.map { jobContext =>
-      val ok = transform(jobContext.children, options, scheduledDate, executed)
-      if (ok.isSuccess) {
-        if (jobContext.isTask() && executed.add(jobContext.data.name)) {
-          logger.info(s"Transforming ${jobContext.data.name}")
-          val res =
-            transform(
-              TransformConfig(
-                TransformAction.Run,
-                jobContext.data.name,
-                options,
-                scheduledDate = scheduledDate
-              )
-            )
-          res
-        } else {
-          if (jobContext.isTask()) {
-            logger.info(s"Skipping already executed transform ${jobContext.data.name}")
-          }
-          Success("")
-        }
-      } else
-        ok
-    }
-    forkJoinTaskSupport.foreach(_.forkJoinPool.shutdown())
-    val allIsSuccess = res.iterator.forall(_.isSuccess)
-    if (res.iterator.isEmpty) {
-      Success("")
-    } else if (allIsSuccess) {
-      res.iterator.next()
-    } else {
-      res.iterator
-        .find(_.isFailure)
-        .getOrElse(throw new IllegalStateException("Should never happen"))
-    }
-  }
-
-  def autoJob(config: TransformConfig): Try[String] = {
-    val result =
-      if (config.recursive) {
-        Utils.printOut(s"Building dependency tree for task ${config.name}...")
-        val taskConfig = AutoTaskDependenciesConfig(tasks = Some(List(config.name)))
-        val dependencyTree = new AutoTaskDependencies(settings, schemaHandler, storageHandler)
-          .jobsDependencyTree(taskConfig)
-        Utils.printOut(s"Dependency tree built for task ${config.name}")
-        dependencyTree.foreach(_.print())
-        transform(dependencyTree, config.options, scheduledDate = config.scheduledDate)
-      } else if (config.tags.nonEmpty) {
-        val jobs =
-          schemaHandler.jobs().flatMap { job =>
-            val tasks = job.tasks.filter { task =>
-              task.tags.intersect(config.tags.toSet).nonEmpty
-            }
-            if (tasks.isEmpty)
-              None
-            else
-              Some(job.copy(tasks = tasks))
-          }
-        Try {
-          jobs
-            .flatMap { job =>
-              job.tasks.map { task =>
-                val result = transform(config.copy(name = s"${job.name}.${task.name}"))
-                result match {
-                  case Success(res) =>
-                    res
-                  case Failure(e) =>
-                    throw e
-                }
-              }
-            }
-            .mkString("\n")
-        }
-      } else {
-        transform(config)
+    def runTask(name: String): Option[String] = {
+      logger.info(s"Transforming $name")
+      val start = System.nanoTime()
+      val status = Try(transform(taskConfig.copy(name = name))).flatten match {
+        case Success(_) => TransformTaskStatus.Succeeded
+        case Failure(e) => TransformTaskStatus.Failed(e)
       }
-    result
+      results += TransformTaskResult(name, status, (System.nanoTime() - start) / 1000000L)
+      if (status == TransformTaskStatus.Succeeded) None else Some(name)
+    }
+
+    def runOrSkip(node: TaskViewDependencyNode, failedUpstream: Option[String]): Option[String] =
+      if (node.isTask() && selected(node.data.name))
+        failedUpstream match {
+          case Some(failed) =>
+            results += TransformTaskResult(node.data.name, TransformTaskStatus.Skipped(failed), 0L)
+            failedUpstream
+          case None => runTask(node.data.name)
+        }
+      else
+        failedUpstream
+
+    def visit(node: TaskViewDependencyNode): Option[String] = {
+      val key = node.data.name.toLowerCase
+      visited.getOrElse(
+        key, {
+          val outcome = runOrSkip(node, node.children.flatMap(visit).headOption)
+          visited(key) = outcome
+          outcome
+        }
+      )
+    }
+
+    // There is one tree per listed task, so a root seen before is a task listed again. It runs again
+    // at this place in the list, while what it reads is already settled and does not.
+    val listed = mutable.Set.empty[String]
+    trees.foreach { root =>
+      if (listed.add(root.data.name.toLowerCase))
+        visit(root)
+      else
+        visited(root.data.name.toLowerCase) =
+          runOrSkip(root, root.children.flatMap(visit).headOption)
+    }
+    TransformBatchSummary(results.toList)
   }
+
+  /** The tasks a multi task config asks for, spelled as the project declares them. Fails before
+    * anything runs, so that a typo in a list does not leave half of it executed.
+    */
+  private def selectBatchTasks(config: TransformConfig): List[String] = {
+    val tasks = schemaHandler.tasks(config.reload)
+    if (config.tags.nonEmpty) {
+      val tags = config.tags.toSet
+      val tagged = tasks.filter(_.tags.intersect(tags).nonEmpty).map(_.fullName())
+      if (tagged.isEmpty)
+        throw new IllegalArgumentException(s"No task has any of the tags ${tags.mkString(", ")}")
+      tagged
+    } else {
+      val declared = tasks.map(task => task.fullName().toLowerCase -> task.fullName()).toMap
+      val unknown = config.names.filterNot(name => declared.contains(name.toLowerCase))
+      if (unknown.nonEmpty)
+        throw new IllegalArgumentException(s"Unknown task(s): ${unknown.mkString(", ")}")
+      config.names.map(name => declared(name.toLowerCase))
+    }
+  }
+
+  private def transformBatch(config: TransformConfig): Try[String] =
+    Try {
+      config.requireCompatibleFlags()
+      val tasks = selectBatchTasks(config)
+      Utils.printOut(s"Building dependency tree for ${tasks.mkString(", ")}...")
+      val dependencies = new AutoTaskDependencies(settings, schemaHandler, storageHandler)
+      // Computed once for the project: asking for the tasks by name computes it once per name
+      val lineage = dependencies.tasks(AutoTaskDependenciesConfig(all = true))
+      val trees =
+        dependencies.jobsDependencyTree(lineage, AutoTaskDependenciesConfig(tasks = Some(tasks)))
+      val summary =
+        if (config.recursive)
+          runTaskTrees(
+            trees,
+            _ => true,
+            TransformConfig(
+              TransformAction.Run,
+              options = config.options,
+              scheduledDate = config.scheduledDate
+            )
+          )
+        else {
+          val selected = tasks.map(_.toLowerCase).toSet
+          runTaskTrees(
+            trees,
+            name => selected.contains(name.toLowerCase),
+            config.copy(tags = Seq.empty)
+          )
+        }
+      Utils.printOut(summary.render)
+      summary
+    }.flatMap(_.toTry)
+
+  def autoJob(config: TransformConfig): Try[String] =
+    if (config.recursive || config.isMultiTask)
+      transformBatch(config)
+    else
+      transform(config)
 
   /** Successively run each task of a job
     *
@@ -245,6 +282,14 @@ trait TransformWorkflow extends LazyLogging {
     logger.info(s"Transforming with config $transformConfig")
     logger.info(s"Entering ${action.taskDesc.getRunEngine()} engine")
     val runEngine = action.taskDesc.getRunEngine()
+
+    if (!transformConfig.dryRunSupportedOn(runEngine))
+      return Failure(
+        new IllegalArgumentException(
+          s"--dry-run is only supported on BigQuery: ${transformConfig.name} runs on $runEngine " +
+          "and would really write"
+        )
+      )
 
     runEngine match {
       case BQ =>

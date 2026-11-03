@@ -39,8 +39,10 @@ trait TransformCmd extends Cmd[TransformConfig] {
       builder
         .opt[String]("name")
         .action((x, c) => c.copy(name = x))
-        .required()
-        .text("Task Name in the form domain.task"),
+        .optional()
+        .text(
+          "Task name in the form domain.task. Several names separated by commas run in one JVM, upstream tasks first. Either --name or --tags is required"
+        ),
       builder
         .opt[Unit]("compile")
         .action((_, c) => c.copy(compile = true))
@@ -67,12 +69,14 @@ trait TransformCmd extends Cmd[TransformConfig] {
         .opt[Unit]("dry-run")
         .action((_, c) => c.copy(dryRun = true))
         .optional()
-        .text("Dry run only (supported on BigQuery only)"),
+        .text("Dry run only. Refused on engines other than BigQuery, which would really write"),
       builder
         .opt[Seq[String]]("tags")
         .action((x, c) => c.copy(tags = x))
         .optional()
-        .text("Return final query only"),
+        .text(
+          "Run in one JVM, upstream tasks first, the tasks that have at least one of these tags"
+        ),
       builder
         .opt[Unit]("format")
         .action((_, c) => c.copy(format = true))
@@ -149,6 +153,8 @@ trait TransformCmd extends Cmd[TransformConfig] {
     val result = OParser.parse(parser, args, TransformConfig(scheduledDate = None), setup)
     result.foreach { config =>
       require(config.name.isEmpty || config.tags.isEmpty, "Cannot specify both tags and task name")
+      require(config.name.nonEmpty || config.tags.nonEmpty, "Either --name or --tags is required")
+      config.requireCompatibleFlags()
     }
     result
   }
