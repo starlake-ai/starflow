@@ -1,6 +1,15 @@
 
 # Release notes
 
+# 1.8.16:
+__Bug fix__:
+- **Reading YAML files no longer changes the default locale of the JVM**: each file read swapped the locale to get validation messages in English, then restored it. Two reads at the same time could leave the JVM on the empty locale for the rest of the run, which broke what depends on it, such as the creation of a Derby metastore. The locale is now given to the validator.
+- **Running transforms in the same JVM at the same time is safer** (#1785). Tasks still run one at a time by default: this prepares for running them in parallel.
+  - A Spark task writing to files or a table through a dataframe could write the rows of another task, without any error, because they shared a temp view name. Each task now has its own.
+  - Reloading tasks of a job from several threads could lose or duplicate tasks, and a task was missing for other threads while it reloaded.
+  - `SL_THIS` keeps its name, since python scripts and pre and post SQL refer to it, so python tasks and the Spark pre and post SQL of loads now run one at a time.
+  - `CREATE SCHEMA IF NOT EXISTS` failed with a write-write conflict on DuckDB when two tasks created the same schema.
+
 # 1.8.15:
 __New feature__:
 - **Several transforms in one JVM**: `transform --name a.b,a.c` and `transform --tags x` run a set of tasks in a single process. Upstream tasks run first, whatever the order of the list. A task runs as many times as it is listed, so `--name a.b,a.b` runs it twice, and once when it is only read by other tasks. Measured with ten chained DuckDB tasks, without AppCDS: 22s for ten `transform` commands, 2.8s for one command with the ten names.

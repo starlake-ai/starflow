@@ -397,12 +397,14 @@ class SparkAutoTask(
         "PySpark execution is not supported with Spark Connect. Use a native Spark cluster instead."
       )
     }
-    SparkUtils.runPySpark(pythonFile, commandParameters)
-    val exists = SparkUtils.tableExists(session, "SL_THIS")
-    if (exists)
-      Some(session.table("SL_THIS"))
-    else
-      None
+    SparkUtils.withSlThisView {
+      SparkUtils.runPySpark(pythonFile, commandParameters)
+      val exists = SparkUtils.tableExists(session, "SL_THIS")
+      if (exists)
+        Some(session.table("SL_THIS"))
+      else
+        None
+    }
   }
 
   def runSqls(sqls: List[String], typ: String): Option[DataFrame] = {
@@ -622,8 +624,11 @@ class SparkAutoTask(
 
   protected def effectiveSinkToFile(dataset: DataFrame): Try[JobResult] = {
     val allAttributes = dataset.schema.fieldNames.mkString(",")
-    dataset.createOrReplaceTempView("SL_INTERNAL_VIEW")
-    runSparkOnSpark(s"SELECT $allAttributes FROM SL_INTERNAL_VIEW")
+    // Unique, since a temp view is visible to all the tasks sharing this session
+    val view = s"SL_INTERNAL_VIEW_${java.util.UUID.randomUUID().toString.replace('-', '_')}"
+    dataset.createOrReplaceTempView(view)
+    try runSparkOnSpark(s"SELECT $allAttributes FROM $view")
+    finally session.catalog.dropTempView(view)
   }
 
   private def sinkToFile(

@@ -416,6 +416,14 @@ object SparkUtils extends LazyLogging {
     result
   }
 
+  private val slThisViewLock = new Object
+
+  /** Runs what writes the `SL_THIS` temp view and what reads it back. User code refers to this view
+    * by name, in python scripts and in pre and post SQL, so it cannot be made unique per task as
+    * other views are. As it is visible to the whole session, these run one at a time.
+    */
+  def withSlThisView[T](body: => T): T = slThisViewLock.synchronized(body)
+
   def runPySpark(pythonFile: Path, commandParameters: Map[String, String])(implicit
     settings: Settings
   ): Unit = {

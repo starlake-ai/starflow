@@ -58,7 +58,7 @@ object YamlSerde extends LazyLogging with YamlUtils {
   }
 
   /** Built once: this means parsing a 110 KB file, and a project validates many config files. */
-  private[starlake] lazy val starlakeSchema: Schema = forceLocaleIn(Locale.ROOT) {
+  private[starlake] lazy val starlakeSchema: Schema = {
     // javaSemantics no longer exists in 2.0.4: losslessNarrowing(true) reproduces the same
     // effect, since TypeFactory's only javaSemantics check was `isJavaSemantics() || isLosslessNarrowing()`.
     val schemaRegistryConfig = SchemaRegistryConfig
@@ -66,6 +66,9 @@ object YamlSerde extends LazyLogging with YamlUtils {
       .pathType(PathType.JSON_PATH)
       .formatAssertionsEnabled(true)
       .losslessNarrowing(true)
+      // ROOT rather than ENGLISH, which falls back to the local language if it exists. ROOT messages
+      // are in English. Set here because the default locale of the JVM is shared with other threads.
+      .locale(Locale.ROOT)
       .build()
 
     val registry = SchemaRegistry.withDefaultDialect(
@@ -81,16 +84,6 @@ object YamlSerde extends LazyLogging with YamlUtils {
         new ObjectMapper().readTree(getClass.getResourceAsStream("/starlake.json"))
       )
     )
-  }
-
-  private def forceLocaleIn[T](locale: Locale)(func: => T) = {
-    val previousDefault = Locale.getDefault
-    Locale.setDefault(locale)
-    try {
-      func
-    } finally {
-      Locale.setDefault(previousDefault)
-    }
   }
 
   private def adaptSchemaV7ToStrictV201909(node: JsonNode): JsonNode = {
@@ -183,22 +176,21 @@ object YamlSerde extends LazyLogging with YamlUtils {
         s"No '$subPath' attribute found in $inputFilename. Please check your config and define it under '$subPath' attribute."
       )
     }
-    val validationResult: Result =
-      forceLocaleIn(Locale.ROOT) { // Use root instead of ENGLISH otherwise it fallbacks to local language if it exists. ROOT messages are in ENGLISH.
-        val schema = starlakeSchema
-        val executionContext = schema.createExecutionContext()
-        executionContext.setWalkConfig(
-          WalkConfig
-            .builder()
-            .applyDefaultsStrategy(new ApplyDefaultsStrategy(true, true, true))
-            .build()
-        )
-        schema.walk(
-          executionContext,
-          effectiveRootNode,
-          true
-        )
-      }
+    val validationResult: Result = {
+      val schema = starlakeSchema
+      val executionContext = schema.createExecutionContext()
+      executionContext.setWalkConfig(
+        WalkConfig
+          .builder()
+          .applyDefaultsStrategy(new ApplyDefaultsStrategy(true, true, true))
+          .build()
+      )
+      schema.walk(
+        executionContext,
+        effectiveRootNode,
+        true
+      )
+    }
     // getErrors() is a plain List in 2.0.4 (was a value-equality Set in 1.4.0's getValidationMessages()),
     // so oneOf/anyOf branches that raise structurally-identical errors are no longer deduped upstream.
     // Error overrides equals/hashCode by value (keyword, instanceLocation, evaluationPath, details, ...),

@@ -60,6 +60,7 @@ import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 
 import java.time.format.DateTimeFormatter
 import java.time.{LocalDateTime, ZoneId}
+import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 import scala.jdk.CollectionConverters.*
 import scala.util.matching.Regex
@@ -413,7 +414,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     if (reload || _types == null) loadTypes() else _types
 
   // Do not load if not required (useful for the API)
-  var _types: List[Type] = _
+  @volatile var _types: List[Type] = _
 
   /** @return
     *   the types used to find the type of a database column from its SQL type: the built-in types
@@ -650,8 +651,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   }
 
   // Do not load if not required (useful for the API)
-  private var _activeEnvVars: Map[String, String] = _
-  private var _refs: RefDesc = _
+  @volatile private var _activeEnvVars: Map[String, String] = _
+  @volatile private var _refs: RefDesc = _
 
   @throws[Exception]
   private def loadActiveEnvVars(
@@ -1025,9 +1026,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     }
   }
 
-  private[handlers] var (_domainErrors, _domains)
-    : (List[ValidationMessage], Option[List[DomainInfo]]) =
-    (Nil, None)
+  @volatile private[handlers] var _domainErrors: List[ValidationMessage] = Nil
+  @volatile private[handlers] var _domains: Option[List[DomainInfo]] = None
 
   private var _externals = List.empty[DomainInfo]
   private var _externalLastUpdate = LocalDateTime.MIN
@@ -1598,12 +1598,12 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   }
 
   def jobs(reload: Boolean = false): List[AutoJobInfo] = {
-    if (_jobs.isEmpty || reload) {
+    if (_jobs.get().isEmpty || reload) {
       val (errors, validJobs) = loadJobs()
-      this._jobs = validJobs
+      _jobs.set(validJobs)
       this._jobErrors = errors
     }
-    _jobs
+    _jobs.get()
   }
 
   def iamPolicyTags(): Option[IamPolicyTags] = {
@@ -1619,7 +1619,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   def tasks(reload: Boolean = false): List[AutoTaskInfo] = {
     if (reload) {
       val (errors, validJobs) = loadJobs()
-      this._jobs = validJobs
+      _jobs.set(validJobs)
       this._jobErrors = errors
     }
     jobs().flatMap(_.tasks)
@@ -1658,19 +1658,10 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       val domainName = components(0)
       val taskPartName = components(1)
       val loadedTask =
-        if (reload) {
-          val theJob = _jobs.find(_.getName().equalsIgnoreCase(domainName))
-          theJob match {
-            case None =>
-            case Some(job) =>
-              val tasks = job.tasks.filterNot(_.fullName().equalsIgnoreCase(taskFullName))
-              val newJob = job.copy(tasks = tasks)
-              _jobs = _jobs.filterNot(_.getName().equalsIgnoreCase(domainName)) :+ newJob
-          }
+        if (reload)
           None
-        } else {
-          _jobs.flatMap(_.tasks).find(_.fullName().equalsIgnoreCase(taskFullName))
-        }
+        else
+          _jobs.get().flatMap(_.tasks).find(_.fullName().equalsIgnoreCase(taskFullName))
       loadedTask match {
         case Some(task) =>
           Success(task)
@@ -1700,16 +1691,16 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
               mergedTask
             }
 
-          taskDesc.map { t =>
-            val theJob = _jobs.find(_.getName().equalsIgnoreCase(domainName))
-            theJob match {
-              case None =>
-              case Some(job) =>
-                val tasks = job.tasks :+ t
-                val newJob = job.copy(tasks = tasks)
-                _jobs = _jobs.filterNot(_.getName().equalsIgnoreCase(domainName)) :+ newJob
-            }
-
+          // The task is replaced in one step, once loaded: other threads running tasks of this job
+          // ask for it in the meantime. It only goes away if it can no longer be loaded.
+          def otherTasks(job: AutoJobInfo) =
+            job.tasks.filterNot(_.fullName().equalsIgnoreCase(taskFullName))
+          taskDesc match {
+            case Success(task) =>
+              updateJob(domainName)(job => job.copy(tasks = otherTasks(job) :+ task))
+            case Failure(_) if reload =>
+              updateJob(domainName)(job => job.copy(tasks = otherTasks(job)))
+            case Failure(_) =>
           }
 
           taskDesc.orElse(
@@ -1721,7 +1712,27 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     }
   }
 
-  private var (_jobErrors, _jobs): (List[ValidationMessage], List[AutoJobInfo]) = (Nil, Nil)
+  @volatile private var _jobErrors: List[ValidationMessage] = Nil
+
+  // Tasks running concurrently read and reload their job. A change goes through updateJobs, which
+  // applies it to the latest list, so that it cannot overwrite the change of another thread.
+  private val _jobs = new AtomicReference[List[AutoJobInfo]](Nil)
+
+  /** @param update
+    *   may run several times, so it must only compute the new list
+    */
+  private def updateJobs(update: List[AutoJobInfo] => List[AutoJobInfo]): Unit = {
+    _jobs.updateAndGet(jobs => update(jobs))
+    ()
+  }
+
+  private def updateJob(name: String)(update: AutoJobInfo => AutoJobInfo): Unit =
+    updateJobs { jobs =>
+      jobs.find(_.getName().equalsIgnoreCase(name)) match {
+        case Some(job) => jobs.filterNot(_.getName().equalsIgnoreCase(name)) :+ update(job)
+        case None      => jobs
+      }
+    }
 
   /** All Jobs are defined under the "transform" folder in the metadata folder
     */
@@ -2091,9 +2102,9 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       case None =>
         logger.warn(s"Job $domain not found")
       case Some(job) =>
-        val tasksToKeep = job.tasks.filterNot(_.name.toLowerCase() == task.toLowerCase())
-        val updatedJob = job.copy(tasks = tasksToKeep)
-        _jobs = _jobs.filterNot(_.name == job.name) :+ updatedJob
+        updateJob(job.name) { current =>
+          current.copy(tasks = current.tasks.filterNot(_.name.equalsIgnoreCase(task)))
+        }
     }
   }
 
@@ -2141,7 +2152,10 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     // Add the domain if it does not exist
     jobs().find(_.name.toLowerCase() == domainName.toLowerCase()) match {
       case None =>
-        _jobs = _jobs :+ AutoJobInfo(domainName)
+        updateJobs { jobs =>
+          if (jobs.exists(_.name.equalsIgnoreCase(domainName))) jobs
+          else jobs :+ AutoJobInfo(domainName)
+        }
       case Some(_) =>
       // do nothing
     }
@@ -2149,13 +2163,14 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     // Load the task and add it to the job, replace if it already exists
     taskOnly(s"${domainName}.${taskName}", reload = true) match {
       case Success(taskDesc) =>
-        _jobs.find(_.name.toLowerCase() == domainName.toLowerCase()) match {
+        _jobs.get().find(_.name.toLowerCase() == domainName.toLowerCase()) match {
           case None =>
             throw new Exception(s"Should not happen: Job $domainName not found")
           case Some(job) =>
-            val updatedTasks = job.tasks.filterNot(_.name.equalsIgnoreCase(taskDesc.name))
-            val updatedJob = job.copy(tasks = updatedTasks :+ taskDesc)
-            _jobs = _jobs.filterNot(_.name == job.name) :+ updatedJob
+            updateJob(job.name) { current =>
+              val updatedTasks = current.tasks.filterNot(_.name.equalsIgnoreCase(taskDesc.name))
+              current.copy(tasks = updatedTasks :+ taskDesc)
+            }
             Success(())
         }
       case Failure(e) =>
@@ -2340,13 +2355,14 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       updatedTask
     )(settings.storageHandler())
 
-    val updatedJob = job.copy(
-      tasks = job.tasks.map {
-        case t if t.getTableName().toLowerCase() == obj.table.toLowerCase() => updatedTask
-        case t                                                              => t
-      }
-    )
-    _jobs = _jobs.filterNot(_.name.toLowerCase() == job.name.toLowerCase()) :+ updatedJob
+    updateJob(job.name) { current =>
+      current.copy(
+        tasks = current.tasks.map {
+          case t if t.getTableName().toLowerCase() == obj.table.toLowerCase() => updatedTask
+          case t                                                              => t
+        }
+      )
+    }
   }
 
   def external(domain: String, table: String): Option[SchemaInfo] = {

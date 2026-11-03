@@ -135,13 +135,11 @@ trait IngestionJob
         }
 
       case _ =>
-        val exists = SparkUtils.tableExists(session, targetTableName)
-        if (exists)
-          session.sql(s"select * from $targetTableName").createOrReplaceTempView("SL_THIS")
-        sqls.foreach { sql =>
-          val compiledSql = sql.richFormat(schemaHandler.activeEnvVars(), options)
-          SparkUtils.sql(session, compiledSql)
-        }
+        IngestionJob.runSparkPrePostSql(
+          session,
+          targetTableName,
+          sqls.map(_.richFormat(schemaHandler.activeEnvVars(), options))
+        )
     }
   }
 
@@ -303,6 +301,17 @@ trait IngestionJob
 }
 
 object IngestionJob extends LazyLogging {
+
+  private[starlake] def runSparkPrePostSql(
+    session: SparkSession,
+    targetTableName: String,
+    sqls: List[String]
+  ): Unit = SparkUtils.withSlThisView {
+    val exists = SparkUtils.tableExists(session, targetTableName)
+    if (exists)
+      session.sql(s"select * from $targetTableName").createOrReplaceTempView("SL_THIS")
+    sqls.foreach(SparkUtils.sql(session, _))
+  }
 
   private val nativeSupportedFormats: Map[String, Set[Format]] = Map(
     "bigquery" -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION, Format.PARQUET),
