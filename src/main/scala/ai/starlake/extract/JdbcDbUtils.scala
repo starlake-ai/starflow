@@ -315,15 +315,21 @@ object JdbcDbUtils extends LazyLogging {
     }
   }
 
+  private val schemaCreationLock = new Object
+
   @throws[Exception]
-  def createSchema(conn: Connection, domainName: String): Unit = {
-    executeUpdate(schemaCreateSQL(domainName), conn) match {
-      case Success(_) =>
-      case Failure(e) =>
-        logger.error(s"Error creating schema $domainName", e)
-        throw e
+  def createSchema(conn: Connection, domainName: String): Unit =
+    // Even IF NOT EXISTS fails when another connection is creating the same schema, on DuckDB with
+    // a write-write conflict. Whoever comes second finds the schema and has nothing to do.
+    schemaCreationLock.synchronized {
+      executeUpdate(schemaCreateSQL(domainName), conn) match {
+        case Success(_) =>
+        case Failure(e) =>
+          logger.error(s"Error creating schema $domainName", e)
+          throw e
+      }
     }
-  }
+
   @throws[Exception]
   def createDatabase(conn: Connection, dbName: String): Unit = {
     executeUpdate(databaseCreateSQL(dbName), conn) match {
