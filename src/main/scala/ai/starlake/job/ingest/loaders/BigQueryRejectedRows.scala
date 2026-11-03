@@ -24,8 +24,8 @@ object BigQueryRejectedRows {
 
   /** @return
     *   true if the rejected rows of the load jobs of this format can be found: BigQuery reads the
-    *   rows of the POSITION files as strings, and the rows of the Parquet files rejected by the
-    *   native loader are in the tables of its first step
+    *   lines of the POSITION files as strings, and the rows of the POSITION and Parquet files
+    *   rejected by the native loader are in the tables of its first step (#1856, #1886)
     */
   def supports(format: Format): Boolean =
     format == Format.DSV || format == Format.JSON || format == Format.JSON_FLAT

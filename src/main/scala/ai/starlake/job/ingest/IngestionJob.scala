@@ -16,6 +16,7 @@ import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
 import ai.starlake.utils.*
 import ai.starlake.utils.Formatter.*
+import ai.starlake.utils.conversion.BigQueryPositionValues
 import com.google.cloud.bigquery.TableId
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
@@ -461,6 +462,28 @@ object IngestionJob extends LazyLogging {
               .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
         )
       unsupported.isEmpty
+    } && {
+      // The second step reads the values of POSITION files with SQL: a type whose format BigQuery
+      // cannot apply would reject all of them (#1886)
+      val unreadable =
+        if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.POSITION)
+          attributes
+            .filter(attribute =>
+              !attribute.resolveIgnore() && attribute.script.isEmpty && attribute.transform.isEmpty
+            )
+            .flatMap { attribute =>
+              types
+                .find(_.name == attribute.`type`)
+                .flatMap(BigQueryPositionValues.unreadable(_))
+                .map(reason => s"${attribute.name} ($reason)")
+            }
+        else Nil
+      if (unreadable.nonEmpty)
+        logger.warn(
+          s"Loading $tableName with Spark instead of the native bigquery loader, which does not read the values of ${unreadable
+              .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
+        )
+      unreadable.isEmpty
     }
   }
 
