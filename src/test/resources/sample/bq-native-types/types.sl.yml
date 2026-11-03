@@ -79,3 +79,9 @@ types:
     zone: "10,0"
     ddlMapping:
       bigquery: "NUMERIC(10)"
+  - name: "unmapped_count"
+    primitiveType: "long"
+    pattern: "-?\\d+"
+  - name: "unmapped_day"
+    primitiveType: "date"
+    pattern: "dd/MM/yyyy"
