@@ -23,10 +23,10 @@ WITH SL_INCOMING AS
     WHERE  SL_EXISTING.{{strategyTimestamp}} < SL_INCOMING.{{strategyTimestamp}}
     ) SL_INCOMING
 ON ({{ renderStrategyJoinConditionWithPseudo('SL_INCOMING', 'SL_EXISTING', strategyKey) }})
-WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = CURRENT_TIMESTAMP()
+WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP()', strategyEndTsType) }}
 WHEN NOT MATCHED THEN
-    INSERT ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
-    VALUES ({{ renderColumnsWithoutScd2(tableColumnNames, 'SL_INCOMING.') }}, CURRENT_TIMESTAMP(), NULL);
+    INSERT ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
+    VALUES ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'SL_INCOMING.') }}, {{ scd2Now('CURRENT_TIMESTAMP()', strategyStartTsType) }}, NULL);
 
 {%  else  %}
 MERGE INTO {{ tableFullName }} SL_EXISTING USING (
@@ -49,10 +49,10 @@ WITH SL_INCOMING AS
     ON ({{ strategyKeyJoinCondition }} AND SL_EXISTING.{{strategyEndTs}} IS NULL)
     ) SL_INCOMING
 ON ({{ renderStrategyJoinConditionWithPseudo('SL_INCOMING', 'SL_EXISTING', strategyKey) }})
-WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = CURRENT_TIMESTAMP()
+WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP()', strategyEndTsType) }}
 WHEN NOT MATCHED THEN
-    INSERT ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
-    VALUES ({{ renderColumnsWithoutScd2(tableColumnNames, 'SL_INCOMING.') }}, CURRENT_TIMESTAMP(), NULL);
+    INSERT ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }} )
+    VALUES ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'SL_INCOMING.') }}, {{ scd2Now('CURRENT_TIMESTAMP()', strategyStartTsType) }}, NULL);
 
 
 {% endif %}

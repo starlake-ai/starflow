@@ -130,7 +130,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             acl = schema.acl,
             comment = schema.comment,
             tags = schema.tags,
-            writeStrategy = mergedMetadata.writeStrategy,
+            writeStrategy = mergedMetadata.writeStrategy.map(
+              _.withDeclaredValidityTypes(schema.attributes)
+            ),
             parseSQL = Some(true),
             connectionRef = Option(mergedMetadata.getSinkConnectionRef())
           )

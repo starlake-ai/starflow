@@ -88,7 +88,7 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }} ORDER BY {{ strateg
 
 
 {% if strategyType == 'SCD2' %}
-ALTER TABLE {{ tableFullName }} ADD COLUMN {{ strategyStartTs }} TIMESTAMP;
-ALTER TABLE {{ tableFullName }} ADD COLUMN {{ strategyEndTs }} TIMESTAMP;
+{% if not strategyStartTsSelected %}ALTER TABLE {{ tableFullName }} ADD COLUMN IF NOT EXISTS {{ strategyStartTs }} {{ strategyStartTsType }};{% endif %}
+{% if not strategyEndTsSelected %}ALTER TABLE {{ tableFullName }} ADD COLUMN IF NOT EXISTS {{ strategyEndTs }} {{ strategyEndTsType }};{% endif %}
 {% endif %}
 

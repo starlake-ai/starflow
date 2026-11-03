@@ -9,6 +9,7 @@ import ai.starlake.schema.model.{
   AutoTaskInfo,
   Engine,
   TableSync,
+  WriteStrategy,
   WriteStrategyType
 }
 import ai.starlake.sql.SQLUtils
@@ -17,7 +18,7 @@ import ai.starlake.utils.{JdbcJobResult, JobResult, SparkUtils, StarlakeNotFound
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
-import org.apache.spark.sql.types.{StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{DataFrame, SaveMode}
 
 import java.sql.{Connection, Timestamp}
@@ -136,23 +137,6 @@ class JdbcAutoTask(
     }
   }
 
-  private def buildAddSCD2ColumnsSqls(engineName: Engine): List[String] = {
-    this.taskDesc.writeStrategy match {
-      case Some(strategyOptions) if strategyOptions.getEffectiveType() == WriteStrategyType.SCD2 =>
-        val startTsCol = strategyOptions.startTs.getOrElse(settings.appConfig.scd2StartTimestamp)
-        val endTsCol = strategyOptions.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
-        val scd2Columns = List(startTsCol, endTsCol)
-        val alterTableSqls = scd2Columns.map { column =>
-          if (engineName.toString.toLowerCase() == "redshift")
-            s"ALTER TABLE $fullTableName ADD COLUMN $column TIMESTAMP"
-          else
-            s"ALTER TABLE $fullTableName ADD COLUMN IF NOT EXISTS $column TIMESTAMP NULL"
-        }
-        alterTableSqls
-      case _ =>
-        List.empty
-    }
-  }
   def addSCD2Columns(connection: Connection, engineName: Engine): Unit = {
     val alterTableSqls = buildAddSCD2ColumnsSqls(engineName)
     // ignore errors if columns already exist
@@ -509,39 +493,24 @@ class JdbcAutoTask(
     val isSCD2 = writeStrategy.getEffectiveType() == WriteStrategyType.SCD2
     val incomingSchemaWithSCD2 =
       if (isSCD2) {
-        val startTs = writeStrategy.startTs.getOrElse(settings.appConfig.scd2StartTimestamp)
-        val incomingSchemaWithStartTs =
-          if (incomingSchema.fieldNames.contains(startTs)) {
-            logger.warn(
-              s"Incoming schema already contains SCD2 start timestamp column '$startTs'. It will not be added again."
-            )
-            incomingSchema
-          } else {
-            incomingSchema
-              .add(
-                StructField(
-                  startTs,
-                  TimestampType,
-                  nullable = true
-                )
+        // Each validity column that the incoming schema lacks, whatever the case of its name, with
+        // its type (#1885)
+        val (startTs, endTs) = writeStrategy.validityColumns()
+        val (startType, endType) = writeStrategy.validityColumnTypes()
+        List(startTs -> startType, endTs -> endType)
+          .filter(_._1.nonEmpty)
+          .distinctBy(_._1.toLowerCase)
+          .foldLeft(incomingSchema) { case (schema, (column, primitiveType)) =>
+            if (schema.fieldNames.exists(_.equalsIgnoreCase(column))) {
+              logger.warn(
+                s"Incoming schema already contains SCD2 validity column '$column'. It will not be added again."
+              )
+              schema
+            } else
+              schema.add(
+                StructField(column, WriteStrategy.validitySparkType(primitiveType), nullable = true)
               )
           }
-        val endTs = writeStrategy.endTs.getOrElse(settings.appConfig.scd2EndTimestamp)
-        if (incomingSchemaWithStartTs.fieldNames.contains(endTs)) {
-          logger.warn(
-            s"Incoming schema already contains SCD2 end timestamp column '$endTs'. It will not be added again."
-          )
-          incomingSchemaWithStartTs
-        } else {
-          incomingSchemaWithStartTs
-            .add(
-              StructField(
-                endTs,
-                TimestampType,
-                nullable = true
-              )
-            )
-        }
       } else {
         incomingSchema
       }

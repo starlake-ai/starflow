@@ -280,7 +280,9 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       acl = starlakeSchema.acl,
       comment = starlakeSchema.comment,
       tags = starlakeSchema.tags,
-      writeStrategy = mergedMetadata.writeStrategy,
+      writeStrategy = mergedMetadata.writeStrategy.map(
+        _.withDeclaredValidityTypes(starlakeSchema.attributes)
+      ),
       parseSQL = Some(true),
       connectionRef = Option(mergedMetadata.getSinkConnectionRef())
     )

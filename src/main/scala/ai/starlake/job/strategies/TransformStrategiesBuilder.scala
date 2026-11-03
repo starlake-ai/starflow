@@ -283,7 +283,7 @@ object TransformStrategiesBuilder {
         .toAllSinks()
         .format
         .getOrElse(settings.appConfig.defaultWriteFormat)
-      strategy.asMap(jdbcEngine) ++ tableComponents.asMap(jdbcEngine) ++ Map(
+      strategy.asMap(jdbcEngine) ++ tableComponents.asMap(jdbcEngine) ++ validityColumns() ++ Map(
         "selectStatement"           -> selectStatement,
         "tableExists"               -> targetTableExists,
         "tableTruncate"             -> truncate,
@@ -293,6 +293,32 @@ object TransformStrategiesBuilder {
         "quotedPartitionPruningKey" -> quotedPartitionPruningKey
       ) ++ jdbcEngine.asMap() ++ sinkConfig.asMap(jdbcEngine)
 
+    }
+
+    /** The SCD2 validity columns: their column types for the engine (#1885), whether the SELECT
+      * returns them, and the columns of the SELECT without them, which the built-in templates
+      * insert before the validity columns (#1884). A validity column that is also the timestamp or
+      * a key of the strategy stays among the columns of the SELECT.
+      */
+    private def validityColumns()(implicit settings: Settings): Map[String, Any] = {
+      val (startType, endType) = strategy.validityColumnTypes()
+      val names = SQLUtils.unquoteAgressive(tableComponents.columnNames)
+      def isSelected(column: Option[String]): Boolean =
+        column.exists(column => names.exists(_.equalsIgnoreCase(column)))
+      val kept = strategy.timestamp.toList ++ strategy.key
+      val validity = List(strategy.startTs, strategy.endTs).flatten
+        .filter(column => column.nonEmpty && !kept.exists(_.equalsIgnoreCase(column)))
+      val withoutValidity = tableComponents.columnNames.zip(names).collect {
+        case (column, name) if !validity.exists(_.equalsIgnoreCase(name)) => column
+      }
+      Map(
+        "strategyStartTsType" -> WriteStrategy
+          .validityColumnDdl(startType, jdbcEngine.strategyBuilder),
+        "strategyEndTsType" -> WriteStrategy.validityColumnDdl(endType, jdbcEngine.strategyBuilder),
+        "strategyStartTsSelected"         -> isSelected(strategy.startTs),
+        "strategyEndTsSelected"           -> isSelected(strategy.endTs),
+        "tableColumnNamesWithoutValidity" -> asJavaList(withoutValidity)
+      )
     }
   }
 }
