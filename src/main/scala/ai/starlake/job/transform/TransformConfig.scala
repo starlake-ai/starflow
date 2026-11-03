@@ -23,7 +23,8 @@ case class TransformConfig(
   pageSize: Int = 1000,
   pageNumber: Int = 1,
   scheduledDate: Option[String] = None,
-  reportFormat: Option[String] = None
+  reportFormat: Option[String] = None,
+  parallelism: Option[Int] = None
 ) extends ReportFormatConfig {
   def optionsAsString: String = options.map { case (k, v) => s"$k=$v" }.mkString(",")
 
@@ -87,6 +88,7 @@ case class TransformConfig(
        |pageSize=$pageSize
        |pageNumber=$pageNumber
        |reportFormat=$reportFormat
+       |parallelism=$parallelism
        |""".stripMargin
   }
 }

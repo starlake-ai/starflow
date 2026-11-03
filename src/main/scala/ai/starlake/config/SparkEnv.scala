@@ -63,7 +63,7 @@ class SparkEnv private (
 
   /** Creates a Spark Session with the spark.* keys defined the application conf file.
     */
-  def session(implicit settings: Settings): SparkSession = {
+  def session(implicit settings: Settings): SparkSession = synchronized {
     if (!isSessionStarted()) {
       val conn = settings.appConfig.getDefaultConnection()
 
@@ -192,7 +192,7 @@ object SparkEnv {
     name: String,
     confTransformer: SparkConf => SparkConf = identity,
     settings: Settings
-  ): SparkEnv = {
+  ): SparkEnv = synchronized {
     if (sparkEnv == null) {
       sparkEnv = new SparkEnv(name, settings.jobConf, settings.appConfig.datasets, confTransformer)
     }

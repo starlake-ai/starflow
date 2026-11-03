@@ -14,7 +14,9 @@ class TransformBatchIntegrationSpec extends IntegrationTestBase {
   override def beforeEach(): Unit = ()
   override def afterEach(): Unit = ()
 
-  private def withProject(test: File => Unit): Unit = {
+  private def withProject(test: File => Unit): Unit = withProject(audit = false)(test)
+
+  private def withProject(audit: Boolean)(test: File => Unit): Unit = {
     val root = File.newTemporaryDirectory("transform-batch-")
     try {
       (root / "datasets").createDirectories()
@@ -25,7 +27,7 @@ class TransformBatchIntegrationSpec extends IntegrationTestBase {
              |application:
              |  connectionRef: duckdb
              |  audit:
-             |    active: false
+             |    active: $audit
              |  connections:
              |    duckdb:
              |      type: jdbc
@@ -91,6 +93,81 @@ class TransformBatchIntegrationSpec extends IntegrationTestBase {
       rs.next()
       rs.getLong(1)
     } finally conn.close()
+  }
+
+  private def manyTasks(root: File, count: Int): List[String] = {
+    val job = root / "metadata" / "transform" / "batch"
+    (0 until count).toList.map { i =>
+      (job / s"wide$i.sql").overwrite(s"SELECT $i AS id")
+      s"batch.wide$i"
+    }
+  }
+
+  private def ids(root: File, table: String): List[Int] = {
+    val conn = DriverManager.getConnection(s"jdbc:duckdb:${root.pathAsString}/datasets/duckdb.db")
+    try {
+      val rs = conn.createStatement().executeQuery(s"SELECT id FROM batch.$table")
+      Iterator.continually(rs).takeWhile(_.next()).map(_.getInt(1)).toList
+    } finally conn.close()
+  }
+
+  "transform --parallelism" should "write each task to its own table on a new database" in {
+    withProject { root =>
+      val names = manyTasks(root, 8)
+      transform("--name", names.mkString(","), "--parallelism", "8") shouldBe true
+      (0 until 8).foreach(i => ids(root, s"wide$i") shouldBe List(i))
+    }
+  }
+
+  it should "replace the content of existing tables" in {
+    withProject { root =>
+      val names = manyTasks(root, 8)
+      transform("--name", names.mkString(","), "--parallelism", "8") shouldBe true
+      transform("--name", names.mkString(","), "--parallelism", "8") shouldBe true
+      (0 until 8).foreach(i => ids(root, s"wide$i") shouldBe List(i))
+    }
+  }
+
+  it should "log every task to the audit table on a new database" in {
+    withProject(audit = true) { root =>
+      val names = manyTasks(root, 8)
+      transform("--name", names.mkString(","), "--parallelism", "8") shouldBe true
+      (0 until 8).foreach(i => ids(root, s"wide$i") shouldBe List(i))
+      val conn = DriverManager.getConnection(s"jdbc:duckdb:${root.pathAsString}/datasets/duckdb.db")
+      try {
+        val rs = conn.createStatement().executeQuery("SELECT count(*) FROM audit.audit")
+        rs.next()
+        rs.getLong(1) shouldBe 8
+      } finally conn.close()
+    }
+  }
+
+  it should "run upstream tasks first" in {
+    withProject { root =>
+      transform("--name", "batch.down,batch.up,batch.other", "--parallelism", "3") shouldBe true
+      tables(root) should contain allOf ("up", "down", "other")
+    }
+  }
+
+  it should "skip what reads a failed task, run the rest and fail" in {
+    withProject { root =>
+      transform(
+        "--name",
+        "batch.broken,batch.after_broken,batch.other",
+        "--parallelism",
+        "3"
+      ) shouldBe false
+      val created = tables(root)
+      created should contain("other")
+      created should not contain "after_broken"
+    }
+  }
+
+  it should "run all the tags on several threads with --recursive" in {
+    withProject { root =>
+      transform("--tags", "chain", "--recursive", "--parallelism", "2") shouldBe true
+      tables(root) should contain allOf ("up", "down")
+    }
   }
 
   "transform --name a,a" should "run the task twice" in {

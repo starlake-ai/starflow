@@ -124,12 +124,14 @@ class JdbcAutoTask(
     // Table not found and it is an table in the audit schema defined in the reference-connections.conf file  Try to create it.
     JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
       conn =>
-        auditTableCreateSQL().foreach { sql =>
-          JdbcDbUtils.executeUpdate(sql, conn) match {
-            case Success(_) =>
-            case Failure(e) =>
-              logger.error(s"Error executing $sql", e)
-              throw e
+        JdbcDbUtils.withCatalogCreationLock {
+          auditTableCreateSQL().foreach { sql =>
+            JdbcDbUtils.executeUpdate(sql, conn) match {
+              case Success(_) =>
+              case Failure(e) =>
+                logger.error(s"Error executing $sql", e)
+                throw e
+            }
           }
         }
         true

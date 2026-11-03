@@ -44,6 +44,17 @@ trait TransformCmd extends Cmd[TransformConfig] {
           "Task name in the form domain.task. Several names separated by commas run in one JVM, upstream tasks first. Either --name or --tags is required"
         ),
       builder
+        .opt[Int]("parallelism")
+        .action((x, c) => c.copy(parallelism = Some(x)))
+        .validate(x =>
+          if (x >= 1) builder.success
+          else builder.failure("--parallelism must be at least 1")
+        )
+        .optional()
+        .text(
+          "How many tasks may run at the same time with several names, --tags or --recursive. A task still waits for the tasks it reads. Default is maxParTask (SL_MAX_PAR_TASK), which is 1"
+        ),
+      builder
         .opt[Unit]("compile")
         .action((_, c) => c.copy(compile = true))
         .optional()
