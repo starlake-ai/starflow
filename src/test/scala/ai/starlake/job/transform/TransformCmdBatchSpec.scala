@@ -105,4 +105,18 @@ class TransformCmdBatchSpec extends AnyFlatSpec with Matchers {
     val run = TransformConfig(name = "a.b", scheduledDate = None)
     run.dryRunSupportedOn(Engine.JDBC) shouldBe true
   }
+
+  "--parallelism" should "be read from the command line" in {
+    TransformCmd
+      .parse(Seq("--name", "a.b,a.c", "--parallelism", "4"))
+      .flatMap(_.parallelism) shouldBe Some(4)
+  }
+
+  it should "be unset by default, so that the settings decide" in {
+    TransformCmd.parse(Seq("--name", "a.b,a.c")).flatMap(_.parallelism) shouldBe None
+  }
+
+  it should "refuse a value below 1" in {
+    TransformCmd.parse(Seq("--name", "a.b,a.c", "--parallelism", "0")) shouldBe None
+  }
 }

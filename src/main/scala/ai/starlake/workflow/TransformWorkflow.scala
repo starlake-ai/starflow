@@ -8,6 +8,7 @@ import ai.starlake.job.transform.{
   TransformBatchSummary,
   TransformConfig,
   TransformContext,
+  TransformStep,
   TransformTaskResult,
   TransformTaskStatus
 }
@@ -143,54 +144,64 @@ trait TransformWorkflow extends LazyLogging {
   /** Runs the selected tasks of the trees, upstream first, in this JVM. A task runs as many times
     * as it is a root of the trees, and once when other tasks only read it.
     *
-    * Serial on purpose: the transform paths are not safe to run concurrently in one JVM (#1785).
-    *
     * A task behind a failure is skipped, and tasks on other branches still run, so that one run
-    * reports all the failures it can find. Nodes that are not run (tables, tasks not selected)
-    * still carry the order and the failures of what is upstream of them.
+    * reports all the failures it can find.
     *
     * @param selected
     *   receives the name of a task as the trees spell it
     * @param taskConfig
     *   the config each task runs with, once given its name
+    * @param parallelism
+    *   how many tasks may run at the same time. With 1, they run on this thread
     */
   private[workflow] def runTaskTrees(
     trees: List[TaskViewDependencyNode],
     selected: String => Boolean,
-    taskConfig: TransformConfig
+    taskConfig: TransformConfig,
+    parallelism: Int = 1
   ): TransformBatchSummary = {
-    // Node name -> the failed task blocking whatever reads this node. The trees repeat what several
-    // tasks read, so this is also what runs only once a task that several tasks read.
-    val visited = mutable.Map.empty[String, Option[String]]
-    val results = mutable.ListBuffer.empty[TransformTaskResult]
-
-    def runTask(name: String): Option[String] = {
+    def runTask(name: String): TransformTaskResult = {
       logger.info(s"Transforming $name")
       val start = System.nanoTime()
       val status = Try(transform(taskConfig.copy(name = name))).flatten match {
         case Success(_) => TransformTaskStatus.Succeeded
         case Failure(e) => TransformTaskStatus.Failed(e)
       }
-      results += TransformTaskResult(name, status, (System.nanoTime() - start) / 1000000L)
-      if (status == TransformTaskStatus.Succeeded) None else Some(name)
+      TransformTaskResult(name, status, (System.nanoTime() - start) / 1000000L)
     }
+    TransformBatchSummary(
+      TransformStep.runAll(planTaskTrees(trees, selected), parallelism)(runTask)
+    )
+  }
 
-    def runOrSkip(node: TaskViewDependencyNode, failedUpstream: Option[String]): Option[String] =
-      if (node.isTask() && selected(node.data.name))
-        failedUpstream match {
-          case Some(failed) =>
-            results += TransformTaskResult(node.data.name, TransformTaskStatus.Skipped(failed), 0L)
-            failedUpstream
-          case None => runTask(node.data.name)
-        }
-      else
-        failedUpstream
+  /** The runs the trees ask for, each after the ones it reads. Run in this order, one at a time,
+    * they make a valid serial execution.
+    */
+  private def planTaskTrees(
+    trees: List[TaskViewDependencyNode],
+    selected: String => Boolean
+  ): Vector[TransformStep] = {
+    val steps = mutable.ArrayBuffer.empty[TransformStep]
+    // Node name -> the runs that whatever reads this node depends on. The trees repeat what several
+    // tasks read, so this is also what plans only once a task that several tasks read. Nodes that
+    // are not run (tables, tasks not selected) pass on the runs upstream of them.
+    val visited = mutable.Map.empty[String, List[Int]]
 
-    def visit(node: TaskViewDependencyNode): Option[String] = {
+    def plan(node: TaskViewDependencyNode, reads: List[Int], after: Set[Int]): List[Int] =
+      if (node.isTask() && selected(node.data.name)) {
+        steps += TransformStep(node.data.name, reads, after)
+        List(steps.size - 1)
+      } else
+        reads
+
+    def reads(node: TaskViewDependencyNode): List[Int] =
+      node.children.flatMap(visit).distinct
+
+    def visit(node: TaskViewDependencyNode): List[Int] = {
       val key = node.data.name.toLowerCase
       visited.getOrElse(
         key, {
-          val outcome = runOrSkip(node, node.children.flatMap(visit).headOption)
+          val outcome = plan(node, reads(node), Set.empty)
           visited(key) = outcome
           outcome
         }
@@ -198,16 +209,18 @@ trait TransformWorkflow extends LazyLogging {
     }
 
     // There is one tree per listed task, so a root seen before is a task listed again. It runs again
-    // at this place in the list, while what it reads is already settled and does not.
+    // at this place in the list, so once what comes before has finished, and what is listed before
+    // may read the table it writes. What it reads is already settled and does not run again.
     val listed = mutable.Set.empty[String]
     trees.foreach { root =>
       if (listed.add(root.data.name.toLowerCase))
         visit(root)
-      else
-        visited(root.data.name.toLowerCase) =
-          runOrSkip(root, root.children.flatMap(visit).headOption)
+      else {
+        val upstream = reads(root)
+        visited(root.data.name.toLowerCase) = plan(root, upstream, steps.indices.toSet)
+      }
     }
-    TransformBatchSummary(results.toList)
+    steps.toVector
   }
 
   /** The tasks a multi task config asks for, spelled as the project declares them. Fails before
@@ -240,6 +253,7 @@ trait TransformWorkflow extends LazyLogging {
       val lineage = dependencies.tasks(AutoTaskDependenciesConfig(all = true))
       val trees =
         dependencies.jobsDependencyTree(lineage, AutoTaskDependenciesConfig(tasks = Some(tasks)))
+      val parallelism = config.parallelism.getOrElse(settings.appConfig.maxParTask)
       val summary =
         if (config.recursive)
           runTaskTrees(
@@ -249,14 +263,16 @@ trait TransformWorkflow extends LazyLogging {
               TransformAction.Run,
               options = config.options,
               scheduledDate = config.scheduledDate
-            )
+            ),
+            parallelism
           )
         else {
           val selected = tasks.map(_.toLowerCase).toSet
           runTaskTrees(
             trees,
             name => selected.contains(name.toLowerCase),
-            config.copy(tags = Seq.empty)
+            config.copy(tags = Seq.empty),
+            parallelism
           )
         }
       Utils.printOut(summary.render)

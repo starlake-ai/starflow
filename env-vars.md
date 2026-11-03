@@ -90,7 +90,7 @@ This document lists all environment variables that can be used to configure Star
 | `SL_CSV_OUTPUT` | Save Format in CSV with coalesce(1) | `false` |
 | `SL_CSV_OUTPUT_EXT` | Save file extension when saving in CSV with coalesce(1) | `` |
 | `SL_MAX_PAR_COPY` | Max parallelism for a copy job (1 means no parallelism) | `1` |
-| `SL_MAX_PAR_TASK` | Max parallelism for a dag of task (1 means no parallelism) | `1` |
+| `SL_MAX_PAR_TASK` | How many tasks of one `transform` command may run at the same time, unless `--parallelism` is set (1 means no parallelism). Also limits the BigQuery native loader | `1` |
 | `SL_FORCE_HALT` | Force JVM halt at the end of the process | `false` |
 | `SL_JOB_ID_ENV_NAME` | Name of environment variable to retrieve job id from audit logs | - |
 

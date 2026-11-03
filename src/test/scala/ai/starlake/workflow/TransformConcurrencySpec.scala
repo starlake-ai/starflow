@@ -14,8 +14,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{Callable, CyclicBarrier, Executors, TimeUnit}
 import scala.util.Try
 
-/** Real tasks on real threads (#1785). All of these interleavings are timing dependent, so each test
-  * starts its threads on a barrier to make the overlap the common case rather than the rare one.
+/** Real tasks on real threads (#1785). All of these interleavings are timing dependent, so each
+  * test starts its threads on a barrier to make the overlap the common case rather than the rare
+  * one.
   */
 class TransformConcurrencySpec extends TestHelper {
 
@@ -162,6 +163,26 @@ class TransformConcurrencySpec extends TestHelper {
       (0 until taskCount).foreach { i =>
         sparkSession.table(s"conc.t$i").collect().map(_.getInt(0)).toList shouldBe List(i)
       }
+    }
+  }
+
+  it should "log every task to the audit table when it does not exist yet" in {
+    val config = ConfigFactory
+      .parseString("""audit { active = true, sink { connectionRef = "spark" } }""")
+      .withFallback(super.testConfiguration)
+    new WithSettings(config) {
+      deliverTasks(taskCount)
+      val handler = settings.schemaHandler(reload = true)
+      handler.tasks(reload = true)
+      val auditTable = s"${settings.appConfig.audit.getDomain()}.audit"
+      sparkSession.sql(s"DROP TABLE IF EXISTS $auditTable")
+      val workflow = new IngestionWorkflow(settings.storageHandler(), handler)
+
+      concurrently(taskCount) { i =>
+        workflow.transform(TransformConfig(name = s"conc.t$i", scheduledDate = None)).get
+      }.foreach(_.get)
+
+      sparkSession.table(auditTable).count() shouldBe taskCount
     }
   }
 

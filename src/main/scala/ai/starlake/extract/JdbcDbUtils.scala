@@ -315,13 +315,17 @@ object JdbcDbUtils extends LazyLogging {
     }
   }
 
-  private val schemaCreationLock = new Object
+  private val catalogCreationLock = new Object
+
+  /** Runs CREATE ... IF NOT EXISTS statements. Even these fail when another connection is creating
+    * the same object, on DuckDB with a write-write conflict. They must commit before this returns:
+    * whoever comes second then finds the object and has nothing to do.
+    */
+  def withCatalogCreationLock[T](body: => T): T = catalogCreationLock.synchronized(body)
 
   @throws[Exception]
   def createSchema(conn: Connection, domainName: String): Unit =
-    // Even IF NOT EXISTS fails when another connection is creating the same schema, on DuckDB with
-    // a write-write conflict. Whoever comes second finds the schema and has nothing to do.
-    schemaCreationLock.synchronized {
+    withCatalogCreationLock {
       executeUpdate(schemaCreateSQL(domainName), conn) match {
         case Success(_) =>
         case Failure(e) =>

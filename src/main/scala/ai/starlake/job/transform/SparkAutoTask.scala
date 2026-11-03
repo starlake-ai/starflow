@@ -432,9 +432,10 @@ class SparkAutoTask(
       Map.empty
     )
 
-    SparkUtils.createSchema(session, fullDomainName)
-    Try(SparkUtils.sql(session, script)).isSuccess
-
+    JdbcDbUtils.withCatalogCreationLock {
+      SparkUtils.createSchema(session, fullDomainName)
+      Try(SparkUtils.sql(session, script)).isSuccess
+    }
   }
 
   /** Creates a TransformContext for delegating to other AutoTask types.
