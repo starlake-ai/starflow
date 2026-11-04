@@ -193,6 +193,58 @@ assert_cds_inactive() {
   [[ "$(last_submit)" == *"-Dmine=1"* ]]
 }
 
+# The proxy password goes to the JVM and nowhere else. "|| false" because bash 3.2, on macOS,
+# does not stop a test on a failing [[ ]] unless it is the last command.
+
+@test "proxy password reaches the driver and is not printed" {
+  HTTP_PROXY=http://me:s3cret@proxy.example:3128 HTTPS_PROXY=http://me:s3cret@proxy.example:3128 \
+    run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Using HTTP_PROXY"* ]] || false
+  [[ "$output" == *"Using HTTPS_PROXY"* ]] || false
+  [[ "$output" != *"s3cret"* ]] || false
+  [[ "$(last_submit)" == *"-Dhttp.proxyPassword=s3cret"* ]] || false
+  [[ "$(last_submit)" == *"-Dhttps.proxyPassword=s3cret"* ]] || false
+}
+
+@test "proxy password is not printed when the proxy URL cannot be parsed" {
+  HTTP_PROXY=http://me:s3cret@proxy.example:3128/path run "$INSTALL/starlake.sh" validate
+  [[ "$output" == *"Could not parse"* ]] || false
+  [[ "$output" != *"s3cret"* ]] || false
+}
+
+@test "proxy password is not printed by a download through the proxy" {
+  https_proxy=http://me:s3cret@proxy.example:3128 SL_INSECURE=1 run "$INSTALL/starlake.sh" upgrade --version 9.9.9
+  [[ "$output" == *"using proxy"* ]] || false
+  [[ "$output" != *"s3cret"* ]] || false
+}
+
+@test "proxy password is not written to the files of a background archive build" {
+  "$INSTALL/starlake.sh" appcds-build
+  touch "$INSTALL/bin/deps/added.jar"
+  HTTP_PROXY=http://me:s3cret@proxy.example:3128 run "$INSTALL/starlake.sh" validate
+  [ "$status" -eq 0 ]
+  wait_for_rebuild 2
+  [[ "$(last_training)" == *"-Dhttp.proxyPassword=s3cret"* ]] || false
+  [ -s "$INSTALL/.appcds/build.log" ]
+  ! grep -r s3cret "$INSTALL/.appcds"
+}
+
+@test "proxy password is not written to the log of a background archive build that fails" {
+  "$INSTALL/starlake.sh" appcds-build
+  touch "$INSTALL/bin/deps/added.jar"
+  STUB_SUBMIT_EXIT=1 HTTP_PROXY=http://me:s3cret@proxy.example:3128 run "$INSTALL/starlake.sh" validate
+  wait_for_background_builds
+  [[ "$(last_training)" == *"-Dhttp.proxyPassword=s3cret"* ]] || false
+  ! grep -r s3cret "$INSTALL/.appcds"
+}
+
+@test "proxy password is not printed when an archive training fails" {
+  HTTP_PROXY=http://me:s3cret@proxy.example:3128 STUB_SUBMIT_EXIT=1 run "$INSTALL/starlake.sh" appcds-build
+  [[ "$(last_training)" == *"-Dhttp.proxyPassword=s3cret"* ]] || false
+  [[ "$output" != *"s3cret"* ]] || false
+}
+
 @test "user driver options come after launcher flags so they win" {
   SPARK_DRIVER_OPTIONS="-Dmine=1" run "$INSTALL/starlake.sh" validate
   [ "$status" -eq 0 ]
