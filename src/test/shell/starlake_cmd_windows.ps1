@@ -122,13 +122,16 @@ $plain = Join-Path $controls 'plain.cmd'
 [IO.File]::WriteAllText($plain, "@echo off`r`nexit /b 7`r`n")
 $called = Join-Path $controls 'called.cmd'
 [IO.File]::WriteAllText($called, "@echo off`r`nsetlocal enabledelayedexpansion`r`ncall :sub`r`ngoto :eof`r`n:sub`r`n    exit /b 7`r`n")
+$explicit = Join-Path $controls 'explicit.cmd'
+[IO.File]::WriteAllText($explicit, "@echo off`r`nsetlocal enabledelayedexpansion`r`ncall :sub`r`nexit /b %errorlevel%`r`n:sub`r`n    exit /b 7`r`n")
+$explicitResult = Starlake '' @{} $explicit
+Write-Host "control call and exit /b: $($explicitResult.Code)"
+Check 'a call followed by exit /b keeps the exit code' ($explicitResult.Code -eq 7)
 $plainResult = Starlake '' @{} $plain
 $calledResult = Starlake '' @{} $called
 Write-Host "control exit /b 7: $($plainResult.Code)"
 Write-Host "control call and goto :eof: $($calledResult.Code)"
 Check 'the harness sees an exit code' ($plainResult.Code -eq 7)
-$direct = & cmd /c "`"$launcher`" transform --name no.such_task >nul 2>&1 & exit !errorlevel!"
-Write-Host "failing transform through cmd directly: $LASTEXITCODE"
 $masterLauncher = Join-Path $InstallDir 'starlake-master.cmd'
 curl.exe -fsSL -o $masterLauncher 'https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/starlake.cmd'
 $masterContent = [IO.File]::ReadAllText($masterLauncher) -replace "`r`n", "`n" -replace "`n", "`r`n"
@@ -139,6 +142,11 @@ Remove-Item $masterLauncher
 $unknown = Starlake 'transform --name no.such_task' @{ SL_APPCDS = 'false' }
 Write-Host "exit code of a failing transform: $($unknown.Code)"
 Check 'a failing command exits non-zero' ($unknown.Code -ne 0) $unknown.Text
+$unknownMain = Starlake 'transform --name no.such_task' @{ SL_APPCDS = 'false'; SL_RUN_MODE = 'main' }
+Write-Host "exit code of a failing transform on SL_RUN_MODE=main: $($unknownMain.Code)"
+Check 'a failing command on SL_RUN_MODE=main exits non-zero' ($unknownMain.Code -ne 0) $unknownMain.Text
+$succeeding = Starlake 'validate' @{ SL_APPCDS = 'false' }
+Check 'a succeeding command exits with 0' ($succeeding.Code -eq 0) "code=$($succeeding.Code)"
 
 Write-Host '--- driver options'
 $printed = Starlake 'validate' @{ SPARK_PRINT_LAUNCH_COMMAND = '1'; SPARK_DRIVER_OPTIONS = '-Dmy.option=1'; HTTP_PROXY = 'http://proxy.invalid:3128'; SL_APPCDS = 'false' }
