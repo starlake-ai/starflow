@@ -1,6 +1,10 @@
 
 # Release notes
 
+# 1.8.17:
+__Bug fix__:
+- **`bq-info` no longer crashes when a table or a dataset is deleted while it scans the project**: it failed with a `NullPointerException` or a 404. What is deleted during the scan is now left out. A refused access still fails the command.
+
 # 1.8.16:
 __New feature__:
 - **`starlake.cmd` now does what `starlake.sh` does on Windows, and starts faster**: it builds an AppCDS class archive during `install`, `reinstall` and `upgrade`, and uses it when `SPARK_MASTER_URL` is `local*`. Measured on GitHub Windows runners, on JDK 17 and 21: `validate` from 12-14s to 7-10s.
