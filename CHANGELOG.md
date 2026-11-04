@@ -3,7 +3,7 @@
 
 # 1.8.16:
 __New feature__:
-- **`starlake.cmd` now does what `starlake.sh` does on Windows, and starts faster**: it builds an AppCDS class archive during `install`, `reinstall` and `upgrade`, and uses it when `SPARK_MASTER_URL` is `local*`. Measured on a GitHub Windows runner: `validate` from about 13s to 7.4s.
+- **`starlake.cmd` now does what `starlake.sh` does on Windows, and starts faster**: it builds an AppCDS class archive during `install`, `reinstall` and `upgrade`, and uses it when `SPARK_MASTER_URL` is `local*`. Measured on GitHub Windows runners, on JDK 17 and 21: `validate` from 12-14s to 7-10s.
   - As with `starlake.sh`: when the jars or the JDK no longer match the archive, the next command starts a rebuild in the background and does not wait for it. Set `SL_APPCDS=false` to turn it off, or run `starlake.cmd appcds-build` to rebuild it.
   - It also uses the C1 compiler for a `transform` on a JDBC connection (`SL_JDBC_C1=false` turns it off), and `SL_RUN_MODE=main` runs the JVM of `spark-submit` without `spark-submit`, with the same classpath and flags.
   - It warns on JDK 24 and newer, which cannot run Starflow. The options in `SPARK_DRIVER_OPTIONS` now come after the flags of the launcher, so yours win.
