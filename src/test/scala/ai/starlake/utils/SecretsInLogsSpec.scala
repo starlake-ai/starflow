@@ -22,8 +22,8 @@ class SecretsInLogsSpec extends TestHelper {
   private val token = Some(secret)
 
   /** Everything Starflow and what it runs log during `body`, at debug level. SLF4J is bound to
-    * reload4j here, so this is where the events go. Callers check that the logs are not empty, since
-    * capturing nothing would make these tests pass.
+    * reload4j here, so this is where the events go. Callers check that the logs are not empty,
+    * since capturing nothing would make these tests pass.
     */
   private def logsOf(body: => Unit): String = {
     val events = new ConcurrentLinkedQueue[String]()
@@ -176,7 +176,9 @@ class SecretsInLogsSpec extends TestHelper {
             TransformConfig(name = "sec.a,sec.b", accessToken = token, scheduledDate = None)
           )
           .get
-        workflow.transform(TransformConfig(name = "sec.a", accessToken = token, scheduledDate = None)).get
+        workflow
+          .transform(TransformConfig(name = "sec.a", accessToken = token, scheduledDate = None))
+          .get
       }
       logs should include("Transforming")
       logs should not include secret
