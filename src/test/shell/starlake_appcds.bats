@@ -245,6 +245,51 @@ assert_cds_inactive() {
   [[ "$output" != *"s3cret"* ]] || false
 }
 
+# setup.sh, with its own curl: it installs what curl prints.
+stub_setup() {
+  export HOME="$BATS_TEST_TMPDIR/home" SHELL=/bin/bash
+  mkdir -p "$HOME" "$BATS_TEST_TMPDIR/setup-jdk/bin"
+  : >"$HOME/.bashrc"
+  cat >"$BATS_TEST_TMPDIR/setup-jdk/bin/java" <<EOF
+#!/usr/bin/env bash
+echo 'openjdk version "$1.0.1" 2025-01-01' >&2
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/setup-jdk/bin/java"
+  export JAVA_HOME="$BATS_TEST_TMPDIR/setup-jdk"
+  cat >"$BATS_TEST_TMPDIR/path/curl" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  [ "$1" = "-o" ] && out="$2"
+  shift
+done
+if [ -n "$out" ]; then echo not-an-archive >"$out"; else printf '#!/usr/bin/env bash\necho "stub starlake $*"\n'; fi
+printf 200
+EOF
+}
+
+@test "setup.sh installs a launcher without the proxy password through a proxy" {
+  stub_setup 17
+  target="$BATS_TEST_TMPDIR/target"
+  https_proxy=http://me:s3cret@proxy.example:3128 SL_INSECURE=1 \
+    run bash "$BATS_TEST_DIRNAME/../../../distrib/setup.sh" --target="$target" --version=9.9.9
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub starlake install"* ]] || false
+  [[ "$output" == *"using proxy"* ]] || false
+  [[ "$output" != *"s3cret"* ]] || false
+  [ "$(head -n 1 "$target/starlake")" = '#!/usr/bin/env bash' ]
+  ! grep -r s3cret "$target" "$HOME"
+}
+
+@test "setup.sh does not print the proxy password when it downloads a JDK" {
+  stub_setup 8
+  https_proxy=http://me:s3cret@proxy.example:3128 SL_INSECURE=1 \
+    run bash "$BATS_TEST_DIRNAME/../../../distrib/setup.sh" --target="$BATS_TEST_TMPDIR/target" --version=9.9.9
+  [[ "$output" == *"Installing an embedded Temurin"* ]] || false
+  [[ "$output" == *"using proxy"* ]] || false
+  [[ "$output" != *"s3cret"* ]] || false
+}
+
 @test "user driver options come after launcher flags so they win" {
   SPARK_DRIVER_OPTIONS="-Dmine=1" run "$INSTALL/starlake.sh" validate
   [ "$status" -eq 0 ]
