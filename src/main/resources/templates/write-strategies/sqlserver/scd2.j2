@@ -11,15 +11,15 @@ DELETE FROM CTE WHERE RN > 1;
 {% endif %}
 
 UPDATE T
-SET T.{{ strategyEndTs }} = CURRENT_TIMESTAMP
+SET T.{{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP', strategyEndTsType) }}
 FROM {{ tableFullName }} T
 INNER JOIN #SL_INCOMING S
 ON {{ renderStrategyKeyJoinCondition('T', 'S', strategyKey) }}
 WHERE T.{{ strategyEndTs }} IS NULL 
 AND S.{{ strategyTimestamp }} > T.{{ strategyTimestamp }};
 
-INSERT INTO {{ tableFullName }} ({{ renderColumnsWithoutScd2(tableColumnNames, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }})
-SELECT {{ renderColumnsWithoutScd2(tableColumnNames, 'S.') }}, CURRENT_TIMESTAMP, NULL
+INSERT INTO {{ tableFullName }} ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }})
+SELECT {{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'S.') }}, {{ scd2Now('CURRENT_TIMESTAMP', strategyStartTsType) }}, NULL
 FROM #SL_INCOMING S
 LEFT JOIN {{ tableFullName }} T 
 ON {{ renderStrategyKeyJoinCondition('T', 'S', strategyKey) }} AND T.{{ strategyEndTs }} IS NULL

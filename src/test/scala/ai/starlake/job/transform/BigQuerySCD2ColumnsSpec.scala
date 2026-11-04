@@ -6,7 +6,9 @@ import com.google.cloud.bigquery.{Field, LegacySQLTypeName, Schema => BQSchema}
 
 import scala.jdk.CollectionConverters._
 
-/** The schema sync of a BigQuery SCD2 task uses the validity columns of its strategy (#1878) */
+/** The schema sync of a BigQuery SCD2 task uses the validity columns of its strategy (#1878), with
+  * their types (#1885)
+  */
 class BigQuerySCD2ColumnsSpec extends TestHelper {
   new WithSettings() {
     private def schema(columns: String*): BQSchema =
@@ -47,6 +49,38 @@ class BigQuerySCD2ColumnsSpec extends TestHelper {
       columns(
         BigQueryAutoTask.withSCD2Columns(schema("id", "updated_at", "valid_from"), scd2)
       ).map(_._1) shouldBe List("id", "updated_at", "valid_from", "valid_to")
+    }
+
+    it should "add each validity column with its type, a date or a timestamp (#1885)" in {
+      columns(
+        BigQueryAutoTask.withSCD2Columns(
+          schema("id", "updated_at"),
+          scd2.copy(startTsType = Some("date"), endTsType = Some("timestamp"))
+        )
+      ).drop(2) shouldBe List(
+        ("valid_from", "DATE", "NULLABLE"),
+        ("valid_to", "TIMESTAMP", "NULLABLE")
+      )
+    }
+
+    it should "keep the type of the validity columns of the existing table, which BigQuery cannot change" in {
+      val existing = BQSchema.of(
+        Field.of("id", LegacySQLTypeName.STRING),
+        Field
+          .newBuilder("valid_from", LegacySQLTypeName.TIMESTAMP)
+          .setMode(Field.Mode.NULLABLE)
+          .build()
+      )
+      columns(
+        BigQueryAutoTask.withSCD2Columns(
+          schema("id"),
+          scd2.copy(startTsType = Some("date"), endTsType = Some("date")),
+          Some(existing)
+        )
+      ).drop(1) shouldBe List(
+        ("valid_from", "TIMESTAMP", "NULLABLE"),
+        ("valid_to", "DATE", "NULLABLE")
+      )
     }
 
     it should "add the global validity columns when the strategy does not name its own" in {
