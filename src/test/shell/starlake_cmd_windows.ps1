@@ -15,12 +15,30 @@ function Check($name, [bool]$condition, $detail = '') {
   else { $script:failures++; Write-Host "FAIL $name $detail" }
 }
 
-function Starlake([string]$arguments, [hashtable]$environment = @{}, [string]$launcherPath = $launcher) {
+# Keeps its output in a file, and has a time limit: a command that hangs must say where it stopped.
+function Starlake([string]$arguments, [hashtable]$environment = @{}, [string]$launcherPath = $launcher, [int]$minutes = 10) {
   foreach ($key in $environment.Keys) { Set-Item "Env:$key" $environment[$key] }
-  $output = & cmd /c "`"$launcherPath`" $arguments 2>&1" | ForEach-Object { "$_" }
-  $code = $LASTEXITCODE
+  $log = Join-Path $env:TEMP ("starlake-" + [Guid]::NewGuid() + '.log')
+  $process = Start-Process -FilePath 'cmd.exe' -ArgumentList "/c `"`"$launcherPath`" $arguments > `"$log`" 2>&1`"" -NoNewWindow -PassThru
+  [void]$process.Handle
+  $finished = $process.WaitForExit($minutes * 60 * 1000)
   foreach ($key in $environment.Keys) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
-  return [pscustomobject]@{ Code = $code; Text = ($output -join "`n") }
+  $text = if (Test-Path $log) { Get-Content -Raw $log } else { '' }
+  if (-not $finished) {
+    Write-Host "TIMEOUT after $minutes minutes: starlake $arguments"
+    Write-Host "--- output so far`n$text"
+    Write-Host '--- processes'
+    Get-CimInstance Win32_Process -Filter "Name='java.exe' or Name='cmd.exe' or Name='powershell.exe'" | ForEach-Object { "$($_.ProcessId) parent=$($_.ParentProcessId) $($_.CommandLine)" } | ForEach-Object { Write-Host ($_.Substring(0, [Math]::Min(400, $_.Length))) }
+    Write-Host '--- install'
+    Get-ChildItem $InstallDir -Force | ForEach-Object { Write-Host $_.Name }
+    if (Test-Path $appcds) { Get-ChildItem $appcds -Force | ForEach-Object { Write-Host ".appcds\$($_.Name) $($_.Length)" } }
+    Get-ChildItem $env:TEMP -Filter 'sl-appcds-*' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+      Get-ChildItem $_.FullName -Filter '*.log' | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 | ForEach-Object { Write-Host $_ } }
+    }
+    exit 1
+  }
+  $process.WaitForExit()
+  return [pscustomobject]@{ Code = $process.ExitCode; Text = $text }
 }
 
 function Classes-From-Archive([string]$arguments, [hashtable]$environment = @{}) {
@@ -50,7 +68,7 @@ $content = [IO.File]::ReadAllText($launcherSource) -replace "`r`n", "`n" -replac
 [IO.File]::WriteAllText($launcher, $content)
 
 Write-Host '--- install'
-$install = Starlake 'install'
+$install = Starlake 'install' @{} $launcher 25
 Write-Host $install.Text
 Check 'install succeeds' ($install.Code -eq 0)
 Check 'install builds the archive' (Test-Path $archive)
