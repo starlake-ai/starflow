@@ -32,7 +32,7 @@ set -euo pipefail
 #   1 - Preflight (gh auth, clean trees, version alignment)  [always runs]
 #   2 - Set release version + commit (core + api)
 #   3 - Build starlake-ui2, inject the static export into starlake-api/ui
-#   4 - Tag v{v} (core, api, ui)
+#   4 - Rebuild setup.jar + commit, then tag v{v} (core, api, ui)
 #   5 - Build core assembly + publishLocal, build api zip
 #   6 - Push commits (core + api) and the api/ui tags; the starlake tag is
 #       created remotely when step 7 publishes the release
@@ -199,11 +199,25 @@ fi
 # Step 4: Tag (idempotent)
 # starlake-ui2 has no version.sbt; its tag is what ties a UI state to the
 # release.
+#
+# Installs fetch setup.jar from the release tag, so the tag has to hold a jar
+# built from the Setup.java it tags. Step 9 rebuilds it too, for installs of a
+# SNAPSHOT, but that comes after the tag: without this, a change to Setup.java
+# would miss its own release.
 # ============================================================================
 if should_run 4; then
   echo "============================================"
   echo "Step 4: Tag $TAG"
   echo "============================================"
+  if tag_exists "$REPO_DIR" "$TAG"; then
+    echo "  starlake: tag $TAG already exists, not rebuilding setup.jar."
+  elif [[ "$DRY_RUN" == true ]]; then
+    echo "  [DRY-RUN] Would run: sbt packageSetup + commit distrib/setup.jar"
+  else
+    sbt packageSetup
+    git -C "$REPO_DIR" add distrib/setup.jar
+    git -C "$REPO_DIR" commit -m "Update setup.jar for $RELEASE_VERSION" || echo "  setup.jar unchanged, nothing to commit."
+  fi
   for repo in "$REPO_DIR" "$API_DIR" "$UI_DIR"; do
     if tag_exists "$repo" "$TAG"; then
       echo "  $(basename "$repo"): tag $TAG already exists, skipping."
