@@ -130,4 +130,12 @@ class InstallerVersionSyncSpec extends AnyFlatSpec with Matchers {
       .getOrElse(fail("noconscrypt jar url not found in project/Dependencies.scala"))
     buildUrl shouldBe releaseBase + setupPath
   }
+
+  // Without it, the tarball of a new Spark version installs unchecked. Run
+  // scripts/publish-spark-tarball.sh: it publishes the tarball and prints the line to add.
+  it should "pin the SHA-512 of the Spark tarball that it installs by default" in {
+    val tarball = s"spark-${setupPin("SPARK_VERSION")}-bin-hadoop${setupPin("HADOOP_VERSION")}.tgz"
+    setupJava should include regex s""""${java.util.regex.Pattern
+        .quote(tarball)}",\\s*"[0-9a-f]{128}""""
+  }
 }

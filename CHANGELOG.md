@@ -35,6 +35,9 @@ __Bug fix__:
   - On Spark and on the JDBC engines, the schema of the table gets each validity column that it lacks, whatever the case of its name: on Spark, the end column was missing when the SELECT returned the start one.
 
 __Improvement__:
+- **Installing Spark no longer takes about 20 minutes**: 4.1.3 is no longer on the CDN of Apache, so the installer got its 570 MB from `archive.apache.org`, at under 1 MB/s. Measured after this change: 22 seconds, including the checksum and the extraction. It now comes from a copy in our GitHub releases, and from Apache for a version that we did not publish, set through `SPARK_VERSION`.
+  - The tarball is now checked against the SHA-512 of Apache, wherever it comes from. A `SPARK_VERSION` without a pinned checksum is not checked, as before.
+  - **Network rules**: a network allowing `archive.apache.org` must also allow GitHub, as for the Starflow jar. A connection that fails on GitHub stops the installation instead of trying Apache: only an HTTP error answer falls back.
 - **The SCD2 validity columns take the type that the task declares or names** (#1885): `startTs` and `endTs` were always `TIMESTAMP` columns, and the built-in templates wrote `CURRENT_TIMESTAMP` into them. The type of each column now comes from, in this order:
   - the attribute that declares the column, matched on its name in the table whatever its case, when its type is a date or a timestamp type of the project: the attribute of the task, or of the table for a load;
   - the new `startTsType` and `endTsType` properties of the write strategy, which name a type of the project (`metadata/types`);
