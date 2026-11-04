@@ -7,7 +7,8 @@ New-Item -ItemType Directory -Force -Path "$root\bin\sl", "$root\bin\deps", "$ro
 [IO.File]::WriteAllText("$root\starlake.cmd", ([IO.File]::ReadAllText($source) -replace "`r`n", "`n" -replace "`n", "`r`n"))
 [IO.File]::WriteAllText("$root\versions.cmd", "set SL_VERSION=0.0.0`r`nset SPARK_VERSION=4.1.3`r`nset HADOOP_VERSION=3`r`n")
 [IO.File]::WriteAllText("$root\bin\sl\starlake-core_2.13-0.0.0-assembly.jar", '')
-[IO.File]::WriteAllText("$root\bin\spark\bin\spark-submit.cmd", "@echo SUBMIT %*`r`n")
+[IO.File]::WriteAllText("$root\bin\spark\bin\spark-submit.cmd", "@echo SUBMIT %*`r`n@exit /b %STUB_EXIT%`r`n")
+$env:STUB_EXIT = '0'
 $env:SL_SKIP_CONSISTENCY_CHECK = '1'
 $script:failures = 0
 
@@ -40,6 +41,26 @@ Check-Proxy 'a password with a special character of cmd' @{ HTTP_PROXY = 'http:/
 $printed = Invoke-Launcher @{ HTTP_PROXY = 'http://me:secret@proxy.example:3128' }
 $withoutFlags = ($printed -split "`n" | Where-Object { $_ -notmatch '^SUBMIT' }) -join "`n"
 if ($withoutFlags.Contains('secret')) { $script:failures++; Write-Host "FAIL the password is printed`n$withoutFlags" } else { Write-Host 'ok   the password is not printed' }
+
+# The exit code reaches what runs the launcher, as an orchestrator does.
+function Check-ExitCode($name, [string]$launcherArguments, [int]$expected, [string]$launcherPath = "$root\starlake.cmd") {
+  $log = Join-Path $env:TEMP ('sl-exit-' + [Guid]::NewGuid() + '.log')
+  $process = Start-Process -FilePath 'cmd.exe' -ArgumentList "/c `"`"$launcherPath`" $launcherArguments > `"$log`" 2>&1`"" -NoNewWindow -PassThru
+  [void]$process.Handle
+  $process.WaitForExit()
+  $code = $process.ExitCode
+  if (($expected -ge 0 -and $code -eq $expected) -or ($expected -lt 0 -and $code -ne 0)) { Write-Host "ok   $name (exit code $code)" }
+  else { $script:failures++; Write-Host "FAIL $name (exit code $code, expected $expected)`n$(Get-Content -Raw $log)" }
+}
+$control = "$root\control.cmd"
+[IO.File]::WriteAllText($control, "@echo off`r`nexit /b 7`r`n")
+Check-ExitCode 'the test sees an exit code' '' 7 $control
+Check-ExitCode 'a command that succeeds exits with 0' 'validate' 0
+$env:STUB_EXIT = '7'
+Check-ExitCode 'a command that fails reports the code of spark-submit' 'validate' 7
+$env:STUB_EXIT = '0'
+# xls2yml runs java directly: with an empty jar it cannot find its main class
+Check-ExitCode 'a command that fails in main mode exits non-zero' 'xls2yml' -1
 
 Remove-Item -Recurse -Force $root
 if ($script:failures -gt 0) { Write-Host "$($script:failures) case(s) failed"; exit 1 }
