@@ -84,6 +84,8 @@ if (-not (Test-Path $archive)) {
   Write-Host 'Stopping here: everything below needs the archive.'
   exit 1
 }
+Write-Host "the published archive is read-only: $((Get-Item $archive).IsReadOnly)"
+Check 'the published archive can be replaced' (-not (Get-Item $archive).IsReadOnly)
 $classpathFile = Get-Content -Raw (Join-Path $appcds 'starlake.classpath')
 Check 'the classpath of the archive has no duplicate' (
   (($classpathFile -replace '^-cp ', '').Trim() -split ';' | Group-Object | Where-Object { $_.Count -gt 1 }).Count -eq 0)
@@ -111,6 +113,11 @@ Check 'SL_APPCDS=false does not use the archive' ($off.Count -eq 0 -and $off.Cod
 $with = Measure-Command { Starlake 'validate' | Out-Null }
 $without = Measure-Command { Starlake 'validate' @{ SL_APPCDS = 'false' } | Out-Null }
 Write-Host ("validate: {0:n1}s with the archive, {1:n1}s without" -f $with.TotalSeconds, $without.TotalSeconds)
+
+Write-Host '--- exit codes'
+$unknown = Starlake 'transform --name no.such_task' @{ SL_APPCDS = 'false' }
+Write-Host "exit code of a failing transform: $($unknown.Code)"
+Check 'a failing command exits non-zero' ($unknown.Code -ne 0) $unknown.Text
 
 Write-Host '--- driver options'
 $printed = Starlake 'validate' @{ SPARK_PRINT_LAUNCH_COMMAND = '1'; SPARK_DRIVER_OPTIONS = '-Dmy.option=1'; HTTP_PROXY = 'http://proxy.invalid:3128'; SL_APPCDS = 'false' }
@@ -151,6 +158,7 @@ Check 'the rebuild ends' (Wait-For-Rebuild)
 if (Test-Path (Join-Path $appcds 'build.log')) { Write-Host (Get-Content -Raw (Join-Path $appcds 'build.log')) }
 $rebuilt = Classes-From-Archive 'validate'
 Write-Host "classes from the rebuilt archive: $($rebuilt.Count)"
+Check 'a rebuilt archive replaced the previous one' ($rebuilt.Text -notmatch 'rebuilding') $rebuilt.Why
 Check 'the next command uses the rebuilt archive' ($rebuilt.Count -gt 1000) "count=$($rebuilt.Count) $($rebuilt.Text)"
 # A rebuild may still hold it
 [void](Wait-For-Rebuild)
@@ -173,6 +181,7 @@ $jar = Get-ChildItem (Join-Path $InstallDir 'bin\spark\jars\spark-core*.jar') | 
 Rename-Item $jar.FullName "$($jar.Name).off"
 $failed = Starlake 'appcds-build' @{ SL_SKIP_CONSISTENCY_CHECK = '1' }
 Rename-Item "$($jar.FullName).off" $jar.Name
+Write-Host "exit code of a failed build: $($failed.Code)"
 Check 'a failed build exits non-zero' ($failed.Code -ne 0) $failed.Text
 Check 'a failed build records the failure' (Test-Path (Join-Path $appcds 'build.failed'))
 Check 'a failed build keeps the previous archive' ((Get-Item $archive).LastWriteTime -eq $before)

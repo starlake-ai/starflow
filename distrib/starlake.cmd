@@ -544,7 +544,7 @@ rem Training and its classpath do not depend on the environment of the caller.
 
 :build_appcds_locked
     echo Building the AppCDS archive to speed up startup ^(set SL_APPCDS=false to skip^)...
-    del "%APPCDS_ARCHIVE%.tmp" "%APPCDS_CLASSPATH%.tmp" "%APPCDS_LAUNCH%.tmp" 2>nul
+    del /f /q "%APPCDS_ARCHIVE%.tmp" "%APPCDS_CLASSPATH%.tmp" "%APPCDS_LAUNCH%.tmp" >nul 2>&1
     call :appcds_write_fingerprint "%APPCDS_FINGERPRINT%.tmp"
     rem Train on a throwaway project that opens a Spark session: no user project exists at
     rem install time, and this trains nearly as well as a real one.
@@ -591,6 +591,9 @@ rem Training and its classpath do not depend on the environment of the caller.
     if not "%_training_status%" == "0" goto :build_appcds_failed
     if not exist "%APPCDS_ARCHIVE%.tmp" goto :build_appcds_failed
     for %%s in ("%APPCDS_ARCHIVE%.tmp") do if %%~zs EQU 0 goto :build_appcds_failed
+    rem The JVM creates its archives read-only, which on Windows blocks replacing them.
+    attrib -r "%APPCDS_ARCHIVE%.tmp" >nul 2>&1
+    if exist "%APPCDS_ARCHIVE%" attrib -r "%APPCDS_ARCHIVE%" >nul 2>&1
 
     set "SL_PS_LOG=%_training%\training.log"
     set "SL_PS_OUT=%APPCDS_LAUNCH%.tmp"
@@ -606,20 +609,19 @@ rem Training and its classpath do not depend on the environment of the caller.
     rmdir /s /q "%_training%" 2>nul
     exit /b 0
 :build_appcds_in_use
-    >&2 echo Warning: could not replace the AppCDS archive, as a running command or an antivirus holds it. Run "%SL_SELF%" appcds-build again once it has finished.
-    del "%APPCDS_ARCHIVE%.tmp" "%APPCDS_FINGERPRINT%.tmp" >nul 2>&1
+    >&2 echo Warning: could not replace the AppCDS archive, which a running command uses. Run "%SL_SELF%" appcds-build again once it has finished.
+    del /f /q "%APPCDS_ARCHIVE%.tmp" "%APPCDS_FINGERPRINT%.tmp" >nul 2>&1
     rmdir /s /q "%_training%" 2>nul
     exit /b 1
 :build_appcds_failed
     if exist "%_training%\training.log" powershell -NoProfile -NonInteractive -Command "Get-Content -LiteralPath $env:_training\training.log -Tail 5" 1>&2
-    del "%APPCDS_ARCHIVE%.tmp" "%APPCDS_CLASSPATH%.tmp" 2>nul
+    del /f /q "%APPCDS_ARCHIVE%.tmp" "%APPCDS_CLASSPATH%.tmp" >nul 2>&1
     move /y "%APPCDS_FINGERPRINT%.tmp" "%APPCDS_FAILED%" >nul
     rmdir /s /q "%_training%" 2>nul
     >&2 echo Warning: could not build the AppCDS archive, startup will be slower.
     exit /b 1
 
-rem Unlike on Unix, a file that a running JVM maps cannot be replaced, and the archive is still held
-rem for a moment after the JVM that wrote it ended, as an antivirus scans it. Waits up to a minute.
+rem Unlike on Unix, a file that a running JVM maps cannot be replaced: waits up to a minute for it.
 :move_when_free
     set "_move_tries=0"
 :move_when_free_retry
@@ -638,6 +640,7 @@ rem install: the archive only makes startup faster.
 rem The JVM of spark-submit without spark-submit: same classpath order, flags and archive. Only
 rem what needs a Spark session may behave differently, so this is for the user to choose.
 :launch_main
+    set "_main_classpath_arg="
     set "_main_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
     if /i not "%SPARK_MASTER_URL:~0,5%" == "local" goto :launch_main_classpath
     if exist "%APPCDS_LAUNCH%" call :enable_appcds
@@ -656,7 +659,14 @@ rem what needs a Spark session may behave differently, so this is for the user t
     for /f "usebackq delims=" %%l in ("%APPCDS_LAUNCH%") do (
         if not defined _main_classpath (set "_main_classpath=%%l") else (set "_main_flags=!_main_flags! %%l")
     )
-    if exist "%APPCDS_CLASSPATH%" for /f "usebackq tokens=1,*" %%a in ("%APPCDS_CLASSPATH%") do set "_main_classpath=%%b"
+    rem The expanded classpath is far longer than the 8191 characters of a cmd variable, so it stays
+    rem in its file. It steps aside when entries must be added: the archive then goes unused, but no
+    rem entry goes missing.
+    if not exist "%APPCDS_CLASSPATH%" goto :launch_main_run
+    if defined HADOOP_CONF_DIR goto :launch_main_run
+    if defined YARN_CONF_DIR goto :launch_main_run
+    if defined SPARK_DIST_CLASSPATH goto :launch_main_run
+    set "_main_classpath_arg=@%APPCDS_CLASSPATH:\=/%"
 :launch_main_run
     if defined HADOOP_CONF_DIR set "_main_classpath=!_main_classpath!;%HADOOP_CONF_DIR%"
     if defined YARN_CONF_DIR set "_main_classpath=!_main_classpath!;%YARN_CONF_DIR%"
@@ -666,7 +676,8 @@ rem what needs a Spark session may behave differently, so this is for the user t
     set "SPARK_LOCAL_HOSTNAME=127.0.0.1"
     set "SPARK_HOME=%SPARK_TARGET_FOLDER%"
     set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
-    java !_main_flags! !_main_memory! -Dlog4j.configurationFile="!_log_config!" !SPARK_DRIVER_OPTIONS! -cp "!_main_classpath!" %SL_MAIN% %*
+    if not defined _main_classpath_arg set "_main_classpath_arg=-cp "!_main_classpath!""
+    java !_main_flags! !_main_memory! -Dlog4j.configurationFile="!_log_config!" !SPARK_DRIVER_OPTIONS! !_main_classpath_arg! %SL_MAIN% %*
     exit /b %errorlevel%
 
 rem The Hadoop that Spark bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM
