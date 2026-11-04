@@ -42,6 +42,7 @@ __Improvement__:
 - **A transform reports that it could not write its audit row** (#1910): it succeeded and exited with 0 when the audit table could not be written, leaving no trace of the run in it, while it reported a failure, and skipped what reads the task, when the audit connection could not be opened. In both cases the command now exits with 1, its summary shows `AUDIT LOST` with the reason, and what reads the task still runs, as its table is written. Loads already failed in these cases.
   - **Upgrade note**: a project whose audit table is broken without anyone knowing now sees its `transform` commands fail. An orchestrator retrying them runs the tasks again, so a task appending to its table adds its rows twice: repair the audit table before retrying.
 - **A task no longer reads the `SL_THIS` left by an earlier task** (#1909): a python script that registers no view, because it does not use Spark, got the view of an earlier task of the JVM, whose rows were written to its table. The pre and post SQL of a Spark load on a table that does not exist yet read the view of an earlier load: they now fail on `SL_THIS`.
+- **`starlake.cmd` works with a proxy on Windows**: with `HTTP_PROXY` or `HTTPS_PROXY` set, it stopped before doing anything, on `{ was unexpected at this time`. Its flags would have been lost anyway, and a `%` or a `&` in a password was read as batch syntax. It also printed the URL with its password, which it no longer does: rotate a password that a shared log may hold.
 
 # 1.8.15:
 __New feature__:

@@ -37,6 +37,10 @@ Check-Proxy 'credentials' @{ HTTP_PROXY = 'http://me:secret@proxy.example:3128' 
 Check-Proxy 'a URL encoded password' @{ HTTP_PROXY = 'http://me:p%40ss@proxy.example:3128' } @('-Dhttp.proxyPassword=p@ss')
 Check-Proxy 'a password with a special character of cmd' @{ HTTP_PROXY = 'http://me:a&b@proxy.example:3128' } @('-Dhttp.proxyHost=proxy.example')
 
+$printed = Invoke-Launcher @{ HTTP_PROXY = 'http://me:secret@proxy.example:3128' }
+$withoutFlags = ($printed -split "`n" | Where-Object { $_ -notmatch '^SUBMIT' }) -join "`n"
+if ($withoutFlags.Contains('secret')) { $script:failures++; Write-Host "FAIL the password is printed`n$withoutFlags" } else { Write-Host 'ok   the password is not printed' }
+
 Remove-Item -Recurse -Force $root
 if ($script:failures -gt 0) { Write-Host "$($script:failures) case(s) failed"; exit 1 }
 Write-Host 'All cases passed'
