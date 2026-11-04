@@ -99,3 +99,12 @@ jobs:
       - name: Launcher on Windows
         shell: powershell
         run: ./src/test/shell/starlake_cmd_windows.ps1
+
+  windows-stubbed:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Proxy flags of starlake.cmd
+        shell: powershell
+        run: ./src/test/shell/starlake_cmd_proxy.ps1

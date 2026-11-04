@@ -143,15 +143,17 @@ REM networks. Users can still override via SPARK_DRIVER_OPTIONS/JAVA_OPTS.
 echo.%JAVA_OPTS% %SPARK_DRIVER_OPTIONS% | findstr /C:"java.net.preferIPv6Addresses" >nul
 if errorlevel 1 set "JAVA_ARGS=-Djava.net.preferIPv6Addresses=system"
 
+rem The name of the variable rather than its value: what the value holds, such as a % or a & in a
+rem password, would be read as batch syntax. It is not printed either, as it may hold a password.
 if defined HTTPS_PROXY (
-    echo Using HTTPS_PROXY: %HTTPS_PROXY%
-    call :parse_proxy_and_build_args "https" "%HTTPS_PROXY%"
+    echo Using HTTPS_PROXY
+    call :parse_proxy_and_build_args "https" HTTPS_PROXY
     if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
 if defined HTTP_PROXY (
-    echo Using HTTP_PROXY: %HTTP_PROXY%
-    call :parse_proxy_and_build_args "http" "%HTTP_PROXY%"
+    echo Using HTTP_PROXY
+    call :parse_proxy_and_build_args "http" HTTP_PROXY
     if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
@@ -269,19 +271,20 @@ goto :handle_command
     goto :eof
 
 :parse_proxy_and_build_args
-    REM Args: %1=type (http/https), %2=url
+    REM Args: %1=type (http/https), %2=name of the variable holding the url
     REM Sets proxy_args variable with -Dtype.proxyHost/Port/User/Password flags
     set "proxy_args="
     set "_ptype=%~1"
-    set "_purl=%~2"
+    set "_purl=!%~2!"
 
     set "SL_PS_PROXY_TYPE=%_ptype%"
-    set "SL_PS_PROXY_URL=%_purl%"
+    set "SL_PS_PROXY_URL=!_purl!"
     set "SL_PS_OUT=%TEMP%\sl_proxy_%RANDOM%%RANDOM%.txt"
     call :run_powershell proxy
     if exist "%SL_PS_OUT%" for /f "usebackq delims=" %%a in ("%SL_PS_OUT%") do set "proxy_args=%%a"
     del "%SL_PS_OUT%" 2>nul
     set "SL_PS_PROXY_URL="
+    set "_purl="
     goto :eof
 
 :get_binary_from_url
@@ -1139,8 +1142,8 @@ function Write-ProxyArgs {
   $type = $env:SL_PS_PROXY_TYPE
   $url = $env:SL_PS_PROXY_URL
   if ($url -notmatch '://') { $url = 'http://' + $url }
-  try { $uri = [uri]$url } catch { [Console]::Error.WriteLine("Cannot parse $type proxy URL"); return }
-  if (-not $uri.Host) { [Console]::Error.WriteLine("Could not parse $type proxy URL"); return }
+  try { $uri = [uri]$url } catch { [Console]::Error.WriteLine("Cannot parse the $type proxy URL"); return }
+  if (-not $uri.Host) { [Console]::Error.WriteLine("Could not parse the $type proxy URL"); return }
   $flags = "-D$type.proxyHost=" + $uri.Host
   if ($uri.Port -gt 0) { $flags += " -D$type.proxyPort=" + [string]$uri.Port }
   if ($uri.UserInfo) {
