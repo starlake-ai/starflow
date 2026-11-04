@@ -11,6 +11,7 @@ on:
       - branch-*
     paths:
       - 'distrib/starlake.sh'
+      - 'distrib/starlake.cmd'
       - 'distrib/setup.sh'
       - 'src/test/shell/**'
       - '.github/workflows/launcher-tests.yml'
@@ -19,6 +20,7 @@ on:
       - master
     paths:
       - 'distrib/starlake.sh'
+      - 'distrib/starlake.cmd'
       - 'distrib/setup.sh'
       - 'src/test/shell/**'
       - '.github/workflows/launcher-tests.yml'
@@ -49,3 +51,12 @@ jobs:
         run: brew install bats-core
       - name: Run the launcher tests
         run: bats src/test/shell/starlake_appcds.bats
+
+  windows-stubbed:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Proxy flags of starlake.cmd
+        shell: powershell
+        run: ./src/test/shell/starlake_cmd_proxy.ps1
