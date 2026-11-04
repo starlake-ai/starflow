@@ -795,9 +795,7 @@ goto :eof
     echo Hadoop for AWS %HADOOP_AWS_VERSION%
     echo Redshift JDBC driver %REDSHIFT_JDBC_VERSION%
     echo Redshift Spark connector %SPARK_REDSHIFT_VERSION%
-    rem Explicitly: ending on goto :eof after a call loses the exit code when cmd /c runs this file,
-    rem and a failed command would report success to whatever runs it.
-    exit /b %errorlevel%
+    goto :eof
 
 :select_starlake_version
     rem Non-interactive override: `upgrade --version X.Y.Z` / SL_UPGRADE_VERSION,
@@ -1016,7 +1014,9 @@ goto :eof
             if exist "!log!" type "!log!"
         )
     )
-    goto :eof
+    rem Explicitly: ending on goto :eof after a call loses the exit code when cmd /c runs this file,
+    rem and a failed command would report success to whatever runs it.
+    exit /b %errorlevel%
 
 rem Nothing below is batch: :run_powershell reads it from here. No line may start with a colon.
 goto :eof
