@@ -16,7 +16,7 @@ import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcOptionsInWrite
 import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
-import org.apache.spark.sql.{DataFrame, SaveMode}
+import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 
@@ -398,6 +398,10 @@ class SparkAutoTask(
       )
     }
     SparkUtils.withSlThisView {
+      // A script that registers no view must not get the one of an earlier task. No session is
+      // created for this: a script using Spark creates the SparkContext of this JVM, and fails if
+      // there is already one.
+      SparkSession.getDefaultSession.foreach(_.catalog.dropTempView("SL_THIS"))
       SparkUtils.runPySpark(pythonFile, commandParameters)
       val exists = SparkUtils.tableExists(session, "SL_THIS")
       if (exists)

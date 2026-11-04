@@ -5,7 +5,7 @@ import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.job.ingest.IngestionJob
 import ai.starlake.job.transform.{SparkAutoTask, TransformConfig}
-import ai.starlake.utils.YamlSerde
+import ai.starlake.utils.{SparkUtils, YamlSerde}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.fs.Path
 
@@ -205,6 +205,25 @@ class TransformConcurrencySpec extends TestHelper {
       (0 until taskCount).foreach { i =>
         session.table(s"slthis.copy$i").collect().map(_.getInt(0)).toList shouldBe List(i)
       }
+    }
+  }
+
+  it should "not read the SL_THIS of an earlier load when their table does not exist" in {
+    new WithSettings() {
+      val session = sparkSession
+      session.sql("CREATE SCHEMA IF NOT EXISTS slthis")
+      session.sql("DROP TABLE IF EXISTS slthis.stale_copy")
+      session.sql("SELECT 'from-earlier' AS id").createOrReplaceTempView("SL_THIS")
+
+      val error = intercept[Exception] {
+        IngestionJob.runSparkPrePostSql(
+          session,
+          "slthis.not_created_yet",
+          List("CREATE TABLE slthis.stale_copy USING parquet AS SELECT * FROM SL_THIS")
+        )
+      }
+      error.getMessage should include("SL_THIS")
+      SparkUtils.tableExists(session, "slthis.stale_copy") shouldBe false
     }
   }
 
