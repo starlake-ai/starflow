@@ -11,6 +11,9 @@ __New feature__:
   - Spark tasks sinking to BigQuery through different connections, and tasks reading files in several buckets, should stay serial: both change settings shared by the whole JVM.
 
 __Bug fix__:
+- **Access tokens and other credentials no longer reach the logs**: `transform` logged its access token at info level, and the BigQuery jobs at debug level. Connection options only masked keys containing `password`, so `sl_access_token` and the `token` of a QoD connection were printed by what looked redacted, and an error on a connection without a driver printed them all. At debug level, loading `application.sl.yml` or `application.conf` also printed its whole content, which is no longer logged.
+  - All the command configs now mask their credentials, including the ones added later. Keys containing `pass`, `token`, `access`, `aes`, `secret`, `private` or `credential` are masked, which can hide a harmless option in a log.
+  - **Rotate any token that a shared log may hold**: logs written before this version keep it.
 - **Reading YAML files no longer changes the default locale of the JVM**: each file read swapped the locale to get validation messages in English, then restored it. Two reads at the same time could leave the JVM on the empty locale for the rest of the run, which broke what depends on it, such as the creation of a Derby metastore. The locale is now given to the validator.
 - **Running transforms in the same JVM at the same time is safer** (#1785). Tasks still run one at a time by default: this prepares for running them in parallel.
   - A Spark task writing to files or a table through a dataframe could write the rows of another task, without any error, because they shared a temp view name. Each task now has its own.

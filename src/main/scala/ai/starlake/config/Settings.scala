@@ -918,7 +918,6 @@ object Settings extends LazyLogging {
       val applicationConfig = ConfigFactory.parseString(applicationConfContent).resolve()
       val effectiveApplicationConfig = applicationConfig
         .withFallback(effectiveConfig)
-      logger.debug(effectiveApplicationConfig.toString)
       val mergedSettings = ConfigSource
         .fromConfig(effectiveApplicationConfig)
         .loadOrThrow[AppConfig]
@@ -996,7 +995,6 @@ object Settings extends LazyLogging {
       case Some(applicationConfig) =>
         val effectiveApplicationConfig = applicationConfig
           .withFallback(effectiveConfig)
-        logger.debug(effectiveApplicationConfig.toString)
 
         val mergedAppConfig = loadConf(Some(effectiveApplicationConfig))
 
