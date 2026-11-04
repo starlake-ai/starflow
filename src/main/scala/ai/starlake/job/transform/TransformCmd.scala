@@ -52,7 +52,7 @@ trait TransformCmd extends Cmd[TransformConfig] {
         )
         .optional()
         .text(
-          "How many tasks may run at the same time with several names, --tags or --recursive. A task still waits for the tasks it reads. Default is maxParTask (SL_MAX_PAR_TASK), which is 1"
+          "How many tasks may run at the same time with several names, --tags or --recursive, on DuckDB, JDBC and BigQuery connections only. A task still waits for the tasks it reads. Default is maxParTask (SL_MAX_PAR_TASK), which is 1"
         ),
       builder
         .opt[Unit]("compile")

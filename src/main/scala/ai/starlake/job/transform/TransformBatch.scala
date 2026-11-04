@@ -13,6 +13,9 @@ object TransformTaskStatus {
   case object Succeeded extends TransformTaskStatus
   final case class Failed(error: Throwable) extends TransformTaskStatus
 
+  /** Written its table, but not its audit row. What reads it still runs, and the batch fails. */
+  final case class AuditLost(error: TransformAuditException) extends TransformTaskStatus
+
   /** Not run, because a task it reads from failed
     *
     * @param failedUpstream
@@ -99,8 +102,10 @@ object TransformStep {
       while (runningCount > 0) {
         val (index, result) = running.take().get()
         runningCount -= 1
-        val blocking =
-          if (result.status == TransformTaskStatus.Succeeded) None else Some(result.name)
+        val blocking = result.status match {
+          case TransformTaskStatus.Failed(_) => Some(result.name)
+          case _                             => None
+        }
         settle(index, result, blocking)
         startReadySteps()
       }
@@ -108,6 +113,13 @@ object TransformStep {
     results.toList
   }
 }
+
+/** A task that ran, but whose audit row could not be written */
+class TransformAuditException(task: String, cause: Throwable)
+    extends StarlakeException(
+      s"$task ran, but its audit row was not written: ${cause.getMessage}",
+      cause
+    )
 
 class TransformBatchException(message: String, cause: Throwable)
     extends StarlakeException(message, cause)
@@ -121,13 +133,17 @@ final case class TransformBatchSummary(results: List[TransformTaskResult]) {
 
   private def skippedCount: Int = results.count(_.status.isInstanceOf[Skipped])
 
-  def isSuccess: Boolean = failures.isEmpty && skippedCount == 0
+  private def auditLosses: List[(String, TransformAuditException)] =
+    results.collect { case TransformTaskResult(name, AuditLost(error), _) => name -> error }
+
+  def isSuccess: Boolean = failures.isEmpty && skippedCount == 0 && auditLosses.isEmpty
 
   def render: String = {
     val succeeded = results.count(_.status == Succeeded)
+    val lost = if (auditLosses.isEmpty) "" else s", ${auditLosses.size} audit lost"
     val header =
       s"Transform summary: ${results.size} tasks: $succeeded succeeded, ${failures.size} failed, " +
-      s"$skippedCount skipped"
+      s"$skippedCount skipped$lost"
     val width = results.map(_.name.length).maxOption.getOrElse(0)
     val lines = results.map { result =>
       val name = result.name.padTo(width, ' ')
@@ -135,8 +151,9 @@ final case class TransformBatchSummary(results: List[TransformTaskResult]) {
       result.status match {
         case Succeeded => s"  SUCCEEDED  $name  $seconds"
         case Failed(error) =>
-          val message = Option(error.getMessage).getOrElse(error.getClass.getName)
-          s"  FAILED     $name  $seconds  ${message.linesIterator.nextOption().getOrElse("")}"
+          s"  FAILED     $name  $seconds  ${firstLine(error)}"
+        case AuditLost(error) =>
+          s"  AUDIT LOST $name  $seconds  ${firstLine(error)}"
         case Skipped(failedUpstream) =>
           s"  SKIPPED    $name  upstream $failedUpstream failed"
       }
@@ -144,16 +161,27 @@ final case class TransformBatchSummary(results: List[TransformTaskResult]) {
     (header +: lines).mkString("\n")
   }
 
+  private def firstLine(error: Throwable): String =
+    Option(error.getMessage)
+      .getOrElse(error.getClass.getName)
+      .linesIterator
+      .nextOption()
+      .getOrElse("")
+
   def toTry: Try[String] =
-    failures.headOption match {
+    (failures ++ auditLosses).headOption match {
       case Some((_, firstError)) =>
         val failedNames = failures.map { case (name, _) => name }.mkString(", ")
-        Failure(
-          new TransformBatchException(
-            s"${failures.size} task(s) failed, $skippedCount skipped: $failedNames",
-            firstError
+        val lostNames = auditLosses.map { case (name, _) => name }.mkString(", ")
+        val message = List(
+          Option.when(failures.nonEmpty)(
+            s"${failures.size} task(s) failed, $skippedCount skipped: $failedNames"
+          ),
+          Option.when(auditLosses.nonEmpty)(
+            s"${auditLosses.size} task(s) ran without writing their audit row: $lostNames"
           )
-        )
+        ).flatten.mkString("; ")
+        Failure(new TransformBatchException(message, firstError))
       case None => Success("")
     }
 }

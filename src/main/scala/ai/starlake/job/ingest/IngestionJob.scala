@@ -311,6 +311,8 @@ object IngestionJob extends LazyLogging {
     val exists = SparkUtils.tableExists(session, targetTableName)
     if (exists)
       session.sql(s"select * from $targetTableName").createOrReplaceTempView("SL_THIS")
+    else
+      session.catalog.dropTempView("SL_THIS") // left by an earlier load
     sqls.foreach(SparkUtils.sql(session, _))
   }
 

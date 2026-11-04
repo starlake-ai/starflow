@@ -1,7 +1,12 @@
 package ai.starlake.workflow
 
 import ai.starlake.TestHelper
-import ai.starlake.job.transform.{TransformBatchSummary, TransformConfig, TransformTaskStatus}
+import ai.starlake.job.transform.{
+  TransformAuditException,
+  TransformBatchSummary,
+  TransformConfig,
+  TransformTaskStatus
+}
 import ai.starlake.lineage.{TaskViewDependency, TaskViewDependencyNode}
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -422,6 +427,58 @@ class TransformBatchSpec extends TestHelper {
       wf.autoJob(
         TransformConfig(name = "par.a,par.b", scheduledDate = None, parallelism = Some(2))
       ).isSuccess shouldBe true
+    }
+  }
+
+  "A task whose audit row is lost" should "not stop what reads it, and fail the batch" in {
+    val lost = new TransformAuditException("up", new RuntimeException("audit is down"))
+    val ran = new ConcurrentLinkedQueue[String]()
+    val summary = runParallel(List(task("down", task("up"))), parallelism = 1) { name =>
+      ran.add(name)
+      if (name == "up") Failure(lost) else Success("")
+    }
+    ran.asScala.toList shouldBe List("up", "down")
+    val status = summary.results.map(r => r.name -> r.status).toMap
+    status("up") shouldBe TransformTaskStatus.AuditLost(lost)
+    status("down") shouldBe TransformTaskStatus.Succeeded
+    summary.isSuccess shouldBe false
+    summary.toTry.isFailure shouldBe true
+    summary.toTry.failed.get.getMessage should include("up")
+    summary.render should include("1 audit lost")
+    summary.render should include("AUDIT LOST")
+    summary.render should include("audit is down")
+  }
+
+  "The summary of a batch" should "not mention lost audit rows when there are none" in {
+    val summary = runParallel(List(task("a")), parallelism = 1)(_ => Success(""))
+    summary.render should not include "audit"
+    summary.toTry.isSuccess shouldBe true
+  }
+
+  "A Spark task with an audit table it cannot write" should "write its table and report it" in {
+    val config = com.typesafe.config.ConfigFactory
+      .parseString(s"""
+        |audit { active = true, sink { connectionRef = "unreachable" } }
+        |connections.unreachable {
+        |  type = "jdbc"
+        |  options {
+        |    "url": "jdbc:duckdb:$starlakeTestRoot/no/such/folder/audit.db"
+        |    "driver": "org.duckdb.DuckDBDriver"
+        |  }
+        |}
+        |""".stripMargin)
+      .withFallback(super.testConfiguration)
+    new WithSettings(config) {
+      val storage = settings.storageHandler()
+      val job = new org.apache.hadoop.fs.Path(ai.starlake.config.DatasetArea.transform, "lost")
+      storage.mkdirs(job)
+      storage.write("SELECT 7 AS id", new org.apache.hadoop.fs.Path(job, "t.sql"))
+      val wf = new IngestionWorkflow(storage, settings.schemaHandler(reload = true))
+
+      val result = wf.transform(TransformConfig(name = "lost.t", scheduledDate = None))
+
+      result.failed.get shouldBe a[TransformAuditException]
+      sparkSession.table("lost.t").collect().map(_.getInt(0)).toList shouldBe List(7)
     }
   }
 }

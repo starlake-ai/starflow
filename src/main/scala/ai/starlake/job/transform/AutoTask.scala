@@ -627,14 +627,27 @@ abstract class AutoTask(
     test: Boolean,
     message: String = "success"
   ): Unit = {
-    val log = auditLog(start, end, jobResultCount, success = true, message, test)
-    log.foreach(al => AuditLog.sink(List(al), accessToken))
+    sinkAudit(auditLog(start, end, jobResultCount, success = true, message, test))
   }
 
   def logAuditFailure(start: Timestamp, end: Timestamp, e: Throwable, test: Boolean): Unit = {
-    val log = auditLog(start, end, -1, success = false, Utils.exceptionAsString(e), test)
-    log.foreach(al => AuditLog.sink(List(al), accessToken))
+    sinkAudit(auditLog(start, end, -1, success = false, Utils.exceptionAsString(e), test))
   }
+
+  @volatile private var _lostAudit: Option[Throwable] = None
+
+  /** Why the audit row of this run could not be written. It does not fail the task: its table is
+    * written by then, and what follows in the task must still run.
+    */
+  def lostAudit: Option[Throwable] = _lostAudit
+
+  private def sinkAudit(log: Option[AuditLog]): Unit =
+    log.foreach { auditLog =>
+      Try(AuditLog.sink(List(auditLog), accessToken)).flatten.failed.foreach { error =>
+        logger.error(s"Could not write the audit row of ${taskDesc.fullName()}", error)
+        _lostAudit = Some(error)
+      }
+    }
 
   def dependencies(streams: CaseInsensitiveMap[String]): List[String] = {
     if (taskDesc.parseSQL.getOrElse(true)) {

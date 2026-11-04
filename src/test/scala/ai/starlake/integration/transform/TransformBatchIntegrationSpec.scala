@@ -16,7 +16,12 @@ class TransformBatchIntegrationSpec extends IntegrationTestBase {
 
   private def withProject(test: File => Unit): Unit = withProject(audit = false)(test)
 
-  private def withProject(audit: Boolean)(test: File => Unit): Unit = {
+  /** @param auditSink
+    *   the connection of the audit table, instead of the connection of the project
+    */
+  private def withProject(audit: Boolean, auditSink: Option[String] = None)(
+    test: File => Unit
+  ): Unit = {
     val root = File.newTemporaryDirectory("transform-batch-")
     try {
       (root / "datasets").createDirectories()
@@ -28,11 +33,17 @@ class TransformBatchIntegrationSpec extends IntegrationTestBase {
              |  connectionRef: duckdb
              |  audit:
              |    active: $audit
+             |    ${auditSink.fold("")(sink => s"sink: { connectionRef: $sink }")}
              |  connections:
              |    duckdb:
              |      type: jdbc
              |      options:
              |        url: "jdbc:duckdb:${root.pathAsString}/datasets/duckdb.db"
+             |        driver: "org.duckdb.DuckDBDriver"
+             |    unreachable:
+             |      type: jdbc
+             |      options:
+             |        url: "jdbc:duckdb:${root.pathAsString}/no/such/folder/audit.db"
              |        driver: "org.duckdb.DuckDBDriver"
              |""".stripMargin
         )
@@ -166,6 +177,45 @@ class TransformBatchIntegrationSpec extends IntegrationTestBase {
   it should "run all the tags on several threads with --recursive" in {
     withProject { root =>
       transform("--tags", "chain", "--recursive", "--parallelism", "2") shouldBe true
+      tables(root) should contain allOf ("up", "down")
+    }
+  }
+
+  /** The connection works, and inserting in this audit table fails */
+  private def breakAuditTable(root: File): Unit = {
+    val conn = DriverManager.getConnection(s"jdbc:duckdb:${root.pathAsString}/datasets/duckdb.db")
+    try {
+      conn.createStatement().execute("CREATE SCHEMA audit")
+      conn.createStatement().execute("CREATE TABLE audit.audit (not_an_audit_column INT)")
+    } finally conn.close()
+  }
+
+  "transform with an audit table it cannot write" should "write the table and fail" in {
+    withProject(audit = true) { root =>
+      breakAuditTable(root)
+      transform("--name", "batch.other") shouldBe false
+      ids(root, "other") shouldBe List(2)
+    }
+  }
+
+  it should "still run what reads a task whose audit row is lost" in {
+    withProject(audit = true) { root =>
+      breakAuditTable(root)
+      transform("--name", "batch.up,batch.down") shouldBe false
+      tables(root) should contain allOf ("up", "down")
+    }
+  }
+
+  "transform with an audit connection it cannot open" should "write the table and fail" in {
+    withProject(audit = true, auditSink = Some("unreachable")) { root =>
+      transform("--name", "batch.other") shouldBe false
+      ids(root, "other") shouldBe List(2)
+    }
+  }
+
+  it should "still run what reads a task whose audit row is lost" in {
+    withProject(audit = true, auditSink = Some("unreachable")) { root =>
+      transform("--name", "batch.up,batch.down") shouldBe false
       tables(root) should contain allOf ("up", "down")
     }
   }
