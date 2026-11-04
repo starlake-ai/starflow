@@ -115,6 +115,27 @@ $without = Measure-Command { Starlake 'validate' @{ SL_APPCDS = 'false' } | Out-
 Write-Host ("validate: {0:n1}s with the archive, {1:n1}s without" -f $with.TotalSeconds, $without.TotalSeconds)
 
 Write-Host '--- exit codes'
+# Controls: scripts whose exit code is known, through the same function as the launcher.
+$controls = Join-Path $env:TEMP 'sl-controls'
+New-Item -ItemType Directory -Force -Path $controls | Out-Null
+$plain = Join-Path $controls 'plain.cmd'
+[IO.File]::WriteAllText($plain, "@echo off`r`nexit /b 7`r`n")
+$called = Join-Path $controls 'called.cmd'
+[IO.File]::WriteAllText($called, "@echo off`r`nsetlocal enabledelayedexpansion`r`ncall :sub`r`ngoto :eof`r`n:sub`r`n    exit /b 7`r`n")
+$plainResult = Starlake '' @{} $plain
+$calledResult = Starlake '' @{} $called
+Write-Host "control exit /b 7: $($plainResult.Code)"
+Write-Host "control call and goto :eof: $($calledResult.Code)"
+Check 'the harness sees an exit code' ($plainResult.Code -eq 7)
+$direct = & cmd /c "`"$launcher`" transform --name no.such_task >nul 2>&1 & exit !errorlevel!"
+Write-Host "failing transform through cmd directly: $LASTEXITCODE"
+$masterLauncher = Join-Path $InstallDir 'starlake-master.cmd'
+curl.exe -fsSL -o $masterLauncher 'https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/starlake.cmd'
+$masterContent = [IO.File]::ReadAllText($masterLauncher) -replace "`r`n", "`n" -replace "`n", "`r`n"
+[IO.File]::WriteAllText($masterLauncher, $masterContent)
+$masterResult = Starlake 'transform --name no.such_task' @{} $masterLauncher
+Write-Host "failing transform through the launcher of master: $($masterResult.Code)"
+Remove-Item $masterLauncher
 $unknown = Starlake 'transform --name no.such_task' @{ SL_APPCDS = 'false' }
 Write-Host "exit code of a failing transform: $($unknown.Code)"
 Check 'a failing command exits non-zero' ($unknown.Code -ne 0) $unknown.Text
