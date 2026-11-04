@@ -86,7 +86,7 @@ class BigQueryInfoSpec extends AnyFlatSpec with Matchers {
 
   it should "skip a table deleted after the dataset listed it" in {
     withBigQuery(
-      Map("a" -> List("gone", "kept")),
+      Map("a"                       -> List("gone", "kept")),
       Map("/datasets/a/tables/gone" -> 404)
     ) { bigquery =>
       names(bigquery) shouldBe Map("a" -> List("kept"))
@@ -102,7 +102,7 @@ class BigQueryInfoSpec extends AnyFlatSpec with Matchers {
 
   it should "skip a dataset deleted before its tables could be listed" in {
     withBigQuery(
-      Map("gone" -> List("t1"), "kept" -> List("t2")),
+      Map("gone"                  -> List("t1"), "kept" -> List("t2")),
       Map("/datasets/gone/tables" -> 404)
     ) { bigquery =>
       names(bigquery) shouldBe Map("kept" -> List("t2"))
