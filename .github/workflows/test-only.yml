@@ -20,6 +20,12 @@ on:
 
 jobs:
   snapshot:
+    # BigQuery tests of several runs read and delete each other's data, as they share a project.
+    # So one at a time, across the workflows that run them. Without queue: max, GitHub keeps one
+    # pending run and cancels the others.
+    concurrency:
+      group: remote-tests
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - name: Env
