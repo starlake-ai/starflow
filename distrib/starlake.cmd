@@ -2,6 +2,7 @@
 setlocal enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
+set "SL_SELF=%~f0"
 set "SL_SCRIPT_DIR=%SCRIPT_DIR%"
 if not defined SL_API_STARLAKE_CORE_PATH set "SL_API_STARLAKE_CORE_PATH=%SCRIPT_DIR%starlake.cmd"
 set "API_BIN_DIR=%SCRIPT_DIR%\bin\api\bin"
@@ -105,6 +106,8 @@ if not defined SL_DATASETS (
     set "SL_SQL_WH=%SL_DATASETS%"
 )
 
+rem SL_RUN_MODE=main keeps the default heap of the JVM unless the user asks for one.
+set "SL_USER_DRIVER_MEMORY=%SPARK_DRIVER_MEMORY%"
 if not defined SPARK_DRIVER_MEMORY set "SPARK_DRIVER_MEMORY=4g"
 set "SL_MAIN=ai.starlake.job.Main"
 if not defined SPARK_MASTER_URL set "SPARK_MASTER_URL=local[*]"
@@ -113,6 +116,16 @@ if not defined SL_PYTHON_LIBS_DIR set "SL_PYTHON_LIBS_DIR=%SCRIPT_DIR%bin\deps\p
 if defined SL_VERSION (
     set "SL_JAR_NAME=%SL_ARTIFACT_NAME%-%SL_VERSION%-assembly.jar"
 )
+
+rem Outside bin\: an archive built for another path is unusable.
+set "APPCDS_DIR=%SCRIPT_DIR%.appcds"
+set "APPCDS_ARCHIVE=%APPCDS_DIR%\starlake.jsa"
+set "APPCDS_FINGERPRINT=%APPCDS_DIR%\starlake.fingerprint"
+set "APPCDS_CONF_DIR=%APPCDS_DIR%\conf"
+set "APPCDS_LAUNCH=%APPCDS_DIR%\starlake.launch"
+set "APPCDS_CLASSPATH=%APPCDS_DIR%\starlake.classpath"
+set "APPCDS_LOCK=%APPCDS_DIR%\build.lock"
+set "APPCDS_FAILED=%APPCDS_DIR%\build.failed"
 
 set "PROXY="
 if defined https_proxy (
@@ -144,11 +157,9 @@ if defined HTTP_PROXY (
     if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
-if defined SPARK_DRIVER_OPTIONS (
-    set "SPARK_DRIVER_OPTIONS=%SPARK_DRIVER_OPTIONS% %JAVA_ARGS%"
-) else (
-    set "SPARK_DRIVER_OPTIONS=%JAVA_ARGS%"
-)
+rem Launcher flags first: on a repeated -D the JVM keeps the last one, so the user's
+rem options win.
+set "SPARK_DRIVER_OPTIONS=%JAVA_ARGS% %SPARK_DRIVER_OPTIONS%"
 
 set "JAVA_OPTS=%JAVA_OPTS% %JAVA_ARGS%"
 
@@ -266,22 +277,13 @@ goto :handle_command
     set "_ptype=%~1"
     set "_purl=!%~2!"
 
-    rem One redirection per line: in a parenthesized block, the first ) of the script ends the block.
-    set "_tmpps=%TEMP%\sl_proxy_%RANDOM%%RANDOM%.ps1"
-    > "%_tmpps%" echo $url = $env:_purl
-    >> "%_tmpps%" echo if ($url -notmatch '://') { $url = 'http://' + $url }
-    >> "%_tmpps%" echo try { $uri = [uri]$url } catch { [Console]::Error.WriteLine('Cannot parse the %_ptype% proxy URL'); exit 0 }
-    >> "%_tmpps%" echo if (-not $uri.Host) { [Console]::Error.WriteLine('Could not parse the %_ptype% proxy URL'); exit 0 }
-    >> "%_tmpps%" echo $r = '-D%_ptype%.proxyHost=' + $uri.Host
-    >> "%_tmpps%" echo if ($uri.Port -gt 0) { $r += ' -D%_ptype%.proxyPort=' + [string]$uri.Port }
-    >> "%_tmpps%" echo if ($uri.UserInfo) {
-    >> "%_tmpps%" echo     $p = $uri.UserInfo.Split(':', 2)
-    >> "%_tmpps%" echo     $r += ' -D%_ptype%.proxyUser=' + [uri]::UnescapeDataString($p[0])
-    >> "%_tmpps%" echo     if ($p.Length -gt 1) { $r += ' -D%_ptype%.proxyPassword=' + [uri]::UnescapeDataString($p[1]) }
-    >> "%_tmpps%" echo }
-    >> "%_tmpps%" echo Write-Output $r
-    for /f "usebackq delims=" %%a in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%_tmpps%"`) do set "proxy_args=%%a"
-    del "%_tmpps%" 2>nul
+    set "SL_PS_PROXY_TYPE=%_ptype%"
+    set "SL_PS_PROXY_URL=!_purl!"
+    set "SL_PS_OUT=%TEMP%\sl_proxy_%RANDOM%%RANDOM%.txt"
+    call :run_powershell proxy
+    if exist "%SL_PS_OUT%" for /f "usebackq delims=" %%a in ("%SL_PS_OUT%") do set "proxy_args=%%a"
+    del "%SL_PS_OUT%" 2>nul
+    set "SL_PS_PROXY_URL="
     set "_purl="
     goto :eof
 
@@ -401,11 +403,316 @@ goto :handle_command
     )
 goto :eof
 
+rem AppCDS: an archive of parsed classes, memory-mapped by the JVM to cut startup. It
+rem needs an empty SPARK_CONF_DIR, because the JVM refuses to dump or use an archive
+rem with a non-empty directory on the classpath, and spark-submit puts the conf dir there.
+rem
+rem Paths given in driver options use forward slashes: Spark reads a backslash there as
+rem an escape character, and C:\a\b would reach the JVM as C:ab.
+
+rem What makes an archive unusable, written to a file that fc compares with the record of
+rem a build. The fingerprint of a build is taken before it starts: a jar changed while it
+rem runs still counts as a change.
+:appcds_write_fingerprint
+    > "%~1" (
+        for %%j in (java.exe) do echo %%~$PATH:j
+        if exist "%JAVA_HOME%\release" type "%JAVA_HOME%\release"
+        for %%f in ("%SPARK_TARGET_FOLDER%\jars\*.jar" "%DEPS_EXTRA_LIB_FOLDER%\*.jar" "%STARLAKE_EXTRA_LIB_FOLDER%\*.jar") do echo %%~ff %%~zf %%~tf
+    )
+    exit /b 0
+
+rem Exits with 0 when the jars or the JDK differ from the record of a build given as %1.
+:appcds_changed_since
+    setlocal
+    set "_check=%TEMP%\sl-appcds-check-%RANDOM%%RANDOM%.tmp"
+    call :appcds_write_fingerprint "%_check%"
+    fc /b "%_check%" "%~1" >nul 2>&1
+    set "_same=%errorlevel%"
+    del "%_check%" 2>nul
+    if "%_same%" == "0" (endlocal & exit /b 1)
+    endlocal & exit /b 0
+
+rem Anything but the logging config would be ignored once SPARK_CONF_DIR points elsewhere.
+:spark_conf_is_default
+    for %%f in ("%SPARK_TARGET_FOLDER%\conf\*") do (
+        if /i not "%%~nxf" == "log4j2.properties" if /i not "%%~xf" == ".template" exit /b 1
+    )
+    exit /b 0
+
+rem A build killed before releasing its lock must not block the next ones forever.
+:clear_dead_appcds_lock
+    if not exist "%APPCDS_LOCK%" exit /b 0
+    powershell -NoProfile -NonInteractive -Command "if (((Get-Date) - (Get-Item -LiteralPath $env:APPCDS_LOCK).LastWriteTime).TotalMinutes -gt 10) { Remove-Item -LiteralPath $env:APPCDS_LOCK -Force }" >nul 2>&1
+    exit /b 0
+
+rem Rebuilds behind the command, in a window of its own that survives closing this one, and
+rem does not hold the output of the command open. Exits with non-zero only when no rebuild can
+rem happen: a read-only install, an install path with spaces, or a build that already failed
+rem on these jars.
+:start_appcds_rebuild
+    copy /y nul "%APPCDS_DIR%\.writable" >nul 2>&1 || exit /b 1
+    del "%APPCDS_DIR%\.writable" 2>nul
+    if not "%SCRIPT_DIR: =%" == "%SCRIPT_DIR%" exit /b 1
+    call :clear_dead_appcds_lock
+    if exist "%APPCDS_LOCK%" exit /b 0
+    call :appcds_changed_since "%APPCDS_FAILED%" || exit /b 1
+    >&2 echo The jars or the JDK changed: rebuilding the AppCDS archive in the background.
+    start "Starflow AppCDS" /min /low cmd /c ""%SL_SELF%" appcds-build > "%APPCDS_DIR%\build.log" 2>&1"
+    exit /b 0
+
+:enable_appcds
+    if /i "%SL_APPCDS%" == "false" exit /b 0
+    if not exist "%APPCDS_ARCHIVE%" exit /b 0
+    if defined SPARK_CONF_DIR exit /b 0
+    echo.%SPARK_DRIVER_OPTIONS%| findstr /c:"SharedArchiveFile" /c:"ArchiveClassesAtExit" /c:"-Xshare" >nul && exit /b 0
+    call :spark_conf_is_default || exit /b 0
+    call :appcds_changed_since "%APPCDS_FINGERPRINT%" || goto :enable_appcds_fresh
+    call :start_appcds_rebuild || >&2 echo Warning: the AppCDS archive is out of date and could not be rebuilt automatically, startup will be slower. Run "%SL_SELF%" appcds-build to retry, or set SL_APPCDS=false to silence this.
+    exit /b 0
+:enable_appcds_fresh
+    set "SPARK_CONF_DIR=%APPCDS_CONF_DIR%"
+    set "_archive=%APPCDS_ARCHIVE:\=/%"
+    set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
+    set "SPARK_DRIVER_OPTIONS=-Dlog4j.configurationFile=%_log_config% -XX:SharedArchiveFile=%_archive% -Xshare:auto -Xlog:cds=off -Xlog:cds+dynamic=off %SPARK_DRIVER_OPTIONS%"
+    exit /b 0
+
+rem On JDBC the database does the work and the JVM only orchestrates it, so C2 costs far more
+rem than it gives back: compile time is most of the CPU of a short transform.
+:enable_jdbc_c1
+    if /i not "%~1" == "transform" exit /b 0
+    if /i "%SL_JDBC_C1%" == "false" exit /b 0
+    echo.%SPARK_DRIVER_OPTIONS%| findstr /c:"Tiered" >nul && exit /b 0
+    call :run_powershell c1 >nul 2>&1 || exit /b 0
+    set "SPARK_DRIVER_OPTIONS=-XX:TieredStopAtLevel=1 %SPARK_DRIVER_OPTIONS%"
+    exit /b 0
+
+rem What spark-submit gets as its driver classpath on a local master, in _driver_classpath.
+:local_driver_classpath
+    set "_driver_classpath=%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%"
+    for %%f in ("%DEPS_EXTRA_LIB_FOLDER%\*.jar") do set "_driver_classpath=!_driver_classpath!;%%f"
+    exit /b 0
+
+rem Spark puts the driver options after its own -cp and the JVM keeps the last one. This replaces
+rem the classpath of Spark, so it steps aside when Spark would add entries to it: the archive may
+rem then go unused, but no entry goes missing.
+:use_appcds_classpath
+    if /i not "%SPARK_CONF_DIR%" == "%APPCDS_CONF_DIR%" exit /b 0
+    if not exist "%APPCDS_CLASSPATH%" exit /b 0
+    for %%s in ("%APPCDS_CLASSPATH%") do if %%~zs EQU 0 exit /b 0
+    if defined HADOOP_CONF_DIR exit /b 0
+    if defined YARN_CONF_DIR exit /b 0
+    if defined SPARK_DIST_CLASSPATH exit /b 0
+    echo.%SPARK_CONF_OPTIONS%| findstr /c:"driver-class-path" /c:"extraClassPath" >nul && exit /b 0
+    set "_classpath_file=%APPCDS_CLASSPATH:\=/%"
+    set "SPARK_DRIVER_OPTIONS=@%_classpath_file% %SPARK_DRIVER_OPTIONS%"
+    exit /b 0
+
+rem Training and its classpath do not depend on the environment of the caller.
+:enter_appcds_training
+    cd /d "%~1"
+    set "SL_ENV="
+    set "SPARK_CONF_OPTIONS="
+    set "SPARK_EXTRA_PACKAGES="
+    set "SL_DEBUG="
+    set "SL_RUN_MODE="
+    set "HADOOP_CONF_DIR="
+    set "YARN_CONF_DIR="
+    set "SPARK_DIST_CLASSPATH="
+    set "SL_ROOT=%~1"
+    set "SL_ROOT=!SL_ROOT:\=/!"
+    set "SPARK_PRINT_LAUNCH_COMMAND=1"
+    set "SPARK_MASTER_URL=local[*]"
+    set "SPARK_CONF_DIR=%APPCDS_CONF_DIR%"
+    rem Training only loads classes: no need for the heap of the user's jobs.
+    set "SPARK_DRIVER_MEMORY=1g"
+    exit /b 0
+
+:build_appcds_archive
+    if /i "%SL_APPCDS%" == "false" exit /b 0
+    if /i "%SL_DRY_RUN%" == "true" exit /b 0
+    if "%SCRIPT_DIR: =%" == "%SCRIPT_DIR%" goto :build_appcds_no_space
+    >&2 echo Skipping the AppCDS archive: Spark driver options cannot quote an install path with spaces: %SCRIPT_DIR%
+    exit /b 0
+:build_appcds_no_space
+    if not exist "%APPCDS_CONF_DIR%" mkdir "%APPCDS_CONF_DIR%"
+    call :clear_dead_appcds_lock
+    mkdir "%APPCDS_LOCK%" 2>nul && goto :build_appcds_locked_run
+    echo An AppCDS archive build is already running.
+    exit /b 0
+:build_appcds_locked_run
+    call :build_appcds_locked
+    set "_build_status=%errorlevel%"
+    rmdir "%APPCDS_LOCK%" 2>nul
+    exit /b %_build_status%
+
+:build_appcds_locked
+    echo Building the AppCDS archive to speed up startup ^(set SL_APPCDS=false to skip^)...
+    del /f /q "%APPCDS_ARCHIVE%.tmp" "%APPCDS_CLASSPATH%.tmp" "%APPCDS_LAUNCH%.tmp" >nul 2>&1
+    call :appcds_write_fingerprint "%APPCDS_FINGERPRINT%.tmp"
+    rem Train on a throwaway project that opens a Spark session: no user project exists at
+    rem install time, and this trains nearly as well as a real one.
+    set "_training=%TEMP%\sl-appcds-%RANDOM%%RANDOM%"
+    mkdir "%_training%\metadata"
+    > "%_training%\metadata\application.sl.yml" (
+        echo version: 1
+        echo application:
+        echo   connectionRef: sparkLocal
+        echo   connections:
+        echo     sparkLocal:
+        echo       type: fs
+    )
+    set "_archive_tmp=%APPCDS_ARCHIVE:\=/%.tmp"
+    set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
+    set "_training_options=%JAVA_ARGS% -Dlog4j.configurationFile=%_log_config% -XX:ArchiveClassesAtExit=%_archive_tmp%"
+
+    rem Spark lists slf4j-api before jars\*, so this jar comes twice once the JVM expands the
+    rem wildcard. An archive records it once, and JDK 21 to 24 then reject it at startup, silently
+    rem with -Xshare:auto. So the archive gets its own classpath, without the duplicate: the
+    rem expansion by the JVM keeps its order, and a class found in two jars still comes from the
+    rem same one.
+    setlocal
+    call :enter_appcds_training "%_training%"
+    call :local_driver_classpath
+    set "SPARK_HOME=%SCRIPT_DIR%bin\spark"
+    call "%SPARK_TARGET_FOLDER%\bin\spark-submit.cmd" --driver-class-path "!_driver_classpath!" --class "%SL_MAIN%" --master "%SPARK_MASTER_URL%" --version > "%_training%\classpath.log" 2>&1
+    set "SL_PS_LOG=%_training%\classpath.log"
+    set "SL_PS_OUT=%APPCDS_CLASSPATH%.tmp"
+    call :run_powershell classpath
+    endlocal
+
+    if not exist "%APPCDS_CLASSPATH%.tmp" goto :build_appcds_train
+    set "_classpath_tmp=%APPCDS_CLASSPATH:\=/%.tmp"
+    set "_training_options=@%_classpath_tmp% %_training_options%"
+:build_appcds_train
+    setlocal
+    call :enter_appcds_training "%_training%"
+    set "SPARK_DRIVER_OPTIONS=%_training_options%"
+    call :launch_starlake validate > "%_training%\training.log" 2>&1
+    endlocal & set "_training_status=%errorlevel%"
+    cd /d "%SCRIPT_DIR%"
+
+    if not "%_training_status%" == "0" goto :build_appcds_failed
+    if not exist "%APPCDS_ARCHIVE%.tmp" goto :build_appcds_failed
+    for %%s in ("%APPCDS_ARCHIVE%.tmp") do if %%~zs EQU 0 goto :build_appcds_failed
+    rem The JVM creates its archives read-only, which on Windows blocks replacing them.
+    attrib -r "%APPCDS_ARCHIVE%.tmp" >nul 2>&1
+    if exist "%APPCDS_ARCHIVE%" attrib -r "%APPCDS_ARCHIVE%" >nul 2>&1
+
+    set "SL_PS_LOG=%_training%\training.log"
+    set "SL_PS_OUT=%APPCDS_LAUNCH%.tmp"
+    set "SL_PS_TRAINING=%_training_options%"
+    del "%APPCDS_LAUNCH%" 2>nul
+    call :run_powershell record
+    if exist "%APPCDS_LAUNCH%.tmp" call :move_when_free "%APPCDS_LAUNCH%.tmp" "%APPCDS_LAUNCH%"
+    del "%APPCDS_FAILED%" 2>nul
+    del "%APPCDS_CLASSPATH%" 2>nul
+    if exist "%APPCDS_CLASSPATH%.tmp" call :move_when_free "%APPCDS_CLASSPATH%.tmp" "%APPCDS_CLASSPATH%"
+    call :move_when_free "%APPCDS_ARCHIVE%.tmp" "%APPCDS_ARCHIVE%" || goto :build_appcds_in_use
+    call :move_when_free "%APPCDS_FINGERPRINT%.tmp" "%APPCDS_FINGERPRINT%"
+    rmdir /s /q "%_training%" 2>nul
+    exit /b 0
+:build_appcds_in_use
+    >&2 echo Warning: could not replace the AppCDS archive, which a running command uses. Run "%SL_SELF%" appcds-build again once it has finished.
+    del /f /q "%APPCDS_ARCHIVE%.tmp" "%APPCDS_FINGERPRINT%.tmp" >nul 2>&1
+    rmdir /s /q "%_training%" 2>nul
+    exit /b 1
+:build_appcds_failed
+    if exist "%_training%\training.log" powershell -NoProfile -NonInteractive -Command "Get-Content -LiteralPath $env:_training\training.log -Tail 5" 1>&2
+    del /f /q "%APPCDS_ARCHIVE%.tmp" "%APPCDS_CLASSPATH%.tmp" >nul 2>&1
+    move /y "%APPCDS_FINGERPRINT%.tmp" "%APPCDS_FAILED%" >nul
+    rmdir /s /q "%_training%" 2>nul
+    >&2 echo Warning: could not build the AppCDS archive, startup will be slower.
+    exit /b 1
+
+rem Unlike on Unix, a file that a running JVM maps cannot be replaced: waits up to a minute for it.
+:move_when_free
+    set "_move_tries=0"
+:move_when_free_retry
+    move /y "%~1" "%~2" >nul 2>&1 && exit /b 0
+    set /a "_move_tries+=1"
+    if %_move_tries% GEQ 30 exit /b 1
+    ping -n 3 127.0.0.1 >nul
+    goto :move_when_free_retry
+
+rem Runs in a new process to read the versions.cmd that setup just wrote. Never fails the
+rem install: the archive only makes startup faster.
+:build_appcds_after_setup
+    cmd /c ""%SL_SELF%" appcds-build"
+    exit /b 0
+
+rem The JVM of spark-submit without spark-submit: same classpath order, flags and archive. Only
+rem what needs a Spark session may behave differently, so this is for the user to choose.
+:launch_main
+    set "_main_classpath_arg="
+    set "_main_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+    if /i not "%SPARK_MASTER_URL:~0,5%" == "local" goto :launch_main_classpath
+    if exist "%APPCDS_LAUNCH%" call :enable_appcds
+    call :enable_jdbc_c1 %1
+:launch_main_classpath
+    if defined SPARK_CONF_DIR if /i "%SPARK_CONF_DIR%" == "%APPCDS_CONF_DIR%" goto :launch_main_archive
+    call :local_driver_classpath
+    set "_main_conf=%SPARK_CONF_DIR%"
+    if not defined _main_conf set "_main_conf=%SPARK_TARGET_FOLDER%\conf"
+    set "_main_classpath=!_driver_classpath!;%_main_conf%;%SPARK_TARGET_FOLDER%\jars\*"
+    goto :launch_main_run
+:launch_main_archive
+    rem The classpath, then one JVM flag per line, as recorded from spark-submit.
+    set "_main_classpath="
+    set "_main_flags="
+    for /f "usebackq delims=" %%l in ("%APPCDS_LAUNCH%") do (
+        if not defined _main_classpath (set "_main_classpath=%%l") else (set "_main_flags=!_main_flags! %%l")
+    )
+    rem The expanded classpath is far longer than the 8191 characters of a cmd variable, so it stays
+    rem in its file. It steps aside when entries must be added: the archive then goes unused, but no
+    rem entry goes missing.
+    if not exist "%APPCDS_CLASSPATH%" goto :launch_main_run
+    if defined HADOOP_CONF_DIR goto :launch_main_run
+    if defined YARN_CONF_DIR goto :launch_main_run
+    if defined SPARK_DIST_CLASSPATH goto :launch_main_run
+    set "_main_classpath_arg=@%APPCDS_CLASSPATH:\=/%"
+:launch_main_run
+    if defined HADOOP_CONF_DIR set "_main_classpath=!_main_classpath!;%HADOOP_CONF_DIR%"
+    if defined YARN_CONF_DIR set "_main_classpath=!_main_classpath!;%YARN_CONF_DIR%"
+    if defined SPARK_DIST_CLASSPATH set "_main_classpath=!_main_classpath!;%SPARK_DIST_CLASSPATH%"
+    set "_main_memory="
+    if defined SL_USER_DRIVER_MEMORY set "_main_memory=-Xmx%SL_USER_DRIVER_MEMORY%"
+    set "SPARK_LOCAL_HOSTNAME=127.0.0.1"
+    set "SPARK_HOME=%SPARK_TARGET_FOLDER%"
+    set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
+    if not defined _main_classpath_arg set "_main_classpath_arg=-cp "!_main_classpath!""
+    java !_main_flags! !_main_memory! -Dlog4j.configurationFile="!_log_config!" !SPARK_DRIVER_OPTIONS! !_main_classpath_arg! %SL_MAIN% %*
+    exit /b %errorlevel%
+
+rem The Hadoop that Spark bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM
+rem flag brings it back. Without this, users only get a stack trace. Read from the release file of
+rem the JDK to start no JVM: a JDK that has none gets no warning.
+:warn_if_jdk_unsupported
+    set "_jdk_home=%JAVA_HOME%"
+    if not defined _jdk_home for /f "delims=" %%j in ('where java 2^>nul') do if not defined _jdk_home set "_jdk_home=%%~dpj.."
+    set "_jdk_version="
+    if exist "%_jdk_home%\release" for /f "tokens=2 delims==" %%v in ('findstr /b /c:"JAVA_VERSION=" "%_jdk_home%\release"') do set "_jdk_version=%%~v"
+    if not defined _jdk_version exit /b 0
+    set "_jdk_major="
+    for /f "delims=._+-" %%m in ("%_jdk_version%") do set "_jdk_major=%%m"
+    if not defined _jdk_major exit /b 0
+    set /a "_jdk_major_number=_jdk_major" 2>nul
+    if %_jdk_major_number% GEQ 24 >&2 echo Warning: Java %_jdk_major% cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21.
+    exit /b 0
+
+rem The block at the end of this file: what cmd cannot do by itself. A file of its own would have
+rem to be downloaded by every install and upgrade.
+:run_powershell
+    set "SL_PS_ACTION=%~1"
+    powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SL_SELF);$m='# SL_POWERSHELL_'+'BEGIN';iex $s.Substring($s.IndexOf($m))"
+    exit /b %errorlevel%
+
 :launch_starlake
     if not exist "%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%" (
         echo Starflow jar %SL_JAR_NAME% does not exist. Please install it.
         exit /b 1
     )
+
+    call :warn_if_jdk_unsupported
 
     if defined SL_LOG_LEVEL (
         if /i not "%SL_LOG_LEVEL%" == "error" (
@@ -422,14 +729,12 @@ goto :eof
         set "SPARK_DRIVER_OPTIONS=%SPARK_DRIVER_OPTIONS% -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
     )
 
-    set "SL_RUN_MODE="
     if /i "%1" == "import" set SL_RUN_MODE=main
     if /i "%1" == "xls2yml" set SL_RUN_MODE=main
     if /i "%1" == "yml2xls" set SL_RUN_MODE=main
 
     if /i "%SL_RUN_MODE%" == "main" (
-        set "SL_ROOT=!SL_ROOT!"
-        java --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Dlog4j.configurationFile="%SPARK_TARGET_FOLDER%/conf/log4j2.properties" -cp "%SPARK_TARGET_FOLDER%\jars\*;%DEPS_EXTRA_LIB_FOLDER%\*;%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%" %SL_MAIN% %*
+        call :launch_main %*
     ) else (
         set "extra_classpath=%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%"
         set "extra_jars=%STARLAKE_EXTRA_LIB_FOLDER%\%SL_JAR_NAME%"
@@ -451,6 +756,9 @@ goto :eof
             set "SPARK_LOCAL_HOSTNAME=127.0.0.1"
             set "SPARK_HOME=%SCRIPT_DIR%bin\spark"
             set "SL_ROOT=!SL_ROOT!"
+            call :enable_appcds
+            call :use_appcds_classpath
+            call :enable_jdbc_c1 %1
             call "!SPARK_SUBMIT!" %SPARK_EXTRA_PACKAGES% --driver-java-options "!SPARK_DRIVER_OPTIONS!" %SPARK_CONF_OPTIONS% --driver-class-path "!extra_classpath!" --class "%SL_MAIN%" --master "%SPARK_MASTER_URL%" "%SPARK_TARGET_FOLDER%\README.md" %*
         ) else (
             if defined deps_jars (
@@ -472,6 +780,7 @@ goto :eof
     if /i "%1" == "serve" goto :serve_command
     if /i "%1" == "upgrade" goto :upgrade_command
     if /i "%1" == "_do_upgrade" goto :do_upgrade_command
+    if /i "%1" == "appcds-build" goto :appcds_build_command
     goto :default_command
 
 :version_command
@@ -628,6 +937,7 @@ goto :eof
         rem (handled above), and writes a brand new versions.cmd from scratch.
         call :launch_setup "!TARGET_REF!"
         if errorlevel 1 exit /b 1
+        call :build_appcds_after_setup
 
         echo Upgrade complete.
     )
@@ -672,10 +982,15 @@ goto :eof
     if /i "%1" == "install" if exist "%SCRIPT_DIR%bin\spark" call :sync_spark_runtime "%_install_ref%" || exit /b 1
     call :launch_setup "%_install_ref%"
     if errorlevel 1 exit /b 1
+    call :build_appcds_after_setup
     echo.
     echo Installation done. You're ready to enjoy Starflow!
     echo If any errors happen during installation. Please try to install again or open an issue.
     goto :eof
+
+:appcds_build_command
+    call :build_appcds_archive
+    exit /b %errorlevel%
 
 :serve_command
     if defined SL_API_DEBUG (
@@ -706,4 +1021,143 @@ goto :eof
     rem and a failed command would report success to whatever runs it.
     exit /b %errorlevel%
 
+rem Nothing below is batch: :run_powershell reads it from here. No line may start with a colon.
+goto :eof
 
+# SL_POWERSHELL_BEGIN
+$ErrorActionPreference = 'Stop'
+
+# The value of the shallowest occurrence of a key in a YAML file. These helpers are no YAML
+# parser: a layout they do not expect yields nothing, which keeps the default compiler.
+function Get-YamlTopValue($key, $file) {
+  if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return '' }
+  $seen = $false; $best = 0; $found = ''
+  foreach ($raw in [IO.File]::ReadAllLines($file)) {
+    $line = $raw.TrimStart(' ', "`t")
+    $indent = $raw.Length - $line.Length
+    if (-not $line.StartsWith("${key}:", [StringComparison]::Ordinal) -or ($seen -and $indent -ge $best)) { continue }
+    $value = $line.Substring($key.Length + 1) -replace '[ \t]+#.*$', ''
+    $seen = $true; $best = $indent; $found = $value.Trim(' ', "`t", '"', "'")
+  }
+  return $found
+}
+
+# Same rule as ConnectionInfo.getEngine: the JDBC engine is a jdbc type without sparkFormat.
+function Test-YamlConnectionIsJdbc($name, $file) {
+  if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
+  $inConnections = $false; $connectionsIndent = 0; $inConnection = $false
+  $connectionIndent = 0; $fieldIndent = 0; $type = ''; $sparkFormat = $false
+  foreach ($raw in [IO.File]::ReadAllLines($file)) {
+    $line = $raw.TrimStart(' ', "`t")
+    if ($line -eq '' -or $line.StartsWith('#')) { continue }
+    $indent = $raw.Length - $line.Length
+    $key = ($line -replace ':.*', '') -replace '["'']', ''
+    if (-not $inConnections) {
+      if ($key -ceq 'connections') { $inConnections = $true; $connectionsIndent = $indent }
+      continue
+    }
+    if ($indent -le $connectionsIndent) { break }
+    if (-not $inConnection) {
+      if ($connectionIndent -eq 0) { $connectionIndent = $indent }
+      if ($indent -eq $connectionIndent -and $key -ceq $name) { $inConnection = $true }
+      continue
+    }
+    if ($indent -le $connectionIndent) { break }
+    if ($fieldIndent -eq 0) { $fieldIndent = $indent }
+    if ($indent -ne $fieldIndent) { continue }
+    if ($key -ceq 'sparkFormat') { $sparkFormat = $true }
+    if ($key -ceq 'type') { $type = (($line -replace '^[^:]*:', '') -replace '[ \t]+#.*$', '') -replace '[ \t"'']', '' }
+  }
+  return ($type.ToUpperInvariant() -ceq 'JDBC' -and -not $sparkFormat)
+}
+
+# Follows AutoTaskInfo.getRunConnectionRef with the project files, before any JVM starts.
+# Anything that could send a task elsewhere answers no.
+function Test-TransformRunsOnJdbc {
+  if ("$env:SL_CONNECTION_REF$env:SL_ACTIVE_CONNECTION_REF$env:SL_TRANSFORM_CONNECTION_REF$env:SL_METADATA" -ne '') { return $false }
+  $metadata = Join-Path $env:SL_ROOT 'metadata'
+  $application = Join-Path $metadata 'application.sl.yml'
+  $transform = Join-Path $metadata 'transform'
+  if (Test-Path -LiteralPath $transform) {
+    if (Get-ChildItem -LiteralPath $transform -Recurse -File | Select-String -SimpleMatch -Quiet 'connectionRef') { return $false }
+  }
+  $envName = $env:SL_ENV
+  if (-not $envName) { $envName = Get-YamlTopValue 'SL_ENV' (Join-Path $metadata 'env.sl.yml') }
+  $ref = Get-YamlTopValue 'transformConnectionRef' $application
+  if (-not $ref) { $ref = Get-YamlTopValue 'connectionRef' $application }
+  if ($ref -match '^\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$') {
+    $name = $Matches[1]
+    if ([Environment]::GetEnvironmentVariable($name)) { return $false }
+    $ref = Get-YamlTopValue $name (Join-Path $metadata "env.$envName.sl.yml")
+    if (-not $ref) { $ref = Get-YamlTopValue $name (Join-Path $metadata 'env.sl.yml') }
+  }
+  return ($ref -and (Test-YamlConnectionIsJdbc $ref $application))
+}
+
+# The words of the command spark-class really ran, as Spark prints them.
+function Get-SparkCommandWords($log) {
+  $line = Get-Content -LiteralPath $log | Where-Object { "$_".StartsWith('Spark Command: ') } | Select-Object -First 1
+  if (-not $line) { return @() }
+  return @($line -split '\s+')
+}
+
+# The classpath of Spark, expanded by the JVM and without duplicates.
+function Write-AppcdsClasspath {
+  $words = Get-SparkCommandWords $env:SL_PS_LOG
+  $position = [Array]::IndexOf($words, '-cp')
+  if ($position -lt 0) { return }
+  $ErrorActionPreference = 'Continue'
+  $listing = & java -cp $words[$position + 1] -XshowSettings:properties -version 2>&1 | ForEach-Object { "$_" }
+  $entries = New-Object System.Collections.ArrayList
+  $reading = $false
+  foreach ($line in $listing) {
+    if ($line -match '^\s*(\S+) = (.*)$') {
+      $reading = ($Matches[1] -ceq 'java.class.path')
+      if ($reading) { [void]$entries.Add($Matches[2].Trim()) }
+    } elseif ($reading) { [void]$entries.Add($line.Trim()) }
+  }
+  $unique = @($entries | Where-Object { $_ } | Select-Object -Unique)
+  if ($unique.Count -eq 0) { return }
+  [IO.File]::WriteAllText($env:SL_PS_OUT, '-cp ' + (($unique -join ';') -replace '\\', '/') + "`r`n")
+}
+
+# Keeps what SL_RUN_MODE=main needs from the command spark-class really ran, so that it follows
+# Spark upgrades: the classpath, then one JVM flag per line, without those of the training.
+function Write-AppcdsLaunch {
+  $words = Get-SparkCommandWords $env:SL_PS_LOG
+  $position = [Array]::IndexOf($words, '-cp')
+  if ($position -lt 0) { return }
+  $skip = @{}
+  foreach ($word in ($env:SL_PS_TRAINING -split '\s+')) { $skip[$word] = $true }
+  $lines = New-Object System.Collections.ArrayList
+  [void]$lines.Add($words[$position + 1])
+  for ($i = $position + 2; $i -lt $words.Count -and $words[$i] -cne 'org.apache.spark.deploy.SparkSubmit'; $i++) {
+    if (-not $skip.ContainsKey($words[$i]) -and $words[$i] -notmatch '^-Xmx') { [void]$lines.Add($words[$i]) }
+  }
+  [IO.File]::WriteAllLines($env:SL_PS_OUT, [string[]]$lines)
+}
+
+# The JVM flags of a proxy URL.
+function Write-ProxyArgs {
+  $type = $env:SL_PS_PROXY_TYPE
+  $url = $env:SL_PS_PROXY_URL
+  if ($url -notmatch '://') { $url = 'http://' + $url }
+  try { $uri = [uri]$url } catch { [Console]::Error.WriteLine("Cannot parse the $type proxy URL"); return }
+  if (-not $uri.Host) { [Console]::Error.WriteLine("Could not parse the $type proxy URL"); return }
+  $flags = "-D$type.proxyHost=" + $uri.Host
+  if ($uri.Port -gt 0) { $flags += " -D$type.proxyPort=" + [string]$uri.Port }
+  if ($uri.UserInfo) {
+    $parts = $uri.UserInfo.Split(':', 2)
+    $flags += " -D$type.proxyUser=" + [uri]::UnescapeDataString($parts[0])
+    if ($parts.Length -gt 1) { $flags += " -D$type.proxyPassword=" + [uri]::UnescapeDataString($parts[1]) }
+  }
+  [IO.File]::WriteAllText($env:SL_PS_OUT, $flags)
+}
+
+switch ($env:SL_PS_ACTION) {
+  'c1' { try { if (Test-TransformRunsOnJdbc) { exit 0 } } catch { }; exit 1 }
+  'classpath' { Write-AppcdsClasspath; exit 0 }
+  'record' { Write-AppcdsLaunch; exit 0 }
+  'proxy' { Write-ProxyArgs; exit 0 }
+}
+exit 2

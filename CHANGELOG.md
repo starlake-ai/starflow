@@ -3,6 +3,10 @@
 
 # 1.8.16:
 __New feature__:
+- **`starlake.cmd` now does what `starlake.sh` does on Windows, and starts faster**: it builds an AppCDS class archive during `install`, `reinstall` and `upgrade`, and uses it when `SPARK_MASTER_URL` is `local*`. Measured on a GitHub Windows runner: `validate` from about 13s to 7.4s.
+  - As with `starlake.sh`: when the jars or the JDK no longer match the archive, the next command starts a rebuild in the background and does not wait for it. Set `SL_APPCDS=false` to turn it off, or run `starlake.cmd appcds-build` to rebuild it.
+  - It also uses the C1 compiler for a `transform` on a JDBC connection (`SL_JDBC_C1=false` turns it off), and `SL_RUN_MODE=main` runs the JVM of `spark-submit` without `spark-submit`, with the same classpath and flags.
+  - It warns on JDK 24 and newer, which cannot run Starflow. The options in `SPARK_DRIVER_OPTIONS` now come after the flags of the launcher, so yours win.
 - **`transform --parallelism N` runs tasks at the same time**, on DuckDB, JDBC and BigQuery connections only, with several names, `--tags` or `--recursive`. A task still waits for the tasks it reads, what reads a failed task is skipped, and the summary lists the tasks in the same order as a serial run. Without the flag, the default is `maxParTask` (`SL_MAX_PAR_TASK`), which is 1, so tasks stay serial.
   - **Upgrade note**: a project that sets `SL_MAX_PAR_TASK` above 1, for the BigQuery native loader, now also runs its multi task `transform` commands in parallel. Add `--parallelism 1` to keep them serial.
   - A task listed twice runs its second time once everything listed before it has finished.
