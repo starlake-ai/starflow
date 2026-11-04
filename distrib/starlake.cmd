@@ -130,16 +130,18 @@ REM networks. Users can still override via SPARK_DRIVER_OPTIONS/JAVA_OPTS.
 echo.%JAVA_OPTS% %SPARK_DRIVER_OPTIONS% | findstr /C:"java.net.preferIPv6Addresses" >nul
 if errorlevel 1 set "JAVA_ARGS=-Djava.net.preferIPv6Addresses=system"
 
+rem The name of the variable rather than its value: what the value holds, such as a % or a & in a
+rem password, would be read as batch syntax. It is not printed either, as it may hold a password.
 if defined HTTPS_PROXY (
-    echo Using HTTPS_PROXY: %HTTPS_PROXY%
-    call :parse_proxy_and_build_args "https" "%HTTPS_PROXY%"
-    if defined proxy_args set "JAVA_ARGS=%JAVA_ARGS% %proxy_args%"
+    echo Using HTTPS_PROXY
+    call :parse_proxy_and_build_args "https" HTTPS_PROXY
+    if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
 if defined HTTP_PROXY (
-    echo Using HTTP_PROXY: %HTTP_PROXY%
-    call :parse_proxy_and_build_args "http" "%HTTP_PROXY%"
-    if defined proxy_args set "JAVA_ARGS=%JAVA_ARGS% %proxy_args%"
+    echo Using HTTP_PROXY
+    call :parse_proxy_and_build_args "http" HTTP_PROXY
+    if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
 if defined SPARK_DRIVER_OPTIONS (
@@ -258,29 +260,29 @@ goto :handle_command
     goto :eof
 
 :parse_proxy_and_build_args
-    REM Args: %1=type (http/https), %2=url
+    REM Args: %1=type (http/https), %2=name of the variable holding the url
     REM Sets proxy_args variable with -Dtype.proxyHost/Port/User/Password flags
     set "proxy_args="
     set "_ptype=%~1"
-    set "_purl=%~2"
+    set "_purl=!%~2!"
 
-    set "_tmpps=%TEMP%\sl_proxy_%RANDOM%.ps1"
-    > "%_tmpps%" (
-        echo $url = '%_purl%'
-        echo if ($url -notmatch '://') { Write-Error "No protocol in proxy URL, assuming http://"; $url = 'http://' + $url }
-        echo try { $uri = [uri]$url } catch { Write-Error "Cannot parse proxy URL: $url"; exit 0 }
-        echo if (-not $uri.Host) { Write-Error "Warning: Could not parse %_ptype% proxy URL: $url"; exit 0 }
-        echo $r = '-D%_ptype%.proxyHost=' + $uri.Host
-        echo if ($uri.Port -gt 0) { $r += ' -D%_ptype%.proxyPort=' + [string]$uri.Port }
-        echo if ($uri.UserInfo) {
-        echo     $p = $uri.UserInfo.Split(':', 2)
-        echo     $r += ' -D%_ptype%.proxyUser=' + [uri]::UnescapeDataString($p[0])
-        echo     if ($p.Length -gt 1) { $r += ' -D%_ptype%.proxyPassword=' + [uri]::UnescapeDataString($p[1]) }
-        echo }
-        echo Write-Output $r
-    )
-    for /f "usebackq delims=" %%a in (`powershell -NoProfile -File "%_tmpps%"`) do set "proxy_args=%%a"
+    rem One redirection per line: in a parenthesized block, the first ) of the script ends the block.
+    set "_tmpps=%TEMP%\sl_proxy_%RANDOM%%RANDOM%.ps1"
+    > "%_tmpps%" echo $url = $env:_purl
+    >> "%_tmpps%" echo if ($url -notmatch '://') { $url = 'http://' + $url }
+    >> "%_tmpps%" echo try { $uri = [uri]$url } catch { [Console]::Error.WriteLine('Cannot parse the %_ptype% proxy URL'); exit 0 }
+    >> "%_tmpps%" echo if (-not $uri.Host) { [Console]::Error.WriteLine('Could not parse the %_ptype% proxy URL'); exit 0 }
+    >> "%_tmpps%" echo $r = '-D%_ptype%.proxyHost=' + $uri.Host
+    >> "%_tmpps%" echo if ($uri.Port -gt 0) { $r += ' -D%_ptype%.proxyPort=' + [string]$uri.Port }
+    >> "%_tmpps%" echo if ($uri.UserInfo) {
+    >> "%_tmpps%" echo     $p = $uri.UserInfo.Split(':', 2)
+    >> "%_tmpps%" echo     $r += ' -D%_ptype%.proxyUser=' + [uri]::UnescapeDataString($p[0])
+    >> "%_tmpps%" echo     if ($p.Length -gt 1) { $r += ' -D%_ptype%.proxyPassword=' + [uri]::UnescapeDataString($p[1]) }
+    >> "%_tmpps%" echo }
+    >> "%_tmpps%" echo Write-Output $r
+    for /f "usebackq delims=" %%a in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%_tmpps%"`) do set "proxy_args=%%a"
     del "%_tmpps%" 2>nul
+    set "_purl="
     goto :eof
 
 :get_binary_from_url
@@ -682,7 +684,7 @@ goto :eof
         set "JAVA_OPTS=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED %JAVA_OPTS%"
     )
     call "%SCRIPT_DIR%bin\api\bin\local-run-api.bat" "%SCRIPT_DIR%" dummy
-    goto :eof
+    exit /b %errorlevel%
 
 :default_command
     if not defined SL_HTTP_PORT (
@@ -700,6 +702,8 @@ goto :eof
             if exist "!log!" type "!log!"
         )
     )
-    goto :eof
+    rem Explicitly: ending on goto :eof after a call loses the exit code when cmd /c runs this file,
+    rem and a failed command would report success to whatever runs it.
+    exit /b %errorlevel%
 
 
