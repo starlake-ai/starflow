@@ -146,13 +146,13 @@ if errorlevel 1 set "JAVA_ARGS=-Djava.net.preferIPv6Addresses=system"
 if defined HTTPS_PROXY (
     echo Using HTTPS_PROXY: %HTTPS_PROXY%
     call :parse_proxy_and_build_args "https" "%HTTPS_PROXY%"
-    if defined proxy_args set "JAVA_ARGS=%JAVA_ARGS% %proxy_args%"
+    if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
 if defined HTTP_PROXY (
     echo Using HTTP_PROXY: %HTTP_PROXY%
     call :parse_proxy_and_build_args "http" "%HTTP_PROXY%"
-    if defined proxy_args set "JAVA_ARGS=%JAVA_ARGS% %proxy_args%"
+    if defined proxy_args set "JAVA_ARGS=!JAVA_ARGS! !proxy_args!"
 )
 
 rem Launcher flags first: on a repeated -D the JVM keeps the last one, so the user's
@@ -275,23 +275,13 @@ goto :handle_command
     set "_ptype=%~1"
     set "_purl=%~2"
 
-    set "_tmpps=%TEMP%\sl_proxy_%RANDOM%.ps1"
-    > "%_tmpps%" (
-        echo $url = '%_purl%'
-        echo if ($url -notmatch '://') { Write-Error "No protocol in proxy URL, assuming http://"; $url = 'http://' + $url }
-        echo try { $uri = [uri]$url } catch { Write-Error "Cannot parse proxy URL: $url"; exit 0 }
-        echo if (-not $uri.Host) { Write-Error "Warning: Could not parse %_ptype% proxy URL: $url"; exit 0 }
-        echo $r = '-D%_ptype%.proxyHost=' + $uri.Host
-        echo if ($uri.Port -gt 0) { $r += ' -D%_ptype%.proxyPort=' + [string]$uri.Port }
-        echo if ($uri.UserInfo) {
-        echo     $p = $uri.UserInfo.Split(':', 2)
-        echo     $r += ' -D%_ptype%.proxyUser=' + [uri]::UnescapeDataString($p[0])
-        echo     if ($p.Length -gt 1) { $r += ' -D%_ptype%.proxyPassword=' + [uri]::UnescapeDataString($p[1]) }
-        echo }
-        echo Write-Output $r
-    )
-    for /f "usebackq delims=" %%a in (`powershell -NoProfile -File "%_tmpps%"`) do set "proxy_args=%%a"
-    del "%_tmpps%" 2>nul
+    set "SL_PS_PROXY_TYPE=%_ptype%"
+    set "SL_PS_PROXY_URL=%_purl%"
+    set "SL_PS_OUT=%TEMP%\sl_proxy_%RANDOM%%RANDOM%.txt"
+    call :run_powershell proxy
+    if exist "%SL_PS_OUT%" for /f "usebackq delims=" %%a in ("%SL_PS_OUT%") do set "proxy_args=%%a"
+    del "%SL_PS_OUT%" 2>nul
+    set "SL_PS_PROXY_URL="
     goto :eof
 
 :get_binary_from_url
@@ -479,7 +469,7 @@ rem on these jars.
 :enable_appcds_fresh
     set "SPARK_CONF_DIR=%APPCDS_CONF_DIR%"
     set "_archive=%APPCDS_ARCHIVE:\=/%"
-    set "_log_config=%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
+    set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
     set "SPARK_DRIVER_OPTIONS=-Dlog4j.configurationFile=%_log_config% -XX:SharedArchiveFile=%_archive% -Xshare:auto -Xlog:cds=off -Xlog:cds+dynamic=off %SPARK_DRIVER_OPTIONS%"
     exit /b 0
 
@@ -569,7 +559,7 @@ rem Training and its classpath do not depend on the environment of the caller.
         echo       type: fs
     )
     set "_archive_tmp=%APPCDS_ARCHIVE:\=/%.tmp"
-    set "_log_config=%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
+    set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
     set "_training_options=%JAVA_ARGS% -Dlog4j.configurationFile=%_log_config% -XX:ArchiveClassesAtExit=%_archive_tmp%"
 
     rem Spark lists slf4j-api before jars\*, so this jar comes twice once the JVM expands the
@@ -607,18 +597,17 @@ rem Training and its classpath do not depend on the environment of the caller.
     set "SL_PS_TRAINING=%_training_options%"
     del "%APPCDS_LAUNCH%" 2>nul
     call :run_powershell record
-    if exist "%APPCDS_LAUNCH%.tmp" move /y "%APPCDS_LAUNCH%.tmp" "%APPCDS_LAUNCH%" >nul
+    if exist "%APPCDS_LAUNCH%.tmp" call :move_when_free "%APPCDS_LAUNCH%.tmp" "%APPCDS_LAUNCH%"
     del "%APPCDS_FAILED%" 2>nul
     del "%APPCDS_CLASSPATH%" 2>nul
-    if exist "%APPCDS_CLASSPATH%.tmp" move /y "%APPCDS_CLASSPATH%.tmp" "%APPCDS_CLASSPATH%" >nul
-    rem Unlike on Unix, a file mapped by a running JVM cannot be replaced.
-    move /y "%APPCDS_ARCHIVE%.tmp" "%APPCDS_ARCHIVE%" >nul 2>&1 || goto :build_appcds_in_use
-    move /y "%APPCDS_FINGERPRINT%.tmp" "%APPCDS_FINGERPRINT%" >nul
+    if exist "%APPCDS_CLASSPATH%.tmp" call :move_when_free "%APPCDS_CLASSPATH%.tmp" "%APPCDS_CLASSPATH%"
+    call :move_when_free "%APPCDS_ARCHIVE%.tmp" "%APPCDS_ARCHIVE%" || goto :build_appcds_in_use
+    call :move_when_free "%APPCDS_FINGERPRINT%.tmp" "%APPCDS_FINGERPRINT%"
     rmdir /s /q "%_training%" 2>nul
     exit /b 0
 :build_appcds_in_use
-    >&2 echo Warning: could not replace the AppCDS archive, which a running command uses. Run "%SL_SELF%" appcds-build again once it has finished.
-    del "%APPCDS_ARCHIVE%.tmp" "%APPCDS_FINGERPRINT%.tmp" 2>nul
+    >&2 echo Warning: could not replace the AppCDS archive, as a running command or an antivirus holds it. Run "%SL_SELF%" appcds-build again once it has finished.
+    del "%APPCDS_ARCHIVE%.tmp" "%APPCDS_FINGERPRINT%.tmp" >nul 2>&1
     rmdir /s /q "%_training%" 2>nul
     exit /b 1
 :build_appcds_failed
@@ -628,6 +617,17 @@ rem Training and its classpath do not depend on the environment of the caller.
     rmdir /s /q "%_training%" 2>nul
     >&2 echo Warning: could not build the AppCDS archive, startup will be slower.
     exit /b 1
+
+rem Unlike on Unix, a file that a running JVM maps cannot be replaced, and the archive is still held
+rem for a moment after the JVM that wrote it ended, as an antivirus scans it. Waits up to a minute.
+:move_when_free
+    set "_move_tries=0"
+:move_when_free_retry
+    move /y "%~1" "%~2" >nul 2>&1 && exit /b 0
+    set /a "_move_tries+=1"
+    if %_move_tries% GEQ 30 exit /b 1
+    ping -n 3 127.0.0.1 >nul
+    goto :move_when_free_retry
 
 rem Runs in a new process to read the versions.cmd that setup just wrote. Never fails the
 rem install: the archive only makes startup faster.
@@ -665,7 +665,8 @@ rem what needs a Spark session may behave differently, so this is for the user t
     if defined SL_USER_DRIVER_MEMORY set "_main_memory=-Xmx%SL_USER_DRIVER_MEMORY%"
     set "SPARK_LOCAL_HOSTNAME=127.0.0.1"
     set "SPARK_HOME=%SPARK_TARGET_FOLDER%"
-    java !_main_flags! !_main_memory! -Dlog4j.configurationFile="%SPARK_TARGET_FOLDER%/conf/log4j2.properties" !SPARK_DRIVER_OPTIONS! -cp "!_main_classpath!" %SL_MAIN% %*
+    set "_log_config=file:///%SPARK_TARGET_FOLDER:\=/%/conf/log4j2.properties"
+    java !_main_flags! !_main_memory! -Dlog4j.configurationFile="!_log_config!" !SPARK_DRIVER_OPTIONS! -cp "!_main_classpath!" %SL_MAIN% %*
     exit /b %errorlevel%
 
 rem The Hadoop that Spark bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM
@@ -1120,9 +1121,27 @@ function Write-AppcdsLaunch {
   [IO.File]::WriteAllLines($env:SL_PS_OUT, [string[]]$lines)
 }
 
+# The JVM flags of a proxy URL.
+function Write-ProxyArgs {
+  $type = $env:SL_PS_PROXY_TYPE
+  $url = $env:SL_PS_PROXY_URL
+  if ($url -notmatch '://') { $url = 'http://' + $url }
+  try { $uri = [uri]$url } catch { [Console]::Error.WriteLine("Cannot parse $type proxy URL"); return }
+  if (-not $uri.Host) { [Console]::Error.WriteLine("Could not parse $type proxy URL"); return }
+  $flags = "-D$type.proxyHost=" + $uri.Host
+  if ($uri.Port -gt 0) { $flags += " -D$type.proxyPort=" + [string]$uri.Port }
+  if ($uri.UserInfo) {
+    $parts = $uri.UserInfo.Split(':', 2)
+    $flags += " -D$type.proxyUser=" + [uri]::UnescapeDataString($parts[0])
+    if ($parts.Length -gt 1) { $flags += " -D$type.proxyPassword=" + [uri]::UnescapeDataString($parts[1]) }
+  }
+  [IO.File]::WriteAllText($env:SL_PS_OUT, $flags)
+}
+
 switch ($env:SL_PS_ACTION) {
   'c1' { try { if (Test-TransformRunsOnJdbc) { exit 0 } } catch { }; exit 1 }
   'classpath' { Write-AppcdsClasspath; exit 0 }
   'record' { Write-AppcdsLaunch; exit 0 }
+  'proxy' { Write-ProxyArgs; exit 0 }
 }
 exit 2

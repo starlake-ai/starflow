@@ -93,5 +93,20 @@ Invoke-Case 'a key named like the connection outside the connections is not read
 Invoke-Case 'comments and blank lines inside a connection are skipped' $true -Remove 'env.sl.yml' -Files @{
   'application.sl.yml' = "application:`n  connectionRef: duck`n  connections:`n    duck:`n`n      # engine`n      type: jdbc`n" }
 
+# The proxy flags, from the same block
+function Invoke-Proxy($Name, $Type, $Url, $Expected) {
+  $out = Join-Path ([IO.Path]::GetTempPath()) ("sl-proxy-" + [Guid]::NewGuid())
+  $env:SL_SELF = $launcher; $env:SL_PS_ACTION = 'proxy'; $env:SL_PS_PROXY_TYPE = $Type; $env:SL_PS_PROXY_URL = $Url; $env:SL_PS_OUT = $out
+  $command = '$s=[IO.File]::ReadAllText($env:SL_SELF);$m=''# SL_POWERSHELL_''+''BEGIN'';iex $s.Substring($s.IndexOf($m))'
+  $output = & $shell -NoProfile -NonInteractive -Command $command 2>&1
+  $actual = if (Test-Path $out) { (Get-Content -Raw $out).Trim() } else { '' }
+  Remove-Item $out -ErrorAction SilentlyContinue
+  if ($actual -ceq $Expected) { Write-Host "ok   $Name" }
+  else { $script:failures++; Write-Host "FAIL $Name (expected '$Expected', got '$actual') $output" }
+}
+Invoke-Proxy 'proxy host and port' 'http' 'http://proxy.example:3128' '-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=3128'
+Invoke-Proxy 'proxy without a protocol' 'https' 'proxy.example:8080' '-Dhttps.proxyHost=proxy.example -Dhttps.proxyPort=8080'
+Invoke-Proxy 'proxy with credentials, unescaped' 'http' 'http://me:p%40ss@proxy.example:3128' '-Dhttp.proxyHost=proxy.example -Dhttp.proxyPort=3128 -Dhttp.proxyUser=me -Dhttp.proxyPassword=p@ss'
+
 if ($script:failures -gt 0) { Write-Host "$($script:failures) case(s) failed"; exit 1 }
 Write-Host 'All cases passed'

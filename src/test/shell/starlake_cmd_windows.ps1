@@ -43,11 +43,13 @@ function Starlake([string]$arguments, [hashtable]$environment = @{}, [string]$la
 
 function Classes-From-Archive([string]$arguments, [hashtable]$environment = @{}) {
   $log = Join-Path $env:TEMP ("class-load-" + [Guid]::NewGuid() + '.log')
-  $environment['SPARK_DRIVER_OPTIONS'] = '-Xlog:class+load:file=' + ($log -replace '\\', '/')
+  $cds = "$log.cds"
+  $environment['SPARK_DRIVER_OPTIONS'] = '-Xlog:class+load:file=' + ($log -replace '\\', '/') + ' -Xlog:cds=info,cds+dynamic=info,class+path=info:file=' + ($cds -replace '\\', '/')
   $result = Starlake $arguments $environment
   $count = 0
   if (Test-Path $log) { $count = @(Select-String -Path $log -SimpleMatch 'shared objects file (top)').Count }
-  return [pscustomobject]@{ Count = $count; Code = $result.Code; Text = $result.Text }
+  $why = if (Test-Path $cds) { (Get-Content $cds | Where-Object { $_ -match 'mismatch|disabled|fail|error|not |unable|invalid' } | Select-Object -First 15) -join "`n" } else { 'no CDS log' }
+  return [pscustomobject]@{ Count = $count; Code = $result.Code; Text = $result.Text; Why = $why }
 }
 
 function Wait-For-Rebuild {
@@ -60,7 +62,7 @@ function Wait-For-Rebuild {
 function Write-Project($root, $application) {
   New-Item -ItemType Directory -Force -Path (Join-Path $root 'metadata\transform\dom') | Out-Null
   [IO.File]::WriteAllText((Join-Path $root 'metadata\application.sl.yml'), $application)
-  [IO.File]::WriteAllText((Join-Path $root 'metadata\transform\dom\t.sql'), 'SELECT 1 AS id')
+  [IO.File]::WriteAllText((Join-Path $root 'metadata\transform\dom\tt.sql'), 'SELECT 1 AS id')
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -99,7 +101,10 @@ Check 'spark-submit loads classes from the archive' ($used.Count -gt 1000) "coun
 Check 'a command with the archive still succeeds' ($used.Code -eq 0) $used.Text
 $main = Classes-From-Archive 'validate' @{ SL_RUN_MODE = 'main' }
 Write-Host "classes from the archive on SL_RUN_MODE=main: $($main.Count)"
-Check 'SL_RUN_MODE=main loads classes from the archive' ($main.Count -gt 1000) "count=$($main.Count) code=$($main.Code) $($main.Text)"
+Check 'SL_RUN_MODE=main loads classes from the archive' ($main.Count -gt 1000) "count=$($main.Count) code=$($main.Code)`n--- CDS`n$($main.Why)`n--- launch file`n$((Get-Content (Join-Path $appcds 'starlake.launch')) -join "`n")"
+Check 'SL_RUN_MODE=main succeeds' ($main.Code -eq 0) $main.Text
+Check 'the logging config is understood' (-not $used.Text.Contains('Invalid URL')) $used.Text
+Check 'the logging config is understood on SL_RUN_MODE=main' (-not $main.Text.Contains('Invalid URL'))
 $off = Classes-From-Archive 'validate' @{ SL_APPCDS = 'false' }
 Check 'SL_APPCDS=false does not use the archive' ($off.Count -eq 0 -and $off.Code -eq 0) "count=$($off.Count)"
 
@@ -111,20 +116,21 @@ Write-Host '--- driver options'
 $printed = Starlake 'validate' @{ SPARK_PRINT_LAUNCH_COMMAND = '1'; SPARK_DRIVER_OPTIONS = '-Dmy.option=1'; HTTP_PROXY = 'http://proxy.invalid:3128'; SL_APPCDS = 'false' }
 $proxyAt = $printed.Text.IndexOf('-Dhttp.proxyHost')
 $userAt = $printed.Text.IndexOf('-Dmy.option=1')
+Check 'a command with a proxy set still runs' (-not $printed.Text.Contains('was unexpected')) $printed.Text
 Check 'proxy flags reach the driver when the user sets options' ($proxyAt -ge 0) $printed.Text
 Check 'the options of the user come after the flags of the launcher' ($userAt -gt $proxyAt)
 
 Write-Host '--- C1 on JDBC'
 Set-Location $jdbcProject
-$jdbc = Starlake 'transform --name dom.t' @{ SPARK_PRINT_LAUNCH_COMMAND = '1' }
+$jdbc = Starlake 'transform --name dom.tt' @{ SPARK_PRINT_LAUNCH_COMMAND = '1' }
 Check 'a transform on JDBC uses C1' ($jdbc.Text.Contains('TieredStopAtLevel=1')) $jdbc.Text
 Check 'a transform on JDBC with C1 and the archive succeeds' ($jdbc.Code -eq 0) $jdbc.Text
-$noC1 = Starlake 'transform --name dom.t' @{ SPARK_PRINT_LAUNCH_COMMAND = '1'; SL_JDBC_C1 = 'false' }
+$noC1 = Starlake 'transform --name dom.tt' @{ SPARK_PRINT_LAUNCH_COMMAND = '1'; SL_JDBC_C1 = 'false' }
 Check 'SL_JDBC_C1=false turns C1 off' (-not $noC1.Text.Contains('TieredStopAtLevel'))
 $other = Starlake 'validate' @{ SPARK_PRINT_LAUNCH_COMMAND = '1' }
 Check 'only transform uses C1' (-not $other.Text.Contains('TieredStopAtLevel'))
 Set-Location $fsProject
-$fs = Starlake 'transform --name dom.t' @{ SPARK_PRINT_LAUNCH_COMMAND = '1' }
+$fs = Starlake 'transform --name dom.tt' @{ SPARK_PRINT_LAUNCH_COMMAND = '1' }
 Check 'a transform on fs does not use C1' (-not $fs.Text.Contains('TieredStopAtLevel'))
 
 Write-Host '--- a changed jar'
@@ -146,7 +152,9 @@ if (Test-Path (Join-Path $appcds 'build.log')) { Write-Host (Get-Content -Raw (J
 $rebuilt = Classes-From-Archive 'validate'
 Write-Host "classes from the rebuilt archive: $($rebuilt.Count)"
 Check 'the next command uses the rebuilt archive' ($rebuilt.Count -gt 1000) "count=$($rebuilt.Count) $($rebuilt.Text)"
-Remove-Item $addedJar
+# A rebuild may still hold it
+[void](Wait-For-Rebuild)
+foreach ($try in 1..20) { Remove-Item $addedJar -ErrorAction SilentlyContinue; if (-not (Test-Path $addedJar)) { break }; Start-Sleep -Seconds 3 }
 $removed = Starlake 'validate'
 Check 'a removed jar makes the archive stale' ($removed.Text.Contains('rebuilding'))
 Check 'the second rebuild ends' (Wait-For-Rebuild)
