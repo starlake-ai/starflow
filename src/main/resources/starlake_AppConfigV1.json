@@ -881,7 +881,7 @@
     },
     "maxParTask": {
       "type": "integer",
-      "description": "How many tasks of one transform command may run at the same time, unless --parallelism is set. Also limits the BigQuery native loader. Defaults to 1"
+      "description": "How many tasks of one transform command may run at the same time, on DuckDB, JDBC and BigQuery connections only, unless --parallelism is set. Also limits the BigQuery native loader. Defaults to 1"
     },
     "refs": {
       "type": "array",

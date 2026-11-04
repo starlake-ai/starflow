@@ -3,12 +3,12 @@
 
 # 1.8.16:
 __New feature__:
-- **`transform --parallelism N` runs tasks at the same time** with several names, `--tags` or `--recursive`. A task still waits for the tasks it reads, what reads a failed task is skipped, and the summary lists the tasks in the same order as a serial run. Without the flag, the default is `maxParTask` (`SL_MAX_PAR_TASK`), which is 1, so tasks stay serial.
+- **`transform --parallelism N` runs tasks at the same time**, on DuckDB, JDBC and BigQuery connections only, with several names, `--tags` or `--recursive`. A task still waits for the tasks it reads, what reads a failed task is skipped, and the summary lists the tasks in the same order as a serial run. Without the flag, the default is `maxParTask` (`SL_MAX_PAR_TASK`), which is 1, so tasks stay serial.
   - **Upgrade note**: a project that sets `SL_MAX_PAR_TASK` above 1, for the BigQuery native loader, now also runs its multi task `transform` commands in parallel. Add `--parallelism 1` to keep them serial.
   - A task listed twice runs its second time once everything listed before it has finished.
   - What gains the most is many tasks waiting on a remote warehouse. A chain of tasks gains nothing, as each one waits for the previous one.
   - A python task using Spark must be the first task to use Spark in its JVM, with or without this flag: it creates the SparkContext of the JVM, and fails with `Only one SparkContext should be running` if there is already one. Run such tasks with a `transform` command of their own.
-  - Spark tasks sinking to BigQuery through different connections, and tasks reading files in several buckets, should stay serial: both change settings shared by the whole JVM.
+  - Spark connections are not supported, as their tasks change settings shared by the whole JVM. The flag does not refuse them: keep a project using them at `--parallelism 1`, or `SL_MAX_PAR_TASK` at 1.
 
 __Bug fix__:
 - **Access tokens and other credentials no longer reach the logs**: `transform` logged its access token at info level, and the BigQuery jobs at debug level. Connection options only masked keys containing `password`, so `sl_access_token` and the `token` of a QoD connection were printed by what looked redacted, and an error on a connection without a driver printed them all. At debug level, loading `application.sl.yml` or `application.conf` also printed its whole content, which is no longer logged.
