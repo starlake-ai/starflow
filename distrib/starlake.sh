@@ -254,7 +254,7 @@ parse_proxy_and_build_args() {
 
         echo "$args"
     else
-        echo "Warning: Could not parse ${type} proxy URL: $url" >&2
+        echo "Warning: Could not parse the ${type} proxy URL." >&2
     fi
 }
 
@@ -275,7 +275,7 @@ if [ -n "$HTTPS_PROXY" ]; then
     # Pass "https" as the type and the variable's value
     https_args=$(parse_proxy_and_build_args "https" "$HTTPS_PROXY")
     if [ -n "$https_args" ]; then
-        echo "Using HTTPS_PROXY: $HTTPS_PROXY"
+        echo "Using HTTPS_PROXY"
         # Add the arguments to our array
         # We don't quote $https_args so that bash splits it into separate arguments
         JAVA_ARGS+=($https_args)
@@ -287,7 +287,7 @@ if [ -n "$HTTP_PROXY" ]; then
     # Pass "http" as the type and the variable's value
     http_args=$(parse_proxy_and_build_args "http" "$HTTP_PROXY")
     if [ -n "$http_args" ]; then
-        echo "Using HTTP_PROXY: $HTTP_PROXY"
+        echo "Using HTTP_PROXY"
         JAVA_ARGS+=($http_args)
     fi
 fi
@@ -302,7 +302,7 @@ get_binary_from_url() {
     local url=$1
     local target_file=$2
     if [ -n "$PROXY" ] && [ -n "$SL_INSECURE" ]; then
-        echo "Downloading $url to $target_file using proxy $PROXY"
+        echo "Downloading $url to $target_file using proxy"
         local response=$(curl -L --insecure --proxy "$PROXY" --progress-bar -w "%{http_code}" -o "$target_file" "$url")
     else
         local response=$(curl -L --progress-bar -w "%{http_code}" -o "$target_file" "$url")
@@ -796,7 +796,8 @@ EOF
   ) >"$training_root/training.log" 2>&1 || training_status=$?
   if [ "$training_status" -ne 0 ] || [ ! -s "$APPCDS_ARCHIVE.tmp" ]
   then
-    tail -n 5 "$training_root/training.log" >&2
+    # Not the command of Spark: it holds the JVM flags, so the proxy password.
+    grep -v '^Spark Command: ' "$training_root/training.log" | tail -n 5 >&2
     rm -rf "$training_root" "$APPCDS_ARCHIVE.tmp" "$APPCDS_CLASSPATH.tmp"
     mv -f "$APPCDS_FINGERPRINT.tmp" "$APPCDS_FAILED"
     echo "Warning: could not build the AppCDS archive, startup will be slower." >&2

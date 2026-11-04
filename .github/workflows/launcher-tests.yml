@@ -12,6 +12,7 @@ on:
     paths:
       - 'distrib/starlake.sh'
       - 'distrib/starlake.cmd'
+      - 'distrib/setup.sh'
       - 'src/test/shell/**'
       - '.github/workflows/launcher-tests.yml'
   push:
@@ -20,6 +21,7 @@ on:
     paths:
       - 'distrib/starlake.sh'
       - 'distrib/starlake.cmd'
+      - 'distrib/setup.sh'
       - 'src/test/shell/**'
       - '.github/workflows/launcher-tests.yml'
 

@@ -11,6 +11,10 @@ __New feature__:
   - Spark connections are not supported, as their tasks change settings shared by the whole JVM. The flag does not refuse them: keep a project using them at `--parallelism 1`, or `SL_MAX_PAR_TASK` at 1.
 
 __Bug fix__:
+- **`starlake.sh` no longer prints the password of a proxy**: `HTTP_PROXY` and `HTTPS_PROXY` were printed in full at the start of every command, and so were the proxy URL that cannot be parsed, the proxy of a download with `SL_INSECURE`, and the JVM flags when an AppCDS training failed. The password still reaches the JVM, as `-Dhttp.proxyPassword`.
+  - **Rotate a proxy password that a shared log may hold.** A background rebuild of the AppCDS archive also wrote it to `.appcds/build.log` in the install directory: the next rebuild replaces that file, or delete it.
+- **`setup.sh` no longer writes the password of a proxy into the launcher it installs**: with a proxy and `SL_INSECURE`, its first download message went into the `starlake` file, on line 1, in place of the `#!` line. The launcher still ran through the shell, printing `Downloading: command not found`. It also printed the password when it downloaded a JDK.
+  - **An install made that way keeps it**: `starlake upgrade` does not replace that file. Remove line 1 of `starlake` in the install directory, and rotate the password.
 - **Access tokens and other credentials no longer reach the logs**: `transform` logged its access token at info level, and the BigQuery jobs at debug level. Connection options only masked keys containing `password`, so `sl_access_token` and the `token` of a QoD connection were printed by what looked redacted, and an error on a connection without a driver printed them all. At debug level, loading `application.sl.yml` or `application.conf` also printed its whole content, which is no longer logged.
   - All the command configs now mask their credentials, including the ones added later. Keys containing `pass`, `token`, `access`, `aes`, `secret`, `private` or `credential` are masked, which can hide a harmless option in a log.
   - **Rotate any token that a shared log may hold**: logs written before this version keep it.

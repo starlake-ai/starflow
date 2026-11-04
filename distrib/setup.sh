@@ -44,7 +44,8 @@ fi
 get_from_url() {
     local url=$1
     if [ -n "$PROXY" ] && [ -n "$SL_INSECURE" ]; then
-        echo "Downloading data from $url using proxy $PROXY"
+        # On stderr: what this function prints is the content of the download.
+        echo "Downloading data from $url using proxy" >&2
         local response=$(curl -L --insecure --proxy "$PROXY" -s -w "%{http_code}" "$url")
     else
         local response=$(curl -L -s -w "%{http_code}" "$url")
@@ -194,7 +195,7 @@ get_binary_from_url() {
     local target_file=$2
     local status_code
     if [ -n "$PROXY" ] && [ -n "$SL_INSECURE" ]; then
-        echo "Downloading $url to $target_file using proxy $PROXY"
+        echo "Downloading $url to $target_file using proxy"
         status_code=$(curl -L --insecure --proxy "$PROXY" -s -w "%{http_code}" -o "$target_file" "$url")
     else
         status_code=$(curl -L -s -w "%{http_code}" -o "$target_file" "$url")
