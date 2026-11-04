@@ -5,6 +5,7 @@ import ai.starlake.job.sink.bigquery.BigQueryJobResult
 import ai.starlake.job.transform.{
   AutoTask,
   TransformAction,
+  TransformAuditException,
   TransformBatchSummary,
   TransformConfig,
   TransformContext,
@@ -164,8 +165,9 @@ trait TransformWorkflow extends LazyLogging {
       logger.info(s"Transforming $name")
       val start = System.nanoTime()
       val status = Try(transform(taskConfig.copy(name = name))).flatten match {
-        case Success(_) => TransformTaskStatus.Succeeded
-        case Failure(e) => TransformTaskStatus.Failed(e)
+        case Success(_)                          => TransformTaskStatus.Succeeded
+        case Failure(e: TransformAuditException) => TransformTaskStatus.AuditLost(e)
+        case Failure(e)                          => TransformTaskStatus.Failed(e)
       }
       TransformTaskResult(name, status, (System.nanoTime() - start) / 1000000L)
     }
@@ -307,7 +309,7 @@ trait TransformWorkflow extends LazyLogging {
         )
       )
 
-    runEngine match {
+    val result = runEngine match {
       case BQ =>
         val result = action.run()
         Utils.logFailure(result, logger)
@@ -351,6 +353,13 @@ trait TransformWorkflow extends LazyLogging {
           case (Success(_), _) =>
             throw new Exception("Should never happen")
         }
+    }
+    // A preview writes nothing, so that the audit is not what its caller is after
+    result.flatMap { value =>
+      action.lostAudit.filter(_ => transformConfig.interactive.isEmpty) match {
+        case Some(error) => Failure(new TransformAuditException(transformConfig.name, error))
+        case None        => Success(value)
+      }
     }
   }
 }

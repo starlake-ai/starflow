@@ -7,7 +7,7 @@ __New feature__:
   - **Upgrade note**: a project that sets `SL_MAX_PAR_TASK` above 1, for the BigQuery native loader, now also runs its multi task `transform` commands in parallel. Add `--parallelism 1` to keep them serial.
   - A task listed twice runs its second time once everything listed before it has finished.
   - What gains the most is many tasks waiting on a remote warehouse. A chain of tasks gains nothing, as each one waits for the previous one.
-  - Python tasks run one at a time, as they share the `SL_THIS` view.
+  - A python task using Spark must be the first task to use Spark in its JVM, with or without this flag: it creates the SparkContext of the JVM, and fails with `Only one SparkContext should be running` if there is already one. Run such tasks with a `transform` command of their own.
   - Spark tasks sinking to BigQuery through different connections, and tasks reading files in several buckets, should stay serial: both change settings shared by the whole JVM.
 
 __Bug fix__:
@@ -39,6 +39,9 @@ __Improvement__:
   A column whose type is a `date` is created as `DATE` on every engine and in the BigQuery and Spark schemas; other types give `TIMESTAMP` (`DATETIME2` with the SQL Server templates), whatever their `ddlMapping`. The built-in `scd2.j2` templates write the date of the run into a `DATE` column (`CAST(CURRENT_TIMESTAMP AS DATE)`), in the time zone of the engine (UTC on BigQuery, the session one elsewhere). Versions opened and closed on the same day then share their date. The SQL of the other tasks is unchanged. The templates receive the column types as `strategyStartTsType` and `strategyEndTsType`: a project that overrides `create.j2` or `scd2.j2` must use them, and the `scd2Now` macro, to get these types.
   - `validate` reports, as errors, a property that names no type of the project, a property that names a type that is neither a date nor a timestamp, and a property that contradicts the declared type; as a warning, a column declared with another type, which is then ignored.
   - **Behaviour change**: the type of an existing column does not change. A table that an earlier version created with `TIMESTAMP` validity columns keeps them, while the templates now write dates into them when the task gives them a `date` type: engines that convert a date into a timestamp store midnight, while BigQuery, whose conversion rules coerce a `DATE` into a `DATETIME` but not into a `TIMESTAMP`, refuses them. Change the type of the columns, or declare them as `timestamp`.
+- **A transform reports that it could not write its audit row** (#1910): it succeeded and exited with 0 when the audit table could not be written, leaving no trace of the run in it, while it reported a failure, and skipped what reads the task, when the audit connection could not be opened. In both cases the command now exits with 1, its summary shows `AUDIT LOST` with the reason, and what reads the task still runs, as its table is written. Loads already failed in these cases.
+  - **Upgrade note**: a project whose audit table is broken without anyone knowing now sees its `transform` commands fail. An orchestrator retrying them runs the tasks again, so a task appending to its table adds its rows twice: repair the audit table before retrying.
+- **A task no longer reads the `SL_THIS` left by an earlier task** (#1909): a python script that registers no view, because it does not use Spark, got the view of an earlier task of the JVM, whose rows were written to its table. The pre and post SQL of a Spark load on a table that does not exist yet read the view of an earlier load: they now fail on `SL_THIS`.
 
 # 1.8.15:
 __New feature__:
