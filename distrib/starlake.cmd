@@ -684,7 +684,7 @@ goto :eof
         set "JAVA_OPTS=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED %JAVA_OPTS%"
     )
     call "%SCRIPT_DIR%bin\api\bin\local-run-api.bat" "%SCRIPT_DIR%" dummy
-    goto :eof
+    exit /b %errorlevel%
 
 :default_command
     if not defined SL_HTTP_PORT (
@@ -702,6 +702,8 @@ goto :eof
             if exist "!log!" type "!log!"
         )
     )
-    goto :eof
+    rem Explicitly: ending on goto :eof after a call loses the exit code when cmd /c runs this file,
+    rem and a failed command would report success to whatever runs it.
+    exit /b %errorlevel%
 
 
