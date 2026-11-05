@@ -7,11 +7,37 @@ import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import org.duckdb.{DuckDBConnection, DuckDBDriver}
 
 import java.sql.{Connection, DriverManager}
-import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
+import java.util.{Collections, Properties, WeakHashMap}
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
+/** What the connections of a pooled DuckDB database have in common: they all run on one instance,
+  * whose attached databases and secrets they share.
+  */
+final class DuckDbInstance {
+  private val appliedPreActions = ConcurrentHashMap.newKeySet[String]()
+
+  def hasApplied(preActions: String): Boolean = appliedPreActions.contains(preActions)
+  def markApplied(preActions: String): Unit = appliedPreActions.add(preActions)
+}
+
 object StarlakeConnectionPool extends LazyLogging {
+
+  /** Only a transform on DuckDB is sure to need the native library, and to wait for it. */
+  def shouldPreloadDuckDb(command: String, url: Option[String]): Boolean =
+    Set("transform", "job").contains(command) && url.exists(_.startsWith("jdbc:duckdb:"))
+
+  /** The driver unpacks and loads a native library of about 70 MB when its first connection opens.
+    * Doing it while the metadata load saves that wait: a connection opening meanwhile waits for the
+    * end of it, and a failure comes back to that connection, which reports it.
+    */
+  def preloadDuckDb(): Unit = {
+    val thread = new Thread(() => { Try(Class.forName("org.duckdb.DuckDBNative")); () })
+    thread.setName("duckdb-preload")
+    thread.setDaemon(true)
+    thread.start()
+  }
 
   /** DriverManager initializes every JDBC driver of the classpath on first use: about 1100
     * Snowflake classes for a project that only needs DuckDB.
@@ -21,9 +47,19 @@ object StarlakeConnectionPool extends LazyLogging {
       .getOrElse(DriverManager.getConnection(url, properties))
 
   private val hikariPools = scala.collection.concurrent.TrieMap[String, HikariDataSource]()
-  private case class DuckDbPoolEntry(connection: Connection, lastAccessTime: Long)
+  private case class DuckDbPoolEntry(
+    connection: Connection,
+    lastAccessTime: Long,
+    instance: DuckDbInstance = new DuckDbInstance()
+  )
   private val duckDbPool = scala.collection.concurrent.TrieMap[String, DuckDbPoolEntry]()
   private val duckDbPoolMaxIdleTimeMs = 15 * 1000L // 15 seconds
+  private val duckDbInstances =
+    Collections.synchronizedMap(new WeakHashMap[Connection, DuckDbInstance]())
+
+  /** The instance a connection runs on, for a connection handed out by this pool */
+  def duckDbInstanceOf(connection: Connection): Option[DuckDbInstance] =
+    Option(duckDbInstances.get(connection))
 
   // Scheduled executor for periodic cleanup of idle DuckDB connections
   def startCleanupScheduler(
@@ -198,19 +234,20 @@ object StarlakeConnectionPool extends LazyLogging {
       logger.debug(s"DuckDB Connection Key: $dbKey")
       // Clean up idle connections before getting/creating a new one
       // Synchronized to prevent race conditions on compound get-then-put operations
-      val mainConnection = duckDbPool.synchronized {
+      val mainEntry = duckDbPool.synchronized {
         duckDbPool.get(dbKey) match {
           case Some(entry) if !entry.connection.isClosed =>
             logger.debug(s"Reusing existing DuckDB connection for $url")
             // Update last access time
-            duckDbPool.put(dbKey, entry.copy(lastAccessTime = System.currentTimeMillis()))
-            entry.connection
+            val updated = entry.copy(lastAccessTime = System.currentTimeMillis())
+            duckDbPool.put(dbKey, updated)
+            updated
           case Some(entry) =>
             logger.debug(s"Removing closed DuckDB connection for $url")
             duckDbPool.remove(dbKey)
-            val sqlConn = openDuckDb(url, properties)
-            duckDbPool.put(dbKey, DuckDbPoolEntry(sqlConn, System.currentTimeMillis()))
-            sqlConn
+            val opened = DuckDbPoolEntry(openDuckDb(url, properties), System.currentTimeMillis())
+            duckDbPool.put(dbKey, opened)
+            opened
           case _ =>
             // Clean any existing closed connection
             duckDbPool.find { case (key, _) =>
@@ -221,17 +258,20 @@ object StarlakeConnectionPool extends LazyLogging {
                 duckDbPool.remove(key)
               case None =>
             }
-            val sqlConn = openDuckDb(url, properties)
-            duckDbPool.put(dbKey, DuckDbPoolEntry(sqlConn, System.currentTimeMillis()))
-            sqlConn
+            val opened = DuckDbPoolEntry(openDuckDb(url, properties), System.currentTimeMillis())
+            duckDbPool.put(dbKey, opened)
+            opened
         }
       }
 
-      mainConnection match {
-        case c: DuckDBConnection => c.duplicate()
-        case _ =>
+      mainEntry.connection match {
+        case c: DuckDBConnection =>
+          val duplicate = c.duplicate()
+          duckDbInstances.put(duplicate, mainEntry.instance)
+          duplicate
+        case other =>
           throw new RuntimeException(
-            "Expecting a duck db connection in this case but got" + mainConnection.getClass.getName
+            "Expecting a duck db connection in this case but got" + other.getClass.getName
           )
       }
     } else {

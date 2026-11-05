@@ -769,19 +769,41 @@ build_appcds_archive() {
   echo "Building the AppCDS archive to speed up startup (set SL_APPCDS=false to skip)..."
   rm -f "$APPCDS_ARCHIVE.tmp" "$APPCDS_CLASSPATH.tmp"
   appcds_fingerprint >"$APPCDS_FINGERPRINT.tmp"
-  # Train on a throwaway project that opens a Spark session: no user project exists at
-  # install time, and this trains nearly as well as a real one.
+  # Train on a throwaway project: no user project exists at install time. One task opens a
+  # Spark session, the other runs on DuckDB over JDBC, so that the classes of both end up in the
+  # archive: the driver, the SQL parser and Jinja would otherwise load slowly on every transform.
   local training_root training_status=0 classpath
   SPARK_DRIVER_OPTIONS_TRAINING="${JAVA_ARGS[*]} -Dlog4j.configurationFile=$SPARK_TARGET_FOLDER/conf/log4j2.properties -XX:ArchiveClassesAtExit=$APPCDS_ARCHIVE.tmp"
   training_root=$(mktemp -d)
-  mkdir -p "$training_root/metadata"
+  mkdir -p "$training_root/metadata/transform/appcds"
   cat >"$training_root/metadata/application.sl.yml" <<'EOF'
 version: 1
 application:
-  connectionRef: sparkLocal
+  connectionRef: duckdb
   connections:
     sparkLocal:
       type: fs
+    duckdb:
+      type: jdbc
+      options:
+        url: "jdbc:duckdb:"
+        driver: "org.duckdb.DuckDBDriver"
+EOF
+  echo 'SELECT 1 AS id' >"$training_root/metadata/transform/appcds/spark_task.sql"
+  echo 'SELECT 1 AS id' >"$training_root/metadata/transform/appcds/duckdb_task.sql"
+  cat >"$training_root/metadata/transform/appcds/spark_task.sl.yml" <<'EOF'
+version: 1
+task:
+  connectionRef: sparkLocal
+EOF
+  cat >"$training_root/metadata/transform/appcds/duckdb_task.sl.yml" <<'EOF'
+version: 1
+task:
+  writeStrategy:
+    type: OVERWRITE_BY_PARTITION
+  sink:
+    partition:
+      - id
 EOF
   classpath="$(enter_appcds_training "$training_root"; appcds_classpath)"
   if [ -n "$classpath" ]
@@ -792,7 +814,9 @@ EOF
   (
     enter_appcds_training "$training_root"
     SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS_TRAINING"
-    launch_starlake validate
+    # An install without DuckDB or without Spark can still train on what it has.
+    launch_starlake transform --name appcds.spark_task,appcds.duckdb_task ||
+      { rm -f "$APPCDS_ARCHIVE.tmp"; launch_starlake validate; }
   ) >"$training_root/training.log" 2>&1 || training_status=$?
   if [ "$training_status" -ne 0 ] || [ ! -s "$APPCDS_ARCHIVE.tmp" ]
   then

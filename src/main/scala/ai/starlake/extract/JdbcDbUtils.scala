@@ -273,36 +273,89 @@ object JdbcDbUtils extends LazyLogging {
     }
 
     preActions.foreach { actions =>
-      actions.split(";").filter(_.trim.nonEmpty).foreach { action =>
-        def runStatement(action: String): Unit = {
-          val statement = connection.createStatement()
-          logger.info(s"Running preAction $action")
-          statement.execute(action)
-          statement.close()
-        }
-        Try {
-          try {
-            runStatement(action)
-          } catch {
-            case e: Exception => // handle Disk I/O latency in Docker / Network/Volume Latency
-              Thread.sleep(1000)
-              runStatement(action)
-          }
-        } match {
-          case Failure(exception) =>
-            // Catalog Error: SET schema: No catalog + schema named "s01" found.
-            val message = Utils.exceptionMessagesChainAsString(exception).toLowerCase()
-            if (message.contains("already exists") && message.contains("failed to attach")) {
-              logger.info(s"Ducklake already attached, skipping preAction $action")
-            } else if (message.contains("Catalog Error: SET schema: No catalog + schema")) {
-              logger.info(s"Schema already set, skipping preAction $action")
-            } else {
-              logger.error(s"Error running preAction $action", exception)
-              throw exception
+      val statements = actions.split(";").filter(_.trim.nonEmpty).toList
+      val perConnection = statementsPerConnection(statements)
+      StarlakeConnectionPool.duckDbInstanceOf(connection) match {
+        case Some(instance) if perConnection.size < statements.size =>
+          // The others wait here for the instance to be ready, and write nothing to its catalog
+          val alreadyApplied = instance.hasApplied(actions) || withCatalogCreationLock {
+            val applied = instance.hasApplied(actions)
+            if (!applied) {
+              statements.foreach(runPreAction(connection, _))
+              instance.markApplied(actions)
             }
-          case Success(value) =>
-        }
+            applied
+          }
+          if (alreadyApplied) perConnection.foreach(runPreAction(connection, _))
+        case _ =>
+          statements.foreach(runPreAction(connection, _))
       }
+    }
+  }
+
+  private val duckDbInstanceWideStatement =
+    ("(?is)\\s*(ATTACH|DETACH|LOAD|INSTALL|FORCE\\s+INSTALL|" +
+      "(CREATE(\\s+OR\\s+REPLACE)?|DROP)(\\s+(PERSISTENT|TEMPORARY|TEMP))?\\s+SECRET)\\b.*").r
+
+  /** Whether a statement acts on the DuckDB instance, and so for all its connections */
+  private def isDuckDbInstanceWide(statement: String): Boolean =
+    duckDbInstanceWideStatement.matches(statement)
+
+  private val setVariableStatement = "(?is)\\s*SET\\s+VARIABLE\\s+(\\w+)\\b.*".r
+  private val resetVariableStatement = "(?is)\\s*RESET\\s+VARIABLE\\s+(\\w+)\\s*".r
+
+  /** What a connection has to run once its DuckDB instance is ready. A variable that the statements
+    * set and then reset only serves to prepare the instance, such as a secret read from a file,
+    * unless something that runs on each connection reads it.
+    */
+  private def statementsPerConnection(statements: List[String]): List[String] = {
+    val resetNames = statements.collect { case resetVariableStatement(name) =>
+      name.toLowerCase()
+    }.toSet
+    val others = statements.filter {
+      case s if isDuckDbInstanceWide(s) => false
+      case resetVariableStatement(_)    => false
+      case setVariableStatement(name)   => !resetNames(name.toLowerCase())
+      case _                            => true
+    }
+    val setupOnly =
+      resetNames.filterNot(name => others.exists(_.toLowerCase().contains(name)))
+    statements.filter {
+      case s if isDuckDbInstanceWide(s) => false
+      case setVariableStatement(name)   => !setupOnly(name.toLowerCase())
+      case resetVariableStatement(name) => !setupOnly(name.toLowerCase())
+      case _                            => true
+    }
+  }
+
+  private def runPreAction(connection: java.sql.Connection, action: String): Unit = {
+    def runStatement(action: String): Unit = {
+      val statement = connection.createStatement()
+      logger.info(s"Running preAction $action")
+      statement.execute(action)
+      statement.close()
+    }
+    Try {
+      try {
+        runStatement(action)
+      } catch {
+        case e: Exception => // handle Disk I/O latency in Docker / Network/Volume Latency
+          Thread.sleep(1000)
+          runStatement(action)
+      }
+    } match {
+      case Failure(exception) =>
+        // Catalog Error: SET schema: No catalog + schema named "s01" found.
+        val message = Utils.exceptionMessagesChainAsString(exception).toLowerCase()
+        if (message.contains("already exists") && message.contains("failed to attach")) {
+          logger.info(s"Ducklake already attached, skipping preAction $action")
+        } else if (message.contains("Catalog Error: SET schema: No catalog + schema")) {
+          logger.info(s"Schema already set, skipping preAction $action")
+        } else {
+          logger.error(s"Error running preAction $action", exception)
+          throw exception
+        }
+      case Success(value) =>
     }
   }
 

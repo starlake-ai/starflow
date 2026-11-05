@@ -217,6 +217,14 @@ class Main extends LazyLogging {
 
     StarlakeJdbcDialects.registerDialects()
 
+    val appConfig = settings.appConfig
+    val transformRef =
+      if (appConfig.transformConnectionRef.isEmpty) appConfig.connectionRef
+      else appConfig.transformConnectionRef
+    val transformUrl = appConfig.connection(transformRef).flatMap(_.options.get("url"))
+    if (StarlakeConnectionPool.shouldPreloadDuckDb(args.headOption.getOrElse(""), transformUrl))
+      StarlakeConnectionPool.preloadDuckDb()
+
     import settings.storageHandler
     DatasetArea.initMetadata(storageHandler())
 
