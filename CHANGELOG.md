@@ -1,6 +1,16 @@
 
 # Release notes
 
+# 1.8.18:
+__Improvement__:
+- **`transform --parallelism N` no longer fails on DuckDB, and gains from running tasks at the same time**: every connection ran all the `preActions`, whose `CREATE OR REPLACE SECRET` conflicted between tasks (`Catalog write-write conflict`), and each conflict cost a second of waiting before one retry.
+  - The connections of a pooled DuckDB database share one instance. `ATTACH`, `DETACH`, `LOAD`, `INSTALL` and `CREATE` or `DROP SECRET` now run once per instance, and the other connections wait until it is ready. A variable that the `preActions` set and then reset, and that nothing else on each connection reads, runs once too. The rest, such as `USE`, still runs on each connection.
+  - **Upgrade note**: a long-running process, such as the API server, no longer picks up a secret changed in a file until the pooled instance is replaced.
+- **The macro files are read once per schema handler**, instead of several times per task. A reloaded schema handler reads them again.
+- **The Docker image now ships the AppCDS archive**, which containers could not build for lack of write access to `/app`. It starts a JVM about 0.6s faster.
+- **The AppCDS archive is trained on a `transform` that runs one task on Spark and one on DuckDB**, instead of on `validate`, so that it holds the classes of a DuckDB transform. It falls back on `validate` when that fails. The archive goes from about 177 MB to about 57 MB.
+- **A `transform` on DuckDB loads the native library of the driver in the background**, while it reads the metadata, which saves about 0.25s on the first connection.
+
 # 1.8.17:
 __Bug fix__:
 - **`bq-info` no longer crashes when a table or a dataset is deleted while it scans the project**: it failed with a `NullPointerException` or a 404. What is deleted during the scan is now left out. A refused access still fails the command.

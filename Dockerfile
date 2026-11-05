@@ -40,4 +40,9 @@ COPY starlake/bin /app/bin
 COPY starlake/starlake.sh /app/starlake.sh
 COPY starlake/versions.sh /app/versions.sh
 
+# The archive of classes that cuts the startup of every command (AppCDS in starlake.sh). Containers
+# usually run as a user who cannot write to /app, so it has to be built here. Like at install time,
+# a failed build only makes startup slower.
+RUN /app/starlake.sh appcds-build || true
+
 ENTRYPOINT ["/app/starlake.sh"]

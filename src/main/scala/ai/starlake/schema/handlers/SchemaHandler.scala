@@ -519,7 +519,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     macros.mkString("\n")
   }
 
-  def allMacros: String = expectationMacros + "\n" + macros + "\n"
+  /** Read once: a task asks for them several times. A reloaded schema handler reads them again. */
+  lazy val allMacros: String = expectationMacros + "\n" + macros + "\n"
 
   private def viewName(sqlFile: Path) =
     if (sqlFile.getName().endsWith(".sql.j2"))

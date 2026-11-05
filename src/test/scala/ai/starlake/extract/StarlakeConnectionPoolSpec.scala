@@ -34,6 +34,23 @@ class StarlakeConnectionPoolSpec extends AnyFlatSpec with Matchers {
     StarlakeConnectionPool.clearDuckdbPool(_ => true) shouldBe 1
   }
 
+  "shouldPreloadDuckDb" should "be true only for a transform running on DuckDB" in {
+    val cases = List(
+      ("transform", Some("jdbc:duckdb:"), true),
+      ("job", Some("jdbc:duckdb:/data/lake.duckdb"), true),
+      ("transform", Some("jdbc:postgresql://db/x"), false),
+      ("transform", Some("jdbc:arrow-flight-sql://qod:31338"), false),
+      ("transform", None, false),
+      ("load", Some("jdbc:duckdb:"), false),
+      ("validate", Some("jdbc:duckdb:"), false)
+    )
+    cases.foreach { case (command, url, expected) =>
+      withClue(s"$command on $url: ") {
+        StarlakeConnectionPool.shouldPreloadDuckDb(command, url) shouldBe expected
+      }
+    }
+  }
+
   "getConnection" should "open DuckDB without DriverManager, whose scan loads every JDBC driver" in {
     val registered = DriverManager.getDrivers.asScala.collect { case d: DuckDBDriver => d }.toList
     registered.foreach(DriverManager.deregisterDriver)
