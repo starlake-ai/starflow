@@ -210,17 +210,27 @@ class BigQueryNativeRejectedSpec extends AnyFlatSpec with Matchers {
       "r"
     )
     checks.rows("`p`.`d`.`t_*`") shouldBe ("`p`.`d`.`t_*`", "_TABLE_SUFFIX")
-    val scoped = checks.copy(scope =
-      Some(
-        BigQueryNativeLoader.RowScope(
-          List("SUBSTR(value, 1, 3) as `kind`", "1 AS `one`"),
-          "kind = 'D'"
-        )
-      )
+    checks.countsSql("`p`.`d`.`t_*`") shouldBe
+    "SELECT _TABLE_SUFFIX AS suffix, COUNT(*) AS rejected, 0 AS filtered FROM `p`.`d`.`t_*` WHERE NOT (c) GROUP BY 1"
+    // An attribute may have the name of the line or of its file
+    val scope = BigQueryNativeLoader.RowScope(
+      "SUBSTR(value, 1, 3) as `kind`, SUBSTR(value, 4, 2) as `value`, sl_input_file_name AS `sl_input_file_name`",
+      "kind = 'D'"
     )
+    val scoped = checks.copy(scope = Some(scope))
+    val lines =
+      "(SELECT sl_line AS `value`, sl_file AS `sl_input_file_name`, sl_suffix, (kind = 'D') AS sl_kept FROM (SELECT _TABLE_SUFFIX AS sl_suffix, `value` AS sl_line, `sl_input_file_name` AS sl_file, SUBSTR(value, 1, 3) as `kind`, SUBSTR(value, 4, 2) as `value`, sl_input_file_name AS `sl_input_file_name` FROM `p`.`d`.`t_*`) AS SL_INTERNAL_FROM_SELECT)"
     val rows =
-      "(SELECT `value`, `sl_input_file_name`, sl_suffix FROM (SELECT *, _TABLE_SUFFIX AS sl_suffix, SUBSTR(value, 1, 3) as `kind`, 1 AS `one` FROM `p`.`d`.`t_*`) WHERE (kind = 'D') IS NOT FALSE)"
+      s"(SELECT `value`, `sl_input_file_name`, sl_suffix FROM $lines WHERE sl_kept IS NOT FALSE)"
     scoped.rows("`p`.`d`.`t_*`") shouldBe (rows, "sl_suffix")
+    // The rows that the filter drops, or may drop when they pass the checks, are not loaded
+    scoped.countsSql("`p`.`d`.`t_*`") shouldBe
+    s"SELECT sl_suffix AS suffix, COUNTIF(sl_kept IS NOT FALSE AND NOT (c)) AS rejected, COUNTIF(sl_kept IS FALSE OR (sl_kept IS NULL AND (c))) AS filtered FROM $lines GROUP BY 1"
+    // Without checks, only the rows that the filter drops are counted
+    BigQueryNativeLoader
+      .FirstStepChecks("TRUE", Nil, None, "", Some(scope))
+      .countsSql("`p`.`d`.`t_*`") shouldBe
+    s"SELECT sl_suffix AS suffix, COUNTIF(sl_kept IS NOT FALSE AND NOT (TRUE)) AS rejected, COUNTIF(sl_kept IS FALSE OR (sl_kept IS NULL AND (TRUE))) AS filtered FROM $lines GROUP BY 1"
     BigQueryNativeLoader.rejectedRowsSql(List("`p`.`d`.`t_*`"), scoped, 3) should include(
       s"FROM $rows AS sl_rejected_row WHERE NOT (c)"
     )

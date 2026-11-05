@@ -266,6 +266,23 @@ class BigQueryNativeParquetSpec extends TestHelper {
     )
   }
 
+  it should "not count the rows that the filter drops, as Spark" in {
+    def loadInfo(path: String, accepted: Long) =
+      BqLoadInfo(accepted, 0, List(path), BigQueryJobResult(None, 0, None))
+    val loadInfos = List(loadInfo("gs://b/a", 12), loadInfo("gs://b/b", 5))
+    BigQueryNativeLoader
+      .withRejectedRows(loadInfos, Map(0 -> 8L), Map(0 -> 1L, 1 -> 2L))
+      .map(info => (info.totalAcceptedRows, info.totalRejectedRows, info.totalRows)) shouldBe List(
+      (3, 8, 11),
+      (3, 0, 3)
+    )
+    an[IllegalStateException] should be thrownBy BigQueryNativeLoader.withRejectedRows(
+      loadInfos,
+      Map.empty,
+      Map(2 -> 1L)
+    )
+  }
+
   "schemaForParquetAppend" should "add the missing fields and relax the required ones of the target" in {
     def field(name: String, mode: Field.Mode = Field.Mode.NULLABLE) =
       Field.newBuilder(name, StandardSQLTypeName.STRING).setMode(mode).build()
