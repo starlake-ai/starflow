@@ -196,8 +196,8 @@ class SchemaInfoSpec extends TestHelper {
           )
         )
         .replaceAll("\\s+", " ")
-      sql should include("SAFE_CAST(SUBSTR(value, 1, 1) AS INT64) as code")
-      sql should include("SAFE_CAST(SUBSTR(value, 2, 10) AS INT64) as amount")
+      sql should include("SAFE_CAST(TRIM(SUBSTR(value, 1, 1)) AS INT64) as code")
+      sql should include("SAFE_CAST(TRIM(SUBSTR(value, 2, 10)) AS INT64) as amount")
       // STRING is a no-op cast — skipped to keep SQL readable
       sql should include("SUBSTR(value, 12, 20) as label")
       sql should not include "SAFE_CAST(SUBSTR(value, 12, 20) AS STRING)"
@@ -220,9 +220,9 @@ class SchemaInfoSpec extends TestHelper {
           ddlTypesByAttribute = Map("area" -> "GEOGRAPHY", "doc" -> "JSON", "big" -> "BIGNUMERIC")
         )
         .replaceAll("\\s+", " ")
-      sql should include("SAFE.ST_GEOGFROM(SUBSTR(value, 1, 10)) as area")
-      sql should include("SAFE.PARSE_JSON(SUBSTR(value, 11, 10)) as doc")
-      sql should include("SAFE_CAST(SUBSTR(value, 21, 10) AS BIGNUMERIC) as big")
+      sql should include("SAFE.ST_GEOGFROM(TRIM(SUBSTR(value, 1, 10))) as area")
+      sql should include("SAFE.PARSE_JSON(TRIM(SUBSTR(value, 11, 10))) as doc")
+      sql should include("SAFE_CAST(TRIM(SUBSTR(value, 21, 10)) AS BIGNUMERIC) as big")
     }
 
     it should "cast the POSITION values of parameterized types without their parameters (#1853)" in {
@@ -253,12 +253,12 @@ class SchemaInfoSpec extends TestHelper {
         "IF(LENGTH(SUBSTR(value, 1, 10)) <= 10, SUBSTR(value, 1, 10), NULL) as code"
       )
       sql should include(
-        "IF(ABS(ROUND(SAFE_CAST(SUBSTR(value, 11, 10) AS NUMERIC), 2)) < CAST('100000000' AS NUMERIC), SAFE_CAST(SUBSTR(value, 11, 10) AS NUMERIC), NULL) as amount"
+        "IF(ABS(ROUND(SAFE_CAST(TRIM(SUBSTR(value, 11, 10)) AS NUMERIC), 2)) < CAST('100000000' AS NUMERIC), SAFE_CAST(TRIM(SUBSTR(value, 11, 10)) AS NUMERIC), NULL) as amount"
       )
       // Any NUMERIC has at most 29 integer digits
-      sql should include("SAFE_CAST(SUBSTR(value, 21, 10) AS NUMERIC) as small")
+      sql should include("SAFE_CAST(TRIM(SUBSTR(value, 21, 10)) AS NUMERIC) as small")
       sql should include(
-        s"< CAST('1${"0" * 30}' AS BIGNUMERIC), SAFE_CAST(SUBSTR(value, 31, 30) AS BIGNUMERIC), NULL) as big"
+        s"< CAST('1${"0" * 30}' AS BIGNUMERIC), SAFE_CAST(TRIM(SUBSTR(value, 31, 30)) AS BIGNUMERIC), NULL) as big"
       )
       sql should include(
         "IF(BYTE_LENGTH(SAFE_CAST(SUBSTR(value, 61, 10) AS BYTES)) <= 16, SAFE_CAST(SUBSTR(value, 61, 10) AS BYTES), NULL) as hash"
@@ -283,10 +283,55 @@ class SchemaInfoSpec extends TestHelper {
       )
       sql should include(
         ai.starlake.utils.conversion.BigQueryNativeSchema
-          .rangeFromText("SUBSTR(value, 1, 30)", "DATE", safe = true) + " as days"
+          .rangeFromText("TRIM(SUBSTR(value, 1, 30))", "DATE", safe = true) + " as days"
       )
       sql should not include "AS RANGE<DATE>"
       ai.starlake.sql.SQLUtils.extractColumnNames(sql) shouldBe List("days")
+    }
+
+    it should "read the POSITION values with the pattern of their type, in SQL that JSqlParser parses (#1886)" in {
+      val attributes = List(
+        TableAttribute(name = "id", `type` = "long", position = Some(Position(0, 3))),
+        TableAttribute(name = "day", `type` = "basic_iso_date", position = Some(Position(4, 11))),
+        TableAttribute(name = "flag", `type` = "boolean", position = Some(Position(12, 12))),
+        TableAttribute(name = "seen", `type` = "timestamp", position = Some(Position(13, 31))),
+        TableAttribute(
+          name = "label",
+          `type` = "string",
+          required = Some(true),
+          position = Some(Position(32, 41))
+        )
+      )
+      val schema = SchemaInfo(
+        name = "rows",
+        pattern = Pattern.compile(".*TBL\\.POS"),
+        metadata = Some(Metadata(format = Some(Format.POSITION))),
+        attributes = attributes
+      )
+      val types = attributes.flatMap(a => a.`type`(schemaHandler).map(a.name -> _)).toMap
+      val ddlTypes = types.flatMap { case (name, tpe) =>
+        tpe.ddlMapping.flatMap(_.get("bigquery")).map(name -> _)
+      }
+      val checks = ai.starlake.job.ingest.loaders.BigQueryNativeLoader
+        .positionChecks(attributes, ddlTypes, types, withValue = true)
+        .get
+      // The second step loads the rows of the first step that the checks accept
+      val sql = schema.buildSecondStepSqlSelectOnLoad(
+        ai.starlake.job.ingest.loaders.BigQueryNativeLoader
+          .withConversions("tmp_table", Nil, Some(checks.condition)),
+        ddlTypesByAttribute = ddlTypes,
+        typesByAttribute = types
+      )
+      sql should include(
+        "IF(REGEXP_CONTAINS(TRIM(SUBSTR(value, 5, 8)), '^[0-9]{4}[0-9]{2}[0-9]{2}$'), SAFE.PARSE_TIMESTAMP('%Y%m%d', TRIM(SUBSTR(value, 5, 8))), NULL) as day"
+      )
+      sql should include(
+        "CASE WHEN REGEXP_CONTAINS(TRIM(SUBSTR(value, 13, 1)), '(?s)^(?:(?i)true|yes|[y1]|t)$') THEN TRUE"
+      )
+      sql should include("SAFE_CAST(TRIM(SUBSTR(value, 14, 19)) AS TIMESTAMP) as seen")
+      sql should include(s"FROM (SELECT * FROM tmp_table WHERE ${checks.condition})")
+      ai.starlake.sql.SQLUtils.extractColumnNames(sql) shouldBe
+      List("id", "day", "flag", "seen", "label")
     }
   }
 }

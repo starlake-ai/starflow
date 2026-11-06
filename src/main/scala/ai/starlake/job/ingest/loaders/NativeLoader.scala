@@ -233,6 +233,32 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
 
   /** @param castTypes
     *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
+    * @return
+    *   the DDL type of each attribute for the sink engine, by attribute name, used by POSITION to
+    *   convert each slice of a line, NULL when it does not convert, instead of aborting the whole
+    *   INSERT. An attribute without a mapping for the engine is not converted, the others still are
+    */
+  def ddlTypesByAttribute(castTypes: Map[String, String]): Map[String, String] =
+    starlakeSchema.attributes.flatMap { attribute =>
+      attribute
+        .`type`(schemaHandler)
+        .flatMap(_.ddlMapping)
+        .flatMap(_.get(engineName.toString))
+        .map(attribute.name -> _)
+    }.toMap ++ castTypes
+
+  /** The SQL engine of the sink, which quotes the columns of the second step */
+  lazy val queryEngine: Option[Settings.JdbcEngine] =
+    settings.appConfig.jdbcEngines.get(engineName.toString)
+
+  /** The type of each attribute, by attribute name: POSITION reads some values with its pattern */
+  lazy val typesByAttribute: Map[String, Type] =
+    starlakeSchema.attributes.flatMap { attribute =>
+      attribute.`type`(schemaHandler).map(attribute.name -> _)
+    }.toMap
+
+  /** @param castTypes
+    *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
     */
   def secondStepSQLTask(
     firstStepTempTableNames: List[String],
@@ -247,23 +273,12 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
           .map("SELECT * FROM " + _)
           .mkString("(", " UNION ALL ", ")")
 
-    val queryEngine = settings.appConfig.jdbcEngines.get(engineName.toString)
-    // Per-attribute DDL type for the sink engine, used by POSITION to wrap each
-    // SUBSTR projection in SAFE_CAST so malformed lines fail gracefully (NULL) instead
-    // of aborting the whole INSERT.
-    // An attribute without a mapping for the engine is not cast, the others still are
-    val ddlTypesByAttribute: Map[String, String] = starlakeSchema.attributes.flatMap { attribute =>
-      attribute
-        .`type`(schemaHandler)
-        .flatMap(_.ddlMapping)
-        .flatMap(_.get(engineName.toString))
-        .map(attribute.name -> _)
-    }.toMap ++ castTypes
     val sqlWithTransformedFields =
       starlakeSchema.buildSecondStepSqlSelectOnLoad(
         tempTable,
         queryEngine,
-        ddlTypesByAttribute
+        ddlTypesByAttribute(castTypes),
+        typesByAttribute
       )
 
     val taskDesc = AutoTaskInfo(

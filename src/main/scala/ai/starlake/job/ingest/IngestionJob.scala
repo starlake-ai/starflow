@@ -15,6 +15,7 @@ import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
 import ai.starlake.utils.*
 import ai.starlake.utils.Formatter.*
+import ai.starlake.utils.conversion.BigQueryPositionValues
 import com.google.cloud.bigquery.TableId
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
@@ -217,6 +218,24 @@ trait IngestionJob
               .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
         )
       unsupported.isEmpty
+    } && {
+      // The second step reads the values of POSITION files with SQL: a type whose format BigQuery
+      // cannot apply would reject all of them (#1886)
+      val unreadable =
+        if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.POSITION)
+          schema.exceptIgnoreScriptAndTransformAttributes().flatMap { attribute =>
+            attribute
+              .`type`(schemaHandler)
+              .flatMap(BigQueryPositionValues.unreadable(_))
+              .map(reason => s"${attribute.name} ($reason)")
+          }
+        else Nil
+      if (unreadable.nonEmpty)
+        logger.warn(
+          s"Loading $targetTableName with Spark instead of the native bigquery loader, which does not read the values of ${unreadable
+              .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
+        )
+      unreadable.isEmpty
     }
   }
 

@@ -1,7 +1,7 @@
 package ai.starlake.job.ingest.loaders
 
 import ai.starlake.job.ingest.RejectedRecord
-import ai.starlake.schema.model.{TableAttribute, TransformInput}
+import ai.starlake.schema.model.{Position, PrimitiveType, TableAttribute, TransformInput, Type}
 import com.google.cloud.bigquery.{BigQueryError, QueryParameterValue}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -65,26 +65,184 @@ class BigQueryNativeRejectedSpec extends AnyFlatSpec with Matchers {
   }
 
   "rejectedRowsSql" should "read the file, the errors and the value of the first rejected rows" in {
-    val terms = BigQueryNativeLoader.requiredValueTerms(attributes.take(3))
     val condition = BigQueryNativeLoader.requiredValuesCondition(attributes.take(3)).get
     val errors =
       """CONCAT(IF(`id` IS NOT NULL, '', "`id`  can't be null\n"), IF((`address` IS NULL OR `address`.`city` IS NOT NULL), '', "`address.city`  can't be null\n"))"""
+    BigQueryNativeLoader.requiredValuesChecks(List(TableAttribute("a")), withValue = true) shouldBe
+    None
+    val checks =
+      BigQueryNativeLoader.requiredValuesChecks(attributes.take(3), withValue = false).get
+    checks.condition shouldBe condition
+    checks.reason shouldBe "have no value for one of its required attributes (id, address.city)"
     BigQueryNativeLoader.rejectedRowsSql(
       List("`p`.`d`.`t_*`"),
-      condition,
-      terms,
-      None,
+      checks,
       100
     ) shouldBe s"SELECT * FROM (SELECT sl_rejected_row.`sl_input_file_name` AS file, $errors AS errors FROM `p`.`d`.`t_*` AS sl_rejected_row WHERE NOT ($condition)) LIMIT 100"
+    val secret = TableAttribute("secret", "string", privacy = Some(TransformInput("HIDE", false)))
     BigQueryNativeLoader.rejectedRowsSql(
       List("`p`.`d`.`t_*`", "`p`.`d`.`u_*`"),
-      condition,
-      terms,
-      Some(List("""$."secret"""")),
+      BigQueryNativeLoader.requiredValuesChecks(attributes.take(3) :+ secret, withValue = true).get,
       5
     ) shouldBe s"SELECT * FROM (${List("t", "u")
         .map(table => s"""SELECT sl_rejected_row.`sl_input_file_name` AS file, $errors AS errors, TO_JSON_STRING(JSON_REMOVE(TO_JSON(sl_rejected_row, stringify_wide_numbers => TRUE), '$$."sl_input_file_name"', '$$."secret"')) AS row_json FROM `p`.`d`.`${table}_*` AS sl_rejected_row WHERE NOT ($condition)""")
         .mkString(" UNION ALL ")}) LIMIT 5"
+  }
+
+  private val positionAttributes = List(
+    TableAttribute("id", "long", required = Some(true), position = Some(Position(0, 3))),
+    TableAttribute("day", "basic_iso_date", position = Some(Position(4, 11))),
+    TableAttribute("label", "string", required = Some(true), position = Some(Position(12, 21))),
+    TableAttribute(
+      "secret",
+      "long",
+      privacy = Some(TransformInput("HIDE", false)),
+      position = Some(Position(22, 25))
+    ),
+    TableAttribute("flag", "yes_no", position = Some(Position(26, 26))),
+    TableAttribute("skipped", "long", ignore = Some(true), position = Some(Position(27, 28))),
+    // A SQL privacy: its value is computed by the second step
+    TableAttribute(
+      "doubled",
+      "long",
+      privacy = Some(TransformInput("id * 2", true)),
+      position = Some(Position(29, 30))
+    ),
+    TableAttribute("computed", "long", script = Some("1")),
+    // Not checked: Spark reads any character
+    TableAttribute("code", "byte", position = Some(Position(31, 31)))
+  )
+  private val positionDdlTypes = Map(
+    "id"       -> "INT64",
+    "day"      -> "TIMESTAMP",
+    "label"    -> "STRING",
+    "secret"   -> "INT64",
+    "flag"     -> "BOOL",
+    "skipped"  -> "INT64",
+    "doubled"  -> "INT64",
+    "computed" -> "INT64",
+    "code"     -> "INT64"
+  )
+  private val positionTypes = Map(
+    "day" -> Type(
+      "basic_iso_date",
+      "BASIC_ISO_DATE",
+      PrimitiveType.timestamp,
+      ddlMapping = Some(Map("bigquery" -> "TIMESTAMP"))
+    ),
+    "flag" -> Type(
+      "yes_no",
+      "Y<-TF->N",
+      PrimitiveType.boolean,
+      ddlMapping = Some(Map("bigquery" -> "BOOL"))
+    ),
+    "code" -> Type("byte", ".", PrimitiveType.byte, ddlMapping = Some(Map("bigquery" -> "INT64")))
+  )
+
+  "positionChecks" should "check that the slices of the loaded attributes have a value that converts" in {
+    def blank(first: Int, length: Int) = s"IFNULL(TRIM(SUBSTR(value, $first, $length)), '') = ''"
+    val idValue = "SAFE_CAST(TRIM(SUBSTR(value, 1, 4)) AS INT64)"
+    val dayValue =
+      "IF(REGEXP_CONTAINS(TRIM(SUBSTR(value, 5, 8)), '^[0-9]{4}[0-9]{2}[0-9]{2}$'), SAFE.PARSE_TIMESTAMP('%Y%m%d', TRIM(SUBSTR(value, 5, 8))), NULL)"
+    val secretValue = "SAFE_CAST(TRIM(SUBSTR(value, 23, 4)) AS INT64)"
+    val flagValue =
+      "CASE WHEN REGEXP_CONTAINS(TRIM(SUBSTR(value, 27, 1)), '(?s)^(?:Y)$') THEN TRUE WHEN REGEXP_CONTAINS(TRIM(SUBSTR(value, 27, 1)), '(?s)^(?:N)$') THEN FALSE END"
+    val checks = BigQueryNativeLoader
+      .positionChecks(positionAttributes, positionDdlTypes, positionTypes, withValue = false)
+      .get
+    checks.checks shouldBe List(
+      BigQueryNativeLoader.RowCheck(s"NOT (${blank(1, 4)})", "\"`id`  can't be null\\n\""),
+      BigQueryNativeLoader.RowCheck(
+        s"(${blank(1, 4)} OR $idValue IS NOT NULL)",
+        "\"`id` is not a valid INT64\\n\""
+      ),
+      BigQueryNativeLoader.RowCheck(
+        s"(${blank(5, 8)} OR $dayValue IS NOT NULL)",
+        "\"`day` is not a valid TIMESTAMP with the pattern `BASIC_ISO_DATE`\\n\""
+      ),
+      // A string has a value when its slice is not blank
+      BigQueryNativeLoader.RowCheck(s"NOT (${blank(13, 10)})", "\"`label`  can't be null\\n\""),
+      BigQueryNativeLoader.RowCheck(
+        s"(${blank(23, 4)} OR $secretValue IS NOT NULL)",
+        "\"`secret` is not a valid INT64\\n\""
+      ),
+      BigQueryNativeLoader.RowCheck(
+        s"(${blank(27, 1)} OR $flagValue IS NOT NULL)",
+        "\"`flag` is not a valid BOOL with the pattern `Y<-TF->N`\\n\""
+      )
+    )
+    checks.condition shouldBe checks.checks.map(_.condition).mkString(" AND ")
+    checks.value shouldBe None
+    checks.reason shouldBe
+    "have a value that does not convert to the type of its attribute, or no value for a required attribute (id, day, label, secret, flag)"
+  }
+
+  it should "show the values of the attributes without privacy, with rejectWithValue" in {
+    val checks = BigQueryNativeLoader
+      .positionChecks(positionAttributes, positionDdlTypes, positionTypes, withValue = true)
+      .get
+    checks.checks.map(_.error) should contain allOf (
+      "CONCAT(\"`id` is not a valid INT64: \", SUBSTR(value, 1, 4), \"\\n\")",
+      "\"`secret` is not a valid INT64\\n\""
+    )
+    checks.value shouldBe Some(
+      "TO_JSON_STRING(STRUCT(SUBSTR(value, 1, 4) AS `id`, SUBSTR(value, 5, 8) AS `day`, SUBSTR(value, 13, 10) AS `label`, SUBSTR(value, 27, 1) AS `flag`, SUBSTR(value, 32, 1) AS `code`))"
+    )
+    val sql = BigQueryNativeLoader.rejectedRowsSql(List("`p`.`d`.`t_*`"), checks, 10)
+    sql should include(s"${checks.value.get} AS row_json FROM `p`.`d`.`t_*` AS sl_rejected_row")
+    sql should endWith(s"WHERE NOT (${checks.condition})) LIMIT 10")
+  }
+
+  it should "check nothing when no slice converts or is required" in {
+    BigQueryNativeLoader.positionChecks(
+      List(TableAttribute("label", "string", position = Some(Position(0, 9)))),
+      Map("label" -> "STRING"),
+      Map.empty,
+      withValue = true
+    ) shouldBe None
+  }
+
+  it should "apply to the rows that the filter of the table keeps or may keep" in {
+    val checks = BigQueryNativeLoader.FirstStepChecks(
+      "c",
+      List(BigQueryNativeLoader.RowCheck("c", "'e'")),
+      None,
+      "r"
+    )
+    checks.rows("`p`.`d`.`t_*`") shouldBe ("`p`.`d`.`t_*`", "_TABLE_SUFFIX")
+    checks.countsSql("`p`.`d`.`t_*`") shouldBe
+    "SELECT _TABLE_SUFFIX AS suffix, COUNT(*) AS rejected, 0 AS filtered FROM `p`.`d`.`t_*` WHERE NOT (c) GROUP BY 1"
+    // An attribute may have the name of the line or of its file
+    val scope = BigQueryNativeLoader.RowScope(
+      "SUBSTR(value, 1, 3) as `kind`, SUBSTR(value, 4, 2) as `value`, sl_input_file_name AS `sl_input_file_name`",
+      "kind = 'D'"
+    )
+    val scoped = checks.copy(scope = Some(scope))
+    val lines =
+      "(SELECT sl_line AS `value`, sl_file AS `sl_input_file_name`, sl_suffix, (kind = 'D') AS sl_kept FROM (SELECT _TABLE_SUFFIX AS sl_suffix, `value` AS sl_line, `sl_input_file_name` AS sl_file, SUBSTR(value, 1, 3) as `kind`, SUBSTR(value, 4, 2) as `value`, sl_input_file_name AS `sl_input_file_name` FROM `p`.`d`.`t_*`) AS SL_INTERNAL_FROM_SELECT)"
+    val rows =
+      s"(SELECT `value`, `sl_input_file_name`, sl_suffix FROM $lines WHERE sl_kept IS NOT FALSE)"
+    scoped.rows("`p`.`d`.`t_*`") shouldBe (rows, "sl_suffix")
+    // The rows that the filter drops, or may drop when they pass the checks, are not loaded
+    scoped.countsSql("`p`.`d`.`t_*`") shouldBe
+    s"SELECT sl_suffix AS suffix, COUNTIF(sl_kept IS NOT FALSE AND NOT (c)) AS rejected, COUNTIF(sl_kept IS FALSE OR (sl_kept IS NULL AND (c))) AS filtered FROM $lines GROUP BY 1"
+    // Without checks, only the rows that the filter drops are counted
+    BigQueryNativeLoader
+      .FirstStepChecks("TRUE", Nil, None, "", Some(scope))
+      .countsSql("`p`.`d`.`t_*`") shouldBe
+    s"SELECT sl_suffix AS suffix, COUNTIF(sl_kept IS NOT FALSE AND NOT (TRUE)) AS rejected, COUNTIF(sl_kept IS FALSE OR (sl_kept IS NULL AND (TRUE))) AS filtered FROM $lines GROUP BY 1"
+    BigQueryNativeLoader.rejectedRowsSql(List("`p`.`d`.`t_*`"), scoped, 3) should include(
+      s"FROM $rows AS sl_rejected_row WHERE NOT (c)"
+    )
+    BigQueryNativeLoader.rejectedLinesSql(List("`p`.`d`.`t_*`"), scoped) shouldBe
+    s"SELECT `value` FROM $rows WHERE NOT (c)"
+  }
+
+  "rejectedLinesSql" should "read the rejected lines of the temporary tables" in {
+    BigQueryNativeLoader.rejectedLinesSql(
+      List("`p`.`d`.`t_*`"),
+      BigQueryNativeLoader.FirstStepChecks("c", Nil, None, "")
+    ) shouldBe "SELECT `value` FROM `p`.`d`.`t_*` WHERE NOT (c)"
   }
 
   "hiddenValuePaths" should "hide the ignored and private values, or their repeated record" in {

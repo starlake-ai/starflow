@@ -27,7 +27,7 @@ import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.Format.{DSV, XML}
 import ai.starlake.schema.model.Severity.*
 import ai.starlake.utils.Formatter.*
-import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryType, BigQueryUtils}
+import ai.starlake.utils.conversion.{BigQueryPositionValues, BigQueryUtils}
 import ai.starlake.utils.{SparkUtils, Utils}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.google.cloud.bigquery.Schema as BQSchema
@@ -727,8 +727,47 @@ case class SchemaInfo(
   def buildSecondStepSqlSelectOnLoad(
     table: String,
     jdbcEngine: Option[JdbcEngine] = None,
-    ddlTypesByAttribute: Map[String, String] = Map.empty
+    ddlTypesByAttribute: Map[String, String] = Map.empty,
+    typesByAttribute: Map[String, Type] = Map.empty
   ): String = {
+    val (allAttributes, allFinalAttributes) =
+      secondStepColumns(jdbcEngine, ddlTypesByAttribute, typesByAttribute)
+    val sourceTableFilterSQL = this.filter match {
+      case Some(filter) => s"WHERE $filter"
+      case None         => ""
+
+    }
+    s"""
+       |SELECT ${allFinalAttributes.mkString(", ")}
+       |  FROM (
+       |    SELECT ${allAttributes.mkString(", ")}
+       |    FROM $table
+       |  ) AS SL_INTERNAL_FROM_SELECT
+       |  $sourceTableFilterSQL
+       |""".stripMargin
+
+  }
+
+  /** @return
+    *   the columns that the second step of a native load selects from the rows of its first step,
+    *   which its filter reads: the attributes, with their final names, including the ignored ones
+    */
+  def secondStepProjections(
+    jdbcEngine: Option[JdbcEngine],
+    ddlTypesByAttribute: Map[String, String],
+    typesByAttribute: Map[String, Type]
+  ): List[String] =
+    secondStepColumns(jdbcEngine, ddlTypesByAttribute, typesByAttribute)._1
+
+  /** @return
+    *   the columns that the second step of a native load selects from the rows of its first step,
+    *   and the final names of those that it loads
+    */
+  private def secondStepColumns(
+    jdbcEngine: Option[JdbcEngine],
+    ddlTypesByAttribute: Map[String, String],
+    typesByAttribute: Map[String, Type]
+  ): (List[String], List[String]) = {
     val attributeQuote = jdbcEngine.map(_.quote).getOrElse("")
     val (scriptAttributes, transformAttributes) =
       scriptAndTransformAttributes().partition(_.script.nonEmpty)
@@ -737,53 +776,24 @@ case class SchemaInfo(
 
     val isPosition = this.metadata.map(_.resolveFormat()).contains(Format.POSITION)
 
-    // SAFE_CAST is BigQuery-specific. POSITION is currently only enabled for BigQuery
-    // native; if added to other engines later, this should become engine-aware
-    // (Snowflake/DuckDB use TRY_CAST). A no-op cast to STRING is skipped for readability.
-    def isStringLikeDdlType(ddlType: String): Boolean = {
-      val upper = ddlType.trim.toUpperCase
-      upper == "STRING" || upper.startsWith("VARCHAR") || upper.startsWith("CHAR") ||
-      upper == "TEXT"
-    }
-
     // For POSITION, the first-step temp table has a single VARCHAR column named `value`
-    // containing the raw fixed-width line. We project each attribute by slicing it,
-    // optionally wrapped in SAFE_CAST so a short/malformed line yields NULL on bad cells
-    // instead of failing the entire INSERT.
+    // containing the raw fixed-width line. We project each attribute by slicing it and
+    // converting the slice, NULL when it does not convert, so a short/malformed line fails
+    // no INSERT: the second step of the native BigQuery loader rejects its row (#1886).
+    // POSITION is currently only enabled for BigQuery native.
     def positionProjection(field: TableAttribute): String = {
       val pos = field.position.getOrElse(
         throw new IllegalStateException(
           s"Attribute ${field.name} has POSITION format but no position set"
         )
       )
-      val length = pos.last - pos.first + 1
-      val raw = s"SUBSTR(value, ${pos.first + 1}, $length)"
       val finalName = s"$attributeQuote${field.getFinalName()}$attributeQuote"
-      ddlTypesByAttribute.get(field.name).map(_.trim.toUpperCase) match {
-        // BigQuery cannot cast a string to these types: it parses them
-        case Some(ddlType) if ddlType.startsWith("GEOGRAPHY") =>
-          s"SAFE.ST_GEOGFROM($raw) as $finalName"
-        case Some(ddlType) if ddlType.startsWith("JSON") =>
-          s"SAFE.PARSE_JSON($raw) as $finalName"
-        case Some(ddlType) if ddlType.startsWith("RANGE") =>
-          BigQueryType
-            .parse(ddlType)
-            .flatMap(_.rangeElementType)
-            .map(elementType =>
-              s"${BigQueryNativeSchema.rangeFromText(raw, elementType.name(), safe = true)} as $finalName"
-            )
-            .getOrElse(s"$raw as $finalName")
-        // BigQuery refuses parameterized types in CAST, such as STRING(10) or NUMERIC(10, 2)
-        case Some(ddlType)
-            if BigQueryType
-              .parse(ddlType)
-              .exists(t => t.hasParameters && t.rangeElementType.isEmpty) =>
-          s"${BigQueryNativeSchema.castWithinParameters(raw, BigQueryType.parse(ddlType).get)} as $finalName"
-        case Some(ddlType) if !isStringLikeDdlType(ddlType) =>
-          s"SAFE_CAST($raw AS ${ddlTypesByAttribute(field.name)}) as $finalName"
-        case _ =>
-          s"$raw as $finalName"
-      }
+      val value = BigQueryPositionValues.value(
+        BigQueryPositionValues.slice(pos),
+        ddlTypesByAttribute.get(field.name),
+        typesByAttribute.get(field.name)
+      )
+      s"$value as $finalName"
     }
 
     val sqlScripts: List[String] = scriptAttributes.map { scriptField =>
@@ -824,24 +834,10 @@ case class SchemaInfo(
           s"$attributeQuote${field.getName()}$attributeQuote"
         }
 
-    val allFinalAttributes =
-      (sqlFinalSimple ++ sqlScriptsFinalName ++ sqlTransformsFinalName).mkString(", ")
-    val allAttributes = (sqlSimple ++ sqlScripts ++ sqlTransforms ++ sqlIgnored).mkString(", ")
-
-    val sourceTableFilterSQL = this.filter match {
-      case Some(filter) => s"WHERE $filter"
-      case None         => ""
-
-    }
-    s"""
-       |SELECT $allFinalAttributes
-       |  FROM (
-       |    SELECT $allAttributes
-       |    FROM $table
-       |  ) AS SL_INTERNAL_FROM_SELECT
-       |  $sourceTableFilterSQL
-       |""".stripMargin
-
+    (
+      sqlSimple ++ sqlScripts ++ sqlTransforms ++ sqlIgnored,
+      sqlFinalSimple ++ sqlScriptsFinalName ++ sqlTransformsFinalName
+    )
   }
 
   /** @param fallbackSchema
