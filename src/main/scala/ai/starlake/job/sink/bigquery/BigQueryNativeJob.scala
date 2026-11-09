@@ -12,7 +12,7 @@ import ai.starlake.schema.model.{
   TableInfo as SLTableInfo
 }
 import ai.starlake.sql.SQLUtils
-import ai.starlake.utils.{JobBase, JobResult, Utils}
+import ai.starlake.utils.{JobBase, JobResult}
 import better.files.File
 import com.google.cloud.bigquery.BigQuery.QueryResultsOption
 import com.google.cloud.bigquery.JobInfo.{CreateDisposition, SchemaUpdateOption, WriteDisposition}
@@ -27,7 +27,7 @@ import java.nio.channels.Channels
 import java.nio.file.Files
 import java.util.UUID
 import scala.jdk.CollectionConverters.*
-import scala.util.{Failure, Success, Try, Using}
+import scala.util.{Failure, Success, Try}
 
 /** A load job that BigQuery ran and that failed: its execution errors may report bad records
   *
@@ -131,10 +131,6 @@ class BigQueryNativeJob(
                   .map { jobResult =>
                     if (scala.Option(jobResult.getStatus.getError()).isEmpty) {
                       val stats = jobResult.getStatistics.asInstanceOf[LoadStatistics]
-                      applyRLSAndCLS().recover { case e =>
-                        Utils.logException(logger, e)
-                        throw e
-                      }
                       BqLoadInfo(
                         scala.Option(stats.getOutputRows).map(_.longValue).getOrElse(0L),
                         // Parquet loads set no maximum of bad records
@@ -170,11 +166,19 @@ class BigQueryNativeJob(
   ): Job = {
     val loadConfig = bqLoadLocaFileConfig(bqSchema, formatOptions)
     val jobId: JobId = newJobIdWithLocation()
-    Using(bigquery(accessToken = cliConfig.accessToken).writer(jobId, loadConfig)) { writer =>
-      val outputStream = Channels.newOutputStream(writer)
-      sourceURIs
-        .foreach(uri => Files.copy(File(new URI(uri)).path, outputStream))
-    }
+    val outputStream = Channels.newOutputStream(
+      bigquery(accessToken = cliConfig.accessToken).writer(jobId, loadConfig)
+    )
+    // Closing the channel completes the upload, which starts the load job: an upload that fails
+    // is left incomplete, so that no job loads part of the files
+    sourceURIs
+      .foreach(uri => Files.copy(File(new URI(uri)).path, outputStream))
+    Try(outputStream.close()).recover {
+      // The upload completed before the failure: a retry would load the files again
+      case _
+          if Try(bigquery(accessToken = cliConfig.accessToken).getJob(jobId)).toOption
+            .exists(_ != null) =>
+    }.get
     bigquery(accessToken = cliConfig.accessToken).getJob(jobId)
   }
 
@@ -579,10 +583,6 @@ class BigQueryNativeJob(
             val table = bigquery(accessToken = cliConfig.accessToken).getTable(tableId)
             setTagsOnTable(table)
 
-            applyRLSAndCLS().recover { case e =>
-              Utils.logException(logger, e)
-              throw new Exception(e)
-            }
             updateTableDescription(table, cliConfig.outputTableDesc.getOrElse(""))
             targetTableSchema
               .map(updateColumnsDescription)
@@ -591,6 +591,7 @@ class BigQueryNativeJob(
                   BigQueryJobBase.dictToBQSchema(getFieldsDescriptionSource(sql))
                 )
               )
+            applyRLSAndCLS().get
             BigQueryJobResult(Some(results), totalBytesProcessed, Some(jobResult))
           }
       }.flatten
