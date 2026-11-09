@@ -31,7 +31,7 @@ This document lists all environment variables that can be used to configure Star
 | `SL_WRITE_STRATEGIES` | Write strategies path | `${metadata}/write-strategies` |
 | `SL_LOAD_STRATEGIES` | Load strategies path | `${metadata}/load-strategies` |
 | `SL_USE_LOCAL_FILE_SYSTEM` | Do not use Hadoop HDFS path abstraction, use java file API instead | `false` |
-| `SL_CREATE_SCHEMA_IF_NOT_EXISTS` | Create schema if it does not exist | `true` |
+| `SL_CREATE_SCHEMA_IF_NOT_EXISTS` | Create schema if it does not exist. On BigQuery, `false` also leaves the description and the labels of the existing datasets as they are | `true` |
 | `SL_DUCKDB_ENABLE_EXTERNAL_ACCESS` | Enable external access in DuckDB | `true` |
 | `SL_DUCKDB_MODE` / `SL_DUAL_MODE` | Enable DuckDB mode | `false` |
 | `SL_DUCKDB_PATH` | Path to DuckDB database file | - |
@@ -70,7 +70,7 @@ This document lists all environment variables that can be used to configure Star
 |----------|-------------|---------|
 | `SL_REJECT_ALL_ON_ERROR` | Reject all records on error | `false` |
 | `SL_REJECT_MAX_RECORDS` | Max records to reject | `2147483647` |
-| `SL_ON_EXCEPTION_RETRIES` | Max attempts of a retryable task on eligible exceptions | `3` |
+| `SL_ON_EXCEPTION_RETRIES` | Max retries of a task on a transient exception, such as a BigQuery rate limit. The nth retry waits 5 s * n, plus up to 5 s | `3` |
 
 ## Lock Configuration
 
