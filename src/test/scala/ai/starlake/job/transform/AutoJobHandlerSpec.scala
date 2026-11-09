@@ -446,10 +446,9 @@ class AutoJobHandlerSpec extends TestHelper with BeforeAndAfterAll {
       val job = new BigQuerySparkJob(config)
       val conf = job.prepareConf()
 
-      val delStatement = "DROP ALL ROW ACCESS POLICIES ON `DOMAIN.TABLE`"
       val createStatement =
         """
-          | CREATE ROW ACCESS POLICY
+          | CREATE OR REPLACE ROW ACCESS POLICY
           |  myrls
           | ON
           |  `DOMAIN.TABLE`
@@ -469,7 +468,7 @@ class AutoJobHandlerSpec extends TestHelper with BeforeAndAfterAll {
           businessTask1.rls
         )
         .map(_.replaceAll("`.*`", "`DOMAIN.TABLE`")) // we remove the computed project id
-      result should contain theSameElementsInOrderAs List(delStatement, createStatement)
+      result should contain theSameElementsInOrderAs List(createStatement)
     }
   }
 }

@@ -1314,7 +1314,7 @@
         },
         "taskTimeoutMs": {
           "type": "integer",
-          "description": "Number of milliseconds before a communication timeout."
+          "description": "Timeout in milliseconds of each statement of the task on BigQuery. Default is longJobTimeoutMs"
         },
         "parseSQL": {
           "type": "boolean",
@@ -2679,15 +2679,15 @@
         },
         "longJobTimeoutMs": {
           "type": "integer",
-          "description": "Timeout in milliseconds for long-running jobs. Default is 3600000 (1 hour)"
+          "description": "Timeout in milliseconds for long-running jobs. Default is 1800000 (30 minutes)"
         },
         "shortJobTimeoutMs": {
           "type": "integer",
-          "description": "Timeout in milliseconds for short-running jobs. Default is 300000 (5 minutes)"
+          "description": "Timeout in milliseconds for short-running jobs. Default is 180000 (3 minutes)"
         },
         "createSchemaIfNotExists": {
           "type": "boolean",
-          "description": "Automatically create database schema/dataset if it does not exist. Default is true"
+          "description": "Automatically create database schema/dataset if it does not exist. On BigQuery, false also leaves the description and the labels of the existing datasets as they are. Default is true"
         },
         "http": {
           "$ref": "#/definitions/HttpV1",
@@ -2744,7 +2744,7 @@
           "type": "boolean"
         },
         "onExceptionRetries": {
-          "description": "Number of retries on transient exceptions",
+          "description": "Number of retries on transient exceptions, such as a BigQuery rate limit. The nth retry waits 5 s * n, plus up to 5 s: by default, 30 to 45 s of waits in all",
           "type": "integer"
         },
         "pythonLibsDir": {
