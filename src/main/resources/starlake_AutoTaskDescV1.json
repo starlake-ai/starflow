@@ -565,7 +565,7 @@
     },
     "taskTimeoutMs": {
       "type": "integer",
-      "description": "Number of milliseconds before a communication timeout."
+      "description": "Timeout in milliseconds of each statement of the task on BigQuery. Default is longJobTimeoutMs"
     },
     "parseSQL": {
       "type": "boolean",

@@ -169,14 +169,16 @@ class BigQueryAutoTask(
         .toList
     }.getOrElse(Nil)
 
+  private def targetTableExists: Boolean =
+    bqNativeJob(bigQuerySinkConfig, "ignore sql", Some(settings.appConfig.shortJobTimeoutMs))
+      .tableExists(
+        taskDesc.getDatabase(),
+        taskDesc.domain,
+        taskDesc.table
+      )
+
   override def tableExists: Boolean = {
-    val tableExists =
-      bqNativeJob(bigQuerySinkConfig, "ignore sql", Some(settings.appConfig.shortJobTimeoutMs))
-        .tableExists(
-          taskDesc.getDatabase(),
-          taskDesc.domain,
-          taskDesc.table
-        )
+    val tableExists = targetTableExists
 
     if (!tableExists && taskDesc._auditTableName.isDefined) {
       createAuditTable()
@@ -208,7 +210,11 @@ class BigQueryAutoTask(
       )
     }
     bqJob.getOrCreateDataset(None, Some(taskDesc.domain))
-    runSqls(List(script)).forall(_.isSuccess)
+    // Processes starting together all create the table: the rate limit of table updates can refuse
+    // the statement of one of them once another has created it
+    bqNativeJob(bigQuerySinkConfig, script, Some(settings.appConfig.shortJobTimeoutMs))
+      .runBigQueryJob()
+      .isSuccess || targetTableExists
   }
 
   private val bigQuerySinkConfig: BigQueryLoadConfig = {
@@ -245,7 +251,12 @@ class BigQueryAutoTask(
     jobTimeoutMs: Option[Long] = None
   ): BigQueryNativeJob = {
     val toUpperSql = sql.toUpperCase()
-    new BigQueryNativeJob(config, sql, this.resultPageSize, jobTimeoutMs)
+    new BigQueryNativeJob(
+      config,
+      sql,
+      this.resultPageSize,
+      jobTimeoutMs.orElse(taskDesc.taskTimeoutMs)
+    )
   }
 
   private def runSqls(sqls: List[String]): List[Try[BigQueryJobResult]] = {
@@ -805,8 +816,9 @@ class BigQueryAutoTask(
     * is implemented using BigQuery's ROW ACCESS POLICY.
     *
     * ==Processing Flow==
-    *   1. First, DROP ALL existing row access policies (clean slate) 2. Then, CREATE new policies
-    *      for each RLS definition in the task
+    *   1. CREATE OR REPLACE a policy for each RLS definition in the task, atomically. The policies
+    *      that are no longer declared are dropped when they are applied to the table
+    *      (`BigQueryJobBase.applyRLSAndCLS`)
     *
     * ==Grantee Types==
     *   - SA (Service Account): serviceAccount:name@project.iam.gserviceaccount.com
@@ -815,51 +827,10 @@ class BigQueryAutoTask(
     *   - DOMAIN: domain:domain.com
     *
     * @return
-    *   List of SQL statements to execute (DROP + CREATE for each policy)
+    *   List of SQL statements to execute (CREATE OR REPLACE for each policy)
     */
-  override def buildRLSQueries(): List[String] = {
-    // Revokes all existing policies before creating new ones
-    def revokeAllPrivileges(): String = {
-      val outputTable = BigQueryJobBase.getBqTableForNative(targetTableId)
-      s"DROP ALL ROW ACCESS POLICIES ON $outputTable"
-    }
-
-    /** Grant privileges to the users and groups defined in the schema
-      * @param rlsRetrieved
-      * @return
-      */
-    def grantPrivileges(rlsRetrieved: RowLevelSecurity): String = {
-      val grants = rlsRetrieved.grantees().map {
-        case (UserType.SA, u) =>
-          s"serviceAccount:$u"
-        case (userOrGroupOrDomainType, userOrGroupOrDomainName) =>
-          s"${userOrGroupOrDomainType.toString.toLowerCase}:$userOrGroupOrDomainName"
-      }
-
-      val name = rlsRetrieved.name
-      val filter = rlsRetrieved.predicate
-      val outputTable = BigQueryJobBase.getBqTableForNative(targetTableId)
-      s"""
-               | CREATE ROW ACCESS POLICY
-               |  $name
-               | ON
-               |  $outputTable
-               | GRANT TO
-               |  (${grants.mkString("\"", "\",\"", "\"")})
-               | FILTER USING
-               |  ($filter)
-               |""".stripMargin
-    }
-    val rlsCreateStatements = taskDesc.rls.map { rlsRetrieved =>
-      logger.info(s"Building security statement $rlsRetrieved")
-      val rlsCreateStatement = grantPrivileges(rlsRetrieved)
-      logger.info(s"An access policy will be created using $rlsCreateStatement")
-      rlsCreateStatement
-    }
-    val rlsDeleteStatement = taskDesc.rls.map(_ => revokeAllPrivileges())
-    rlsDeleteStatement ++ rlsCreateStatements
-
-  }
+  override def buildRLSQueries(): List[String] =
+    BigQueryJobBase.buildRLSQueries(targetTableId, taskDesc.rls)
 
   def updateBigQueryTableSchema(
     incomingSparkSchema: Option[StructType],
