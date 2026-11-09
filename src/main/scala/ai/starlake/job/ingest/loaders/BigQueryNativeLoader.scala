@@ -151,6 +151,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           days = bqSink.days,
           requirePartitionFilter = bqSink.requirePartitionFilter.getOrElse(false),
           rls = effectiveSchema.rls,
+          acl = effectiveSchema.acl,
           partitionsToUpdate = Nil,
           starlakeSchema = Some(schemaWithMergedMetadata),
           domainTags = domain.tags,
@@ -175,16 +176,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                       .orElse(settings.appConfig.getDefaultDatabase())
                   )
                 val firstStepConfig =
-                  targetConfig
-                    .copy(
-                      source = Left(sourceUri),
-                      outputTableId = Some(firstStepTempTable),
-                      outputTableDesc = Some("Temporary table created during data ingestion."),
-                      // force first step to be write append, otherwise write_truncate overwrite the
-                      // created structure with default values, making second step query to fail if it relies on
-                      // technical column such as comet_input_filename.
-                      writeDisposition = JobInfo.WriteDisposition.WRITE_APPEND.name()
-                    )
+                  BigQueryNativeLoader.firstStepConfig(targetConfig, sourceUri, firstStepTempTable)
 
                 val firstStepBigqueryJob = new BigQueryNativeJob(firstStepConfig, "")
                 // For POSITION format the first step loads each line as a single VARCHAR
@@ -326,7 +318,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           }
         bigqueryJob
           .loadPathsToBQ(tableInfo)
-          .map { loadInfo =>
+          .flatMap { loadInfo =>
             // The bad records that a one-step load job skipped, known once it loaded the others: a
             // failure to keep them does not fail the load, whose rows are written. Two-step loads
             // keep them before their second step.
@@ -337,7 +329,13 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   exception
                 )
               }
-            List(loadInfo)
+            // Then the ACL, row access policies and policy tags of the table: a failure fails the
+            // load, whose rows are written, as with Spark and the second step of two-step loads
+            BigQueryJobBase
+              .recoverBigqueryException(settings.appConfig.onExceptionRetries)(
+                bigqueryJob.applyRLSAndCLS().get
+              )
+              .map(_ => List(loadInfo))
           }
           .recoverWith { case exception: BigQueryLoadJobException =>
             keepBadRecordsOfFailedJobs(List(exception))
@@ -783,9 +781,16 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                 ""
               )
               val tableInfo = diagnosticJob.getTableInfo(tableId, _ => diagnosticSchema)
-              job -> diagnosticJob
+              val loaded = diagnosticJob
                 .loadPathsToBQ(tableInfo, Some(withInputFileName(tableInfo, file)))
                 .get
+              // The policy tags of the attributes protect their raw values: the rows are searched
+              // even when they cannot be applied
+              diagnosticJob.applyRLSAndCLS().failed.foreach { exception =>
+                logger
+                  .warn(s"Could not apply the policy tags of the attributes to $tableId", exception)
+              }
+              job -> loaded
           }
           .toList
       // Rows for the audit only
@@ -1166,6 +1171,31 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
 }
 
 object BigQueryNativeLoader {
+
+  /** @return
+    *   the config of the load of a file into a temporary table of the first step
+    */
+  def firstStepConfig(
+    targetConfig: BigQueryLoadConfig,
+    sourceUri: String,
+    tempTableId: TableId
+  ): BigQueryLoadConfig =
+    targetConfig.copy(
+      source = Left(sourceUri),
+      outputTableId = Some(tempTableId),
+      outputTableDesc = Some("Temporary table created during data ingestion."),
+      // force first step to be write append, otherwise write_truncate overwrite the
+      // created structure with default values, making second step query to fail if it relies on
+      // technical column such as comet_input_filename.
+      writeDisposition = JobInfo.WriteDisposition.WRITE_APPEND.name(),
+      // The second step reads every row and column of the temporary tables, to which no access
+      // policy is applied: a row access policy would hide rows from it, a policy tag would deny or
+      // mask columns, and a required partition filter would reject its queries. The second step
+      // applies the ACL and row access policies to the target
+      requirePartitionFilter = false,
+      rls = Nil,
+      acl = Nil
+    )
 
   /** @return
     *   the schema of the temporary table of the first step, with the source names of the attributes
