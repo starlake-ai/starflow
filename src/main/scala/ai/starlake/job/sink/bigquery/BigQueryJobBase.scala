@@ -58,7 +58,8 @@ trait BigQueryJobBase extends LazyLogging {
   // Lazy otherwise tests fail since there is no GCP credentials in test mode
 
   private def policyClient()(implicit settings: Settings): PolicyTagManagerClient = {
-    val credentials = GcpCredentials.credentials(connectionOptions)
+    // The credentials of the access token of the run, as the BigQuery client of the job
+    val credentials = GcpCredentials.credentials(connectionOptions, cliConfig.accessToken)
     val policySettings =
       credentials match {
         case None =>
@@ -70,15 +71,11 @@ trait BigQueryJobBase extends LazyLogging {
     PolicyTagManagerClient.create(policySettings)
 
   }
-  def applyRLSAndCLS(forceApply: Boolean = false)(implicit settings: Settings): Try[Unit] = {
-    val client = policyClient()
-    val result = for {
+  def applyRLSAndCLS(forceApply: Boolean = false)(implicit settings: Settings): Try[Unit] =
+    for {
       _ <- applyRLS(forceApply)
-      _ <- applyCLS(forceApply, client)
+      _ <- applyCLS(forceApply)
     } yield ()
-    client.shutdown()
-    result
-  }
 
   def bigquery(alwaysCreate: Boolean = false, accessToken: scala.Option[String])(implicit
     settings: Settings
@@ -290,7 +287,7 @@ trait BigQueryJobBase extends LazyLogging {
     (location, taxonomyProjectId, taxonomy, taxonomyRef)
   }
 
-  private def applyCLS(forceApply: Boolean, policyTagClient: PolicyTagManagerClient)(implicit
+  private def applyCLS(forceApply: Boolean)(implicit
     settings: Settings
   ): Try[Unit] = {
     Try {
@@ -315,71 +312,47 @@ trait BigQueryJobBase extends LazyLogging {
                 .map { case (attrName, attrAccessPolicy) => attrAccessPolicy }
                 .count(_.isDefined) > 0
             if (anyAccessPolicyToApply) {
-              val (location, projectId, taxonomy, taxonomyRef) =
-                getTaxonomy(policyTagClient)
-              val policyTagIds = mutable.Map.empty[String, String]
-              val table = cliConfig.outputTableId match {
-                case None =>
-                  throw new RuntimeException("TableId must be defined in order to apply CLS")
-                case Some(outputTableId) =>
-                  bigquery(accessToken = cliConfig.accessToken).getTable(outputTableId)
-              }
-              val tableDefinition = table.getDefinition[StandardTableDefinition]
-              val bqSchema = tableDefinition.getSchema()
-              val bqFields = bqSchema.getFields.asScala.toList
-              val attributesMap = attrs.toMap
-              val updatedFields = bqFields.map { field =>
-                attributesMap.get(field.getName.toLowerCase) match {
+              // Created only when a policy tag is applied
+              val policyTagClient = policyClient()
+              try {
+                val (location, projectId, taxonomy, taxonomyRef) =
+                  getTaxonomy(policyTagClient)
+                val policyTagIds = mutable.Map.empty[String, String]
+                val table = cliConfig.outputTableId match {
                   case None =>
-                    // Maybe an ignored field
-                    logger.info(
-                      s"Ignore this field ${table}.${field.getName} during CLS application "
-                    )
-                    field
-                  case Some(accessPolicy) =>
-                    accessPolicy match {
-                      case None =>
-                        field
-                      case Some(accessPolicy) =>
-                        val policyTagId = policyTagIds.getOrElse(
-                          accessPolicy, {
-                            val policyTagRef =
-                              getPolicyTag(
-                                location,
-                                projectId,
-                                taxonomy,
-                                taxonomyRef,
-                                accessPolicy,
-                                policyTagClient
-                              )
-                            policyTagIds.put(accessPolicy, policyTagRef)
-                            policyTagRef
-                          }
-                        )
-
-                        val fieldPolicyTags =
-                          scala
-                            .Option(field.getPolicyTags)
-                            .map(_.getNames.asScala.toList)
-                            .getOrElse(Nil)
-                        if (fieldPolicyTags.length == 1 && fieldPolicyTags.head == policyTagId)
-                          field
-                        else {
-                          Field
-                            .newBuilder(field.getName, field.getType, field.getSubFields)
-                            .setMode(field.getMode)
-                            .setPolicyTags(
-                              PolicyTags.newBuilder().setNames(List(policyTagId).asJava).build()
-                            )
-                            .build()
-                        }
-                    }
+                    throw new RuntimeException("TableId must be defined in order to apply CLS")
+                  case Some(outputTableId) =>
+                    bigquery(accessToken = cliConfig.accessToken).getTable(outputTableId)
                 }
+                val tableDefinition = table.getDefinition[StandardTableDefinition]
+                val bqSchema = tableDefinition.getSchema()
+                val bqFields = bqSchema.getFields.asScala.toList
+                val updatedFields = BigQueryJobBase.withPolicyTags(
+                  table.getTableId.getTable,
+                  bqFields,
+                  attrs,
+                  accessPolicy =>
+                    policyTagIds.getOrElseUpdate(
+                      accessPolicy,
+                      getPolicyTag(
+                        location,
+                        projectId,
+                        taxonomy,
+                        taxonomyRef,
+                        accessPolicy,
+                        policyTagClient
+                      )
+                    )
+                )
+                // Each update of a table counts in its rate limit of metadata updates
+                if (updatedFields != bqFields)
+                  table.toBuilder
+                    .setDefinition(StandardTableDefinition.of(BQSchema.of(updatedFields: _*)))
+                    .build()
+                    .update()
+              } finally {
+                policyTagClient.shutdown()
               }
-              table.toBuilder
-                .setDefinition(StandardTableDefinition.of(BQSchema.of(updatedFields: _*)))
-                .build()
-                .update()
             }
         }
       }
@@ -1234,6 +1207,50 @@ object BigQueryJobBase extends LazyLogging {
           true
         case _ => isRetryableException(ex.getCause)
       }
+  }
+
+  /** @param attributes
+    *   the column name of the attributes, and their access policy if any
+    * @param policyTagId
+    *   the policy tag of an access policy
+    * @return
+    *   the columns of a table with the policy tag of the access policy of their attribute. The
+    *   columns that keep their policy tags are the same objects
+    */
+  def withPolicyTags(
+    table: String,
+    fields: List[Field],
+    attributes: List[(String, scala.Option[String])],
+    policyTagId: String => String
+  ): List[Field] = {
+    // BigQuery column names are case-insensitive
+    val accessPolicies = attributes.map { case (name, accessPolicy) =>
+      name.toLowerCase -> accessPolicy
+    }.toMap
+    fields.map { field =>
+      accessPolicies.get(field.getName.toLowerCase) match {
+        case None =>
+          // Maybe an ignored field
+          logger.info(s"Ignore this field $table.${field.getName} during CLS application")
+          field
+        case Some(None) =>
+          field
+        case Some(Some(accessPolicy)) =>
+          val tagId = policyTagId(accessPolicy)
+          val fieldPolicyTags =
+            scala
+              .Option(field.getPolicyTags)
+              .map(_.getNames.asScala.toList)
+              .getOrElse(Nil)
+          if (fieldPolicyTags == List(tagId))
+            field
+          else
+            // The other properties of the column, such as its description, are kept
+            field.toBuilder
+              .setPolicyTags(PolicyTags.newBuilder().setNames(List(tagId).asJava).build())
+              .build()
+      }
+    }
   }
 
   /** Retry on retryable bigquery exception.

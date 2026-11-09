@@ -309,7 +309,7 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       truncate = false,
       test = false,
       logExecution = true,
-      accessToken = None,
+      accessToken = accessToken,
       resultPageSize = 200,
       resultPageNumber = 1,
       dryRun = false,
