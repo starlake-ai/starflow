@@ -695,6 +695,8 @@ class BigQueryAutoTask(
       mainSql
     )
     val result = bqJob.runBigQueryJob(dryRun = dryRun)
+    // Its statements may have written the table even when they failed, as a script does
+    if (bqJob.mayHaveWritten) markTargetWritten()
     result.map { job =>
       bqJob.applyRLSAndCLS() match {
         case Success(_) =>
@@ -742,6 +744,7 @@ class BigQueryAutoTask(
     val bqSparkJob =
       new BigQuerySparkJob(bqLoadConfig, None, this.taskDesc.comment, this.taskDesc.attributes)
     val result = bqSparkJob.run()
+    if (bqSparkJob.rowsSaved) markTargetWritten()
     result.map { job =>
       bqSparkJob.applyRLSAndCLS() match {
         case Success(_) =>

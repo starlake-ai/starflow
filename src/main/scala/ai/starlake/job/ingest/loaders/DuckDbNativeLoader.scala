@@ -227,7 +227,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           // throws once the rows are already committed. Under APPEND, retrying a load reported
           // as failed for that reason would duplicate the committed rows.
           try {
-            job.run().get
+            // A failed second step fails the load, whose files must not be archived
+            ingestionJob.writingWith(job)(job.run().get)
           } catch {
             case NonFatal(e) =>
               // The rejects were reported above, before the second step ran. Nothing about the
@@ -829,6 +830,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           // metadata reads are pending, since the INSERT runs later, so the data rollback
           // guarantee still holds. Schema changes themselves are not rolled back.
           conn.commit()
+          // Inside the block, before the postActions of the connection, which run once it
+          // succeeded
+          if (!isTemporary) ingestionJob.markRowsWritten()
           rejected
         } catch {
           case NonFatal(e) =>

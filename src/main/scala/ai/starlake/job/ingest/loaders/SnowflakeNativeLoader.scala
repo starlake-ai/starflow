@@ -121,7 +121,8 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 true
               )
 
-              val runResult = job.runJDBC(df = None, sqlConnection = Some(conn))
+              val runResult =
+                ingestionJob.writingWith(job)(job.runJDBC(df = None, sqlConnection = Some(conn)))
 
               runResult match {
                 case Success(_) =>
@@ -151,6 +152,7 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
               path = path,
               conn = conn
             )
+            ingestionJob.markRowsWritten()
           }
         }
     }.map { _ =>

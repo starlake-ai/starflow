@@ -297,9 +297,13 @@ class JdbcAutoTask(
                   val sql =
                     s"INSERT INTO $fullTableName SELECT ${quotedColumns.mkString(",")}  FROM '$tablePath/*.parquet'"
                   JdbcDbUtils.executeUpdate(sql, conn)
+                  markTargetWritten()
                 }
                 settings.storageHandler().delete(tablePath)
               } else {
+                // Spark commits the rows of each partition on its own: a failed write may have
+                // written some of them
+                markTargetWritten()
                 loadedDF.write
                   .format(sinkConnection.sparkDatasource().getOrElse("jdbc"))
                   .option("dbtable", fullTableName)
@@ -322,6 +326,10 @@ class JdbcAutoTask(
                   conn.setAutoCommit(false)
                   val finalSqls = mainSql.splitSql()
                   runSqls(conn, finalSqls, "Main")
+                  // Committed after the postsql statements, unless one of them fails: some engines
+                  // then commit them anyway, when a later statement commits implicitly (a DDL on
+                  // Snowflake)
+                  markTargetWritten()
                 } match {
                   case Success(_) =>
                     runSqls(conn, postSql, "Post")
