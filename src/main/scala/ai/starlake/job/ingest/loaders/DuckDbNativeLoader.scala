@@ -126,7 +126,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             postsql = schema.postsql,
             sink = mergedMetadata.sink,
             rls = schema.rls,
-            expectations = schema.expectations,
+            expectations = Nil, // IngestionJob runs them, once the load is audited
             acl = schema.acl,
             comment = schema.comment,
             tags = schema.tags,

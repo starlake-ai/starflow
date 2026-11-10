@@ -164,25 +164,29 @@ class ExpectationJob(
     val macros = SQLUtils.stripComments(schemaHandler.allMacros)
     val expectationReports = expectations.map { expectation =>
       val queryCall = expectation.queryCall()
-      val expectationWithMacroDefinitions = List(macros, queryCall).mkString("\n")
-      val sql =
-        Utils.parseJinja(
-          expectationWithMacroDefinitions,
-          schemaHandler.activeEnvVars()
+      // An expectation that cannot be rendered is reported as one whose query cannot run
+      val renderedSql: Try[String] = Try {
+        val expectationWithMacroDefinitions = List(macros, queryCall).mkString("\n")
+        val sql =
+          Utils.parseJinja(
+            expectationWithMacroDefinitions,
+            schemaHandler.activeEnvVars()
+          )
+        transpileSql(
+          if (sql.contains("sl_this")) {
+            sql.replaceAll("(?i)sl_this", fullTableName)
+          } else
+            sql
         )
-      val sqlWithSlThis = transpileSql(
-        if (sql.contains("sl_this")) {
-          sql.replaceAll("(?i)sl_this", fullTableName)
-        } else
-          sql
-      )
-      logger.info(
-        s"Applying expectation: ${expectation.expect} with request $sqlWithSlThis"
-      )
+      }
       Try {
+        val sqlWithSlThis = renderedSql.get
+        logger.info(
+          s"Applying expectation: ${expectation.expect} with request $sqlWithSlThis"
+        )
         val expectationResult = sqlRunner.handle(sqlWithSlThis)
         val success = expectationResult == 0
-        if (!success) _failOnError = true
+        if (!success && expectation.failOnError) _failOnError = true
         ExpectationReport(
           applicationId(),
           database,
@@ -224,7 +228,7 @@ class ExpectationJob(
             Timestamp.from(Instant.now()),
             queryCall,
             expectation.expect,
-            Some(sqlWithSlThis),
+            renderedSql.toOption,
             None,
             Some(Utils.exceptionAsString(e)),
             success = false

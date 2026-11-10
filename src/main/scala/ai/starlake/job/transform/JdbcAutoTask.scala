@@ -347,9 +347,7 @@ class JdbcAutoTask(
             }
           }
 
-          if (settings.appConfig.expectations.active && !taskDesc.isAuditTable()) {
-            runAndSinkExpectations()
-          }
+          checkExpectations()
           if (settings.appConfig.autoExportSchema) {
             val isTableInAuditDomain =
               taskDesc.domain == settings.appConfig.audit.getDomain()

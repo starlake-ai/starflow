@@ -136,6 +136,23 @@ abstract class AutoTask(
     ).run()
   }
 
+  /** Runs the expectations of a task that has written its table, and persists their results.
+    *
+    * Throws when `expectations.failOnError` is set and an expectation fails, so that the task
+    * fails, as a load does. Its rows stay written. In test mode, the test framework reports each
+    * expectation itself. Without `expectations.failOnError`, nothing here fails the task.
+    */
+  protected def checkExpectations(): Unit =
+    if (settings.appConfig.expectations.active && !taskDesc.isAuditTable()) {
+      Try(runAndSinkExpectations()).flatten match {
+        case Failure(exception) if settings.appConfig.expectations.failOnError && !test =>
+          throw exception
+        case Failure(exception) =>
+          logger.warn(Utils.exceptionAsString(exception))
+        case _ =>
+      }
+    }
+
   def createAuditTable(): Boolean
 
   /** Build the SQL statements to create or alter the table schema in the target database.
