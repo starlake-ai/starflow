@@ -23,8 +23,6 @@ __Bug fix__:
   - The second step runs with the access token of the load (`--accessToken`), as its first step and the Spark loads do: it ran with the credentials of the connection.
   - **Behaviour change**: a load in one step fails when the `acl`, the row access policies or the policy tags of its table cannot be applied, as a load in two steps and a Spark load do: the failure was only logged. Its rows stay written, and its rejected records are kept first. Transient BigQuery errors are retried. A failure while uploading local files fails the load: it was ignored.
   - **Policy tags**, on every engine: they are applied to the columns whatever the case of their name, and the columns keep their description and other properties. The table is updated only when a tag changes. The policy tag client uses the access token of the run, and is created only when an attribute has an access policy.
-
-__Improvement__:
 - **BigQuery loads no longer update their dataset on every run, nor wait for a job that failed on a rate limit** (#1913): processes loading tables at the same time reached the rate limits of BigQuery on dataset and table updates, and one of them could then hang until its task timed out.
   - **Datasets and tables**: their labels were compared with the declared ones as a whole. A dataset or table with a label that the domain or the table does not declare, set by Terraform for example, was updated on every load, with no effect: an update merges labels and removes none. Only a declared label that is missing or different now triggers an update. A concurrent update of the same dataset no longer fails the load.
   - **`createSchemaIfNotExists: false`** now applies to BigQuery, as documented: no dataset is created any more, the one of the audit included, and a run fails when its dataset does not exist. It also leaves the description and labels of existing datasets as they are, so that `bigquery.datasets.update` is not needed.
@@ -34,6 +32,15 @@ __Improvement__:
   - **Row access policies**: each load dropped all the policies of a table, then created them one by one: when a creation failed, the table was left without any policy, and every reader saw every row. The declared policies are now created or replaced one by one, then the others are dropped. A failure leaves the table protected. A table with no `rls` keeps its policies, as before.
   - **Upgrade note**: replacing a policy needs `bigquery.rowAccessPolicies.update`. `roles/bigquery.admin` and `roles/bigquery.dataOwner` include it; a custom role that was enough to drop and create the policies may not.
   - The documented defaults of `longJobTimeoutMs` (30 minutes) and `shortJobTimeoutMs` (3 minutes) are corrected in the JSON schema.
+- **A failed expectation now fails its transform** (#1936): under `expectations.failOnError: true`, a transform whose expectation failed ended successfully, and the tasks that depend on it ran. It now fails on every engine, and its audit row records the failure. Expectations run after the write, so the rows stay in the table: an orchestrator that retries such a task runs it again, which adds its rows again with `APPEND`.
+  - **Behaviour change**: with `expectations.failOnError: true`, which is not the default, a transform whose expectation fails now fails.
+  - **Behaviour change**: `failOnError: false` on an expectation now applies when its check fails, as it did when its query could not run. The result is recorded in `audit.expectations`, and neither the load nor the transform fails, where a load used to fail.
+  - An expectation that cannot be rendered is now reported like one whose query cannot run, instead of stopping its load or task. Without `expectations.failOnError`, a problem with the expectations no longer fails a transform, on any engine.
+  - **Native loads in two steps** run their expectations once, after their audit row, as the other loads do. They ran twice, on BigQuery, DuckDB and Snowflake, with two rows in `audit.expectations`.
+  - A Spark task that writes to BigQuery without a merge now runs its expectations, which were skipped. A BigQuery dry run no longer runs them, as it writes nothing.
+  - `starlake test` on a transform is unchanged: a failed expectation is reported as a failed test, and does not stop the comparison with the expected data.
+
+__Improvement__:
 - **The SCD2 validity columns take the type that the task declares or names** (#1885): `startTs` and `endTs` were always `TIMESTAMP` columns, and the built-in templates wrote `CURRENT_TIMESTAMP` into them. The type of each column now comes from, in this order:
   - the attribute that declares the column, matched on its name in the table whatever its case, when its type is a date or a timestamp type of the project: the attribute of the task, or of the table for a load;
   - the new `startTsType` and `endTsType` properties of the write strategy, which name a type of the project (`metadata/types`);

@@ -72,7 +72,7 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 postsql = starlakeSchema.postsql,
                 sink = mergedMetadata.sink,
                 rls = starlakeSchema.rls,
-                expectations = starlakeSchema.expectations,
+                expectations = Nil, // IngestionJob runs them, once the load is audited
                 acl = starlakeSchema.acl,
                 comment = starlakeSchema.comment,
                 tags = starlakeSchema.tags,

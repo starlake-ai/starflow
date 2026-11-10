@@ -170,7 +170,7 @@ This document lists all environment variables that can be used to configure Star
 |----------|-------------|---------|
 | `SL_EXPECTATIONS_ACTIVE` | Enable expectations | `true` |
 | `SL_EXPECTATIONS_PATH` | Expectations path | `${datasets}/expectations/{{domain}}` |
-| `SL_EXPECTATIONS_FAIL_ON_ERROR` | Fail on expectation error | `false` |
+| `SL_EXPECTATIONS_FAIL_ON_ERROR` | Fail a load or a transform when one of its expectations fails, unless that expectation sets `failOnError: false` | `false` |
 
 ## Spark Configuration
 
