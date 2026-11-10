@@ -395,6 +395,9 @@ class IngestionWorkflow(
             val includedDomains = domainsToWatch(config)
             includedDomains.flatMap { domain =>
               logger.info(s"Watch Domain: ${domain.name}")
+              // The tables whose files load no more in this run, since one of them failed before
+              // writing its rows
+              val heldTables = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
               val stagePath = DatasetArea.stage(domain.name)
               config.files.getOrElse(Nil).foreach { path =>
                 logger.info(s"copying file $path in domain ${domain.name}")
@@ -500,15 +503,24 @@ class IngestionWorkflow(
                         jobs,
                         Some(settings.appConfig.sparkScheduling.maxJobs)
                       ) { jobContext =>
-                        ingest(
-                          jobContext.domain,
-                          jobContext.schema,
-                          jobContext.paths,
-                          jobContext.options,
-                          jobContext.accessToken,
-                          config.test,
-                          config.scheduledDate
-                        )
+                        val table = jobContext.schema.name
+                        if (heldTables.contains(table))
+                          holdBack(jobContext.domain, jobContext.schema, jobContext.paths)
+                        else {
+                          val (result, failedBeforeWrite) = ingestFiles(
+                            jobContext.domain,
+                            jobContext.schema,
+                            jobContext.paths,
+                            jobContext.options,
+                            jobContext.accessToken,
+                            config.test,
+                            config.scheduledDate
+                          )
+                          // The order of the files does not change a table they are appended to
+                          if (failedBeforeWrite && !appends(jobContext.domain, jobContext.schema))
+                            heldTables.add(table)
+                          result
+                        }
                       }
                     res
                   }
@@ -684,7 +696,6 @@ class IngestionWorkflow(
     }
   }
 
-  @nowarn
   def ingest(
     domain: DomainInfo,
     schema: SchemaInfo,
@@ -693,7 +704,23 @@ class IngestionWorkflow(
     accessToken: Option[String],
     test: Boolean,
     scheduledDate: Option[String]
-  ): Try[JobResult] = {
+  ): Try[JobResult] =
+    ingestFiles(domain, schema, ingestingPaths, options, accessToken, test, scheduledDate)._1
+
+  /** @return
+    *   the result of the load, and whether it failed before writing any row to its table, its files
+    *   being then back in the stage area
+    */
+  @nowarn
+  private def ingestFiles(
+    domain: DomainInfo,
+    schema: SchemaInfo,
+    ingestingPaths: List[Path],
+    options: Map[String, String],
+    accessToken: Option[String],
+    test: Boolean,
+    scheduledDate: Option[String]
+  ): (Try[JobResult], Boolean) = {
     val metadata = schema.mergedMetadata(domain.metadata)
     Utils.printOut(
       s"""Loading
@@ -705,7 +732,7 @@ class IngestionWorkflow(
       s"Ingesting domain: ${domain.name} with schema: ${schema.name}"
     )
 
-    val ingestionResult = Try {
+    val ingestionJob = Try {
       val optionsAndEnvVars = schemaHandler.activeEnvVars() ++ options
       val context = IngestionContext(
         domain = domain,
@@ -719,9 +746,9 @@ class IngestionWorkflow(
         test = test,
         scheduledDate = scheduledDate
       )
-      IngestionJobFactory.createJob(context).run()
+      IngestionJobFactory.createJob(context)
     }
-    ingestionResult match {
+    ingestionJob.map(_.run()) match {
       case Success(Success(jobResult)) =>
         if (test) {
           logger.info(s"Test mode enabled, no file will be deleted")
@@ -742,13 +769,83 @@ class IngestionWorkflow(
               storageHandler.delete(ingestingPath)
           }
         }
-        Success(jobResult)
-      case Success(Failure(exception)) =>
+        (Success(jobResult), false)
+      case result =>
+        val exception = result.flatten.failed.get
         Utils.logException(logger, exception)
-        Failure(exception)
-      case Failure(exception) =>
-        Utils.logException(logger, exception)
-        Failure(exception)
+        val failedBeforeWrite = !test && !ingestionJob.toOption.exists(_.rowsWritten)
+        if (test)
+          logger.info(s"Test mode enabled, no file will be moved")
+        else if (failedBeforeWrite)
+          giveBackToStage(domain, ingestingPaths)
+        else
+          logger.warn(
+            s"The failed load of ${domain.finalName}.${schema.finalName} may have written rows: ${ingestingPaths
+                .mkString(", ")} stay where they are, since loading them again could add these rows again"
+          )
+        (Failure(exception), failedBeforeWrite)
+    }
+  }
+
+  /** @return
+    *   true when every file of the table is appended to it, whatever its name: an adaptive strategy
+    *   (`types`) may overwrite the table with some of them
+    */
+  private def appends(domain: DomainInfo, schema: SchemaInfo): Boolean = {
+    val strategy = schema.mergedMetadata(domain.metadata).getStrategyOptions()
+    strategy.types.filter(_.nonEmpty) match {
+      case Some(types) => types.keys.forall(_ == WriteStrategyType.APPEND.value)
+      case None        => strategy.getEffectiveType() == WriteStrategyType.APPEND
+    }
+  }
+
+  /** Gives back the files of a table without loading them, when an earlier file of the table failed
+    * before writing its rows: loading them first would apply the files out of their order.
+    */
+  private def holdBack(
+    domain: DomainInfo,
+    schema: SchemaInfo,
+    paths: List[Path]
+  ): Try[JobResult] = {
+    val message =
+      s"${paths.map(_.getName).mkString(", ")} not loaded into ${domain.finalName}.${schema.finalName}: an earlier file of the table failed before writing its rows, and loading these first would change the order of the files"
+    logger.warn(message)
+    giveBackToStage(domain, paths)
+    Failure(new Exception(message) {
+      // The failure of the earlier file holds the stack trace that matters
+      override def fillInStackTrace(): Throwable = this
+    })
+  }
+
+  /** Gives the files of a load that failed before writing its rows back to the stage area of their
+    * domain, where the next load looks for them. Only the files of the ingesting area go back: a
+    * file loaded from its own path stays there, and a file whose name was delivered to stage again
+    * since stays in ingesting, since moving it would delete the new one.
+    */
+  private def giveBackToStage(domain: DomainInfo, ingestingPaths: List[Path]): Unit = {
+    val ingestingArea = DatasetArea.ingesting(domain.name).toUri.getPath
+    val stageArea = DatasetArea.stage(domain.name)
+    val (ingestingFiles, ownFiles) =
+      ingestingPaths.partition(path =>
+        Option(path.getParent).exists(_.toUri.getPath == ingestingArea)
+      )
+    ownFiles.foreach(path => logger.info(s"$path stays where it is: it was loaded from its path"))
+    ParUtils.runInParallel(ingestingFiles, Some(settings.appConfig.maxParCopy)) { ingestingPath =>
+      val stagePath = new Path(stageArea, ingestingPath.getName)
+      Try {
+        if (!storageHandler.exists(ingestingPath))
+          logger.warn(s"Could not give $ingestingPath back to $stagePath: it is gone")
+        else if (storageHandler.exists(stagePath))
+          logger.warn(
+            s"$ingestingPath stays in the ingesting area: $stagePath was delivered again since"
+          )
+        else if (storageHandler.move(ingestingPath, stagePath))
+          logger.info(s"Gave $ingestingPath back to $stagePath, for the next load")
+        else
+          logger.error(s"Could not give $ingestingPath back to $stagePath")
+      }.failed.foreach { exception =>
+        logger.error(s"Could not give $ingestingPath back to $stagePath", exception)
+      }
     }
   }
 

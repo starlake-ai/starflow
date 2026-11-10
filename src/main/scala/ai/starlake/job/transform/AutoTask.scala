@@ -136,6 +136,22 @@ abstract class AutoTask(
     ).run()
   }
 
+  @volatile private var wroteTarget: Boolean = false
+
+  /** @return
+    *   true once the task may have written rows to its table, even when it then failed: on its
+    *   postsql, its access policies, its audit row or its expectations. A load that fails after
+    *   that point keeps its files, since loading them again could add these rows again.
+    */
+  def targetWritten: Boolean = wroteTarget
+
+  protected def markTargetWritten(): Unit = wroteTarget = true
+
+  /** Runs a task that writes the table of this one, and keeps whether it wrote it, failed or not */
+  protected def writingWith[T](task: AutoTask)(run: => T): T =
+    try run
+    finally if (task.targetWritten) markTargetWritten()
+
   /** Runs the expectations of a task that has written its table, and persists their results.
     *
     * Throws when `expectations.failOnError` is set and an expectation fails, so that the task
