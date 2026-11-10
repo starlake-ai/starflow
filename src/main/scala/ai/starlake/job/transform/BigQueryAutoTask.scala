@@ -560,18 +560,22 @@ class BigQueryAutoTask(
             throw e
           }
 
-          jobResult match {
+          // We execute assertions only on success
+          val checkedResult = jobResult.map { result =>
+            // A dry run has written nothing
+            if (!dryRun) checkExpectations()
+            result
+          }
+          checkedResult match {
             case Success(_) =>
-              jobResult map { jobResult =>
+              // Neither the result of a Spark write, which has no count, nor an audit row that
+              // cannot be written fails a task that wrote its table
+              checkedResult map { jobResult =>
                 val end = Timestamp.from(Instant.now())
                 val jobResultCount =
                   jobResult.asInstanceOf[BigQueryJobResult].tableResult.map(_.getTotalRows)
                 if (logExecution)
                   jobResultCount.foreach(logAuditSuccess(start, end, _, test))
-                // We execute assertions only on success
-                if (settings.appConfig.expectations.active && !taskDesc.isAuditTable()) {
-                  runAndSinkExpectations()
-                }
               }
               Try {
                 val isTableInAuditDomain =
@@ -603,10 +607,13 @@ class BigQueryAutoTask(
                   )
                   logger.warn(Utils.exceptionAsString(e))
               }
-              jobResult
+              checkedResult
             case Failure(err) =>
               val end = Timestamp.from(Instant.now())
-              val enriched = enrichWithSchemaSyncHint(bqTargetColumns(), err)
+              // After a successful write, a failure comes from an expectation, not from the schema
+              val enriched =
+                if (jobResult.isSuccess) err
+                else enrichWithSchemaSyncHint(bqTargetColumns(), err)
               logAuditFailure(start, end, enriched, test)
               Failure(enriched)
           }

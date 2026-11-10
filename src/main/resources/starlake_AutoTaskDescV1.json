@@ -8,7 +8,7 @@
           "description": "SQL expression that must evaluate to true for the expectation to pass. Use {{table}} to reference the output table"
         },
         "failOnError": {
-          "description": "should load / transform fail on expectation error ?",
+          "description": "Should a load or a transform fail when this expectation fails? Applies when expectations.failOnError is true in the application settings. Default is true",
           "type": "boolean"
         }
       }

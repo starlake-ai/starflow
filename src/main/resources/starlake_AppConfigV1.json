@@ -242,7 +242,7 @@
           "type": "boolean"
         },
         "failOnError": {
-          "description": "should load / transform fail on expectation error ?",
+          "description": "Should a load or a transform fail when one of its expectations fails? Expectations run after the write, so the rows stay in the table. An expectation with failOnError false never fails them. Default is false",
           "type": "boolean"
         }
       }

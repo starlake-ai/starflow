@@ -1157,7 +1157,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       firstStepTempTableTableNames.map(
         BigQueryNativeLoader.withConversions(_, conversions, condition)
       ),
-      castTypes
+      expectations = Nil,
+      castTypes = castTypes
     )
     val bqTask = task.asInstanceOf[BigQueryAutoTask]
     bqTask.updateBigQueryTableSchemaWith(

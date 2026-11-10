@@ -266,11 +266,15 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       attribute.`type`(schemaHandler).map(attribute.name -> _)
     }.toMap
 
-  /** @param castTypes
+  /** @param expectations
+    *   the expectations of the task: a task that the loader runs has none, as `IngestionJob` runs
+    *   them once the load is audited; the generated statements keep them
+    * @param castTypes
     *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
     */
   def secondStepSQLTask(
     firstStepTempTableNames: List[String],
+    expectations: List[ExpectationItem],
     castTypes: Map[String, String] = Map.empty
   ): AutoTask = {
     // val incomingSparkSchema = starlakeSchema.targetSparkSchemaWithoutIgnore(schemaHandler)
@@ -301,7 +305,7 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       postsql = starlakeSchema.postsql,
       sink = mergedMetadata.sink,
       rls = starlakeSchema.rls,
-      expectations = starlakeSchema.expectations,
+      expectations = expectations,
       acl = starlakeSchema.acl,
       comment = starlakeSchema.comment,
       tags = starlakeSchema.tags,
@@ -332,7 +336,7 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
   def secondStepSQL(
     firstStepTempTableNames: List[String]
   ): WorkflowStatements = {
-    val task = secondStepSQLTask(firstStepTempTableNames)
+    val task = secondStepSQLTask(firstStepTempTableNames, starlakeSchema.expectations)
     WorkflowStatements(
       task.buildListOfSQLStatements(), // main
       task.expectationStatements(), // expectations
