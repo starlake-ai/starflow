@@ -1,7 +1,8 @@
 package ai.starlake.config
 
-import com.google.cloud.hadoop.util.HadoopCredentialsConfiguration
-import com.google.cloud.hadoop.util.HadoopCredentialsConfiguration.AuthenticationType
+// The copy relocated inside the shaded gcs-connector jar, the one the connector runs
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.hadoop.util.HadoopCredentialsConfiguration
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.hadoop.util.HadoopCredentialsConfiguration.AuthenticationType
 import com.typesafe.config.{ConfigFactory, ConfigParseOptions}
 import org.apache.hadoop.conf.Configuration
 import org.scalatest.flatspec.AnyFlatSpec

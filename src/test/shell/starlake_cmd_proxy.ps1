@@ -45,8 +45,11 @@ if ($withoutFlags.Contains('secret')) { $script:failures++; Write-Host "FAIL the
 # The exit code reaches what runs the launcher, as an orchestrator does.
 function Check-ExitCode($name, [string]$launcherArguments, [int]$expected, [string]$launcherPath = "$root\starlake.cmd") {
   $log = Join-Path $env:TEMP ('sl-exit-' + [Guid]::NewGuid() + '.log')
-  $process = Start-Process -FilePath 'cmd.exe' -ArgumentList "/c `"`"$launcherPath`" $launcherArguments > `"$log`" 2>&1`"" -NoNewWindow -PassThru
-  [void]$process.Handle
+  # Process.Start, not Start-Process: the ExitCode of Start-Process -PassThru is empty when the
+  # process exits before its handle is read, which a fast command like control.cmd can do.
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo 'cmd.exe', "/c `"`"$launcherPath`" $launcherArguments > `"$log`" 2>&1`""
+  $startInfo.UseShellExecute = $false
+  $process = [System.Diagnostics.Process]::Start($startInfo)
   $process.WaitForExit()
   $code = $process.ExitCode
   if (($expected -ge 0 -and $code -eq $expected) -or ($expected -lt 0 -and $code -ne 0)) { Write-Host "ok   $name (exit code $code)" }
