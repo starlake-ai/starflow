@@ -269,7 +269,8 @@ EOF
 }
 
 @test "setup.sh installs a launcher without the proxy password through a proxy" {
-  stub_setup 17
+  # The Java floor of 9.9.9 (25, from 1.9 on): no embedded JDK to download
+  stub_setup 25
   target="$BATS_TEST_TMPDIR/target"
   https_proxy=http://me:s3cret@proxy.example:3128 SL_INSECURE=1 \
     run bash "$BATS_TEST_DIRNAME/../../../distrib/setup.sh" --target="$target" --version=9.9.9
