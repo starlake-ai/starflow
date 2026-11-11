@@ -8,7 +8,7 @@ Starlake Starflow is a declarative data pipeline tool (Extract, Load, Transform,
 
 ## Build Commands
 
-**Requires:** JDK 25, SBT 1.11.7
+**Requires:** JDK 25, SBT 1.13.1
 
 ```bash
 sbt compile                    # Compile
