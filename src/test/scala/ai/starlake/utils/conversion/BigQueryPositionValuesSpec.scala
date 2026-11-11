@@ -267,4 +267,74 @@ class BigQueryPositionValuesSpec extends AnyFlatSpec with Matchers {
     unreadable(date.copy(pattern = "dd MMM yyyy", ddlMapping = None)).isDefined shouldBe true
     unreadable(date.copy(ddlMapping = None)) shouldBe None
   }
+
+  "readWithSql" should "tell the types whose values the load job of a CSV file does not read as Spark does" in {
+    import BigQueryPositionValues.readWithSql
+    // Read as BigQuery casts them, or with the default pattern of booleans
+    List(
+      date,
+      timestamp,
+      timestamp.copy(pattern = "ISO_OFFSET_DATE_TIME", zone = Some("Europe/Paris")),
+      timestamp.copy(zone = Some("UTC")),
+      boolean,
+      tpe("long", "-?\\d+", PrimitiveType.long, "INT64"),
+      tpe("decimal", "-?\\d*\\.{0,1}\\d+", PrimitiveType.decimal, "NUMERIC")
+    ).foreach(t => withClue(t.name)(readWithSql(t) shouldBe false))
+    // Read with their pattern, an epoch, or a timestamp without offset in another zone than UTC
+    List(
+      date.copy(pattern = "yyyyMMdd"),
+      basicIsoDate,
+      timestamp.copy(pattern = "epoch_second"),
+      timestamp.copy(zone = Some("Europe/Paris")),
+      boolean.copy(pattern = "Y<-TF->N"),
+      date.copy(pattern = "dd MMM yyyy")
+    ).foreach(t => withClue(t.pattern)(readWithSql(t) shouldBe true))
+    // A column that kept a STRING type reads the text
+    readWithSql(date.copy(pattern = "yyyyMMdd"), Some("STRING")) shouldBe false
+    readWithSql(date.copy(pattern = "yyyyMMdd"), Some("TIMESTAMP")) shouldBe true
+    // The load job reads the usual values of the ISO timestamps, unless they are in another zone
+    readWithSql(timestamp.copy(pattern = "ISO_DATE_TIME")) shouldBe false
+    readWithSql(timestamp.copy(pattern = "ISO_DATE")) shouldBe false
+    readWithSql(
+      timestamp.copy(pattern = "ISO_DATE_TIME", zone = Some("Europe/Paris"))
+    ) shouldBe true
+    readWithSql(timestamp.copy(pattern = "ISO_OFFSET_DATE")) shouldBe true
+    // Read into a column that kept a DATE type, which does not read an offset
+    readWithSql(timestamp.copy(pattern = "ISO_DATE_TIME"), Some("DATE")) shouldBe true
+  }
+
+  "unreadableInCsv" should "tell the types of DSV files whose values the native loader does not read" in {
+    import BigQueryPositionValues.unreadableInCsv
+    // Read by the load job
+    unreadableInCsv(timestamp.copy(pattern = "ISO_DATE_TIME")) shouldBe None
+    unreadableInCsv(
+      timestamp.copy(pattern = "ISO_OFFSET_DATE_TIME", zone = Some("+0100"))
+    ) shouldBe None
+    unreadableInCsv(date) shouldBe None
+    // Read with SQL
+    unreadableInCsv(date.copy(pattern = "yyyyMMdd")) shouldBe None
+    unreadableInCsv(date.copy(pattern = "dd MMM yyyy")).isDefined shouldBe true
+    unreadableInCsv(timestamp.copy(pattern = "ISO_OFFSET_DATE")).isDefined shouldBe true
+    unreadableInCsv(
+      timestamp.copy(pattern = "ISO_DATE_TIME", zone = Some("Europe/Paris"))
+    ).isDefined shouldBe
+    true
+    unreadableInCsv(
+      tpe("double", "x", PrimitiveType.double, "FLOAT64", Some("fr_FR"))
+    ).isDefined shouldBe
+    true
+    // A column that kept a STRING type reads the text
+    unreadableInCsv(date.copy(pattern = "dd MMM yyyy"), Some("STRING")) shouldBe None
+  }
+
+  "value" should "not trim the values of DSV files" in {
+    BigQueryPositionValues.value("`n`", Some("INT64"), None, padded = false) shouldBe
+    "SAFE_CAST(`n` AS INT64)"
+    BigQueryPositionValues.value(
+      "`d`",
+      Some("DATE"),
+      Some(date.copy(pattern = "yyyyMMdd")),
+      padded = false
+    ) shouldBe "IF(REGEXP_CONTAINS(`d`, '^[0-9]{4}[0-9]{2}[0-9]{2}$'), SAFE.PARSE_DATE('%Y%m%d', `d`), NULL)"
+  }
 }

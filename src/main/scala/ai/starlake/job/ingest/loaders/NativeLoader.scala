@@ -77,11 +77,15 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
 
   lazy val engineName: Engine = sinkConnection.getJdbcEngineName()
 
+  /** @param rows
+    *   the SQL of the rows to archive, given the SQL of the temporary table of the first step
+    */
   protected def archiveTableTask(
     database: String,
     schema: String,
     table: String,
-    firstStepTableInfo: TableInfo
+    firstStepTableInfo: TableInfo,
+    rows: String => String = identity
   ): Option[AutoTask] = {
     if (settings.appConfig.archiveTable) {
       val (
@@ -106,7 +110,8 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
           )
         )
       val req =
-        s"SELECT ${firstStepFields.mkString(",")}, '${ingestionJob.applicationId()}' as JOBID FROM $targetTable"
+        s"SELECT ${firstStepFields.mkString(",")}, '${ingestionJob
+            .applicationId()}' as JOBID FROM ${rows(targetTable)}"
       val taskDesc = AutoTaskInfo(
         s"archive-${ingestionJob.applicationId()}",
         Some(req),
@@ -262,11 +267,14 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
     *   them once the load is audited; the generated statements keep them
     * @param castTypes
     *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
+    * @param scripts
+    *   the SQL that computes a scripted attribute instead of its script, by attribute name
     */
   def secondStepSQLTask(
     firstStepTempTableNames: List[String],
     expectations: List[ExpectationItem],
-    castTypes: Map[String, String] = Map.empty
+    castTypes: Map[String, String] = Map.empty,
+    scripts: Map[String, String] = Map.empty
   ): AutoTask = {
     // val incomingSparkSchema = starlakeSchema.targetSparkSchemaWithoutIgnore(schemaHandler)
 
@@ -282,7 +290,8 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
         tempTable,
         queryEngine,
         ddlTypesByAttribute(castTypes),
-        typesByAttribute
+        typesByAttribute,
+        scripts
       )
 
     val taskDesc = AutoTaskInfo(

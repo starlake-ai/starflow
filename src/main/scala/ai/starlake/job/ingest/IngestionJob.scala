@@ -220,14 +220,23 @@ trait IngestionJob
         )
       unsupported.isEmpty
     } && {
-      // The second step reads the values of POSITION files with SQL: a type whose format BigQuery
-      // cannot apply would reject all of them (#1886)
+      // The second step reads the values of POSITION files with SQL, and those of DSV files that
+      // the load job does not read as Spark does: a type whose format BigQuery cannot apply would
+      // reject all of them (#1886, #1935)
       val unreadable =
         if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.POSITION)
           schema.exceptIgnoreScriptAndTransformAttributes().flatMap { attribute =>
             attribute
               .`type`(schemaHandler)
               .flatMap(BigQueryPositionValues.unreadable(_))
+              .map(reason => s"${attribute.name} ($reason)")
+          }
+        else if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.DSV)
+          // The ignored and transformed attributes are in the files too
+          schema.attributes.filter(_.script.isEmpty).flatMap { attribute =>
+            attribute
+              .`type`(schemaHandler)
+              .flatMap(BigQueryPositionValues.unreadableInCsv(_))
               .map(reason => s"${attribute.name} ($reason)")
           }
         else Nil
