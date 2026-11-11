@@ -138,6 +138,19 @@ object Resolvers {
       .withIsMavenCompatible(false)
   )
 
+  // Our build of Delta (io.delta) and of the Unity Catalog snapshot it pins (io.unitycatalog),
+  // all in one starflow release: modules are told apart by name, not by tag. Only consulted while
+  // Versions.deltaSpark is one of our "-starlake.N" builds.
+  val deltaGithubRelease = Resolver.url(
+    "delta-github-release",
+    url(s"https://github.com/starlake-ai/starflow/releases/download/deps-delta-${Versions.deltaSpark}/")
+  )(
+    Patterns()
+      .withIvyPatterns(Vector("[module]-[revision]-ivy.xml"))
+      .withArtifactPatterns(Vector("[artifact]-[revision](-[classifier]).[ext]"))
+      .withIsMavenCompatible(false)
+  )
+
   val allResolvers =
     Seq(
       Resolver.mavenLocal,
@@ -147,7 +160,7 @@ object Resolvers {
       mulesoft,
       starlakeStreamingGithubReleases,
       sparkRedshiftGithubReleases
-    )
+    ) ++ (if (Versions.deltaSpark.contains("-starlake.")) Seq(deltaGithubRelease) else Nil)
 
   val googleCloudBigDataMavenRepo = "https://repo1.maven.org/maven2/com/google/cloud/bigdataoss"
 

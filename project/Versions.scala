@@ -1,9 +1,16 @@
 object Versions {
   val spark4 = "4.3.0"
   // artifact id is delta-spark_4.3. Delta 4.5.0 is the first release built for Spark 4.3
-  // (delta-io/delta#7989); until it ships, build Delta master locally:
-  //   build/sbt -DsparkVersion=4.3 "runOnlyForReleasableSparkModules publishM2"
-  val deltaSpark = "4.5.0-SNAPSHOT"
+  // (delta-io/delta#7989). Until it ships, we serve our own build of Delta master and of the
+  // Unity Catalog snapshot it pins from the starflow release deps-delta-<deltaSpark>
+  // (Resolvers.deltaGithubRelease, Setup.java). Our builds are labelled "-starlake.N" so that
+  // they never collide with an upstream 4.5.0-SNAPSHOT. Built in ../delta (Delta 812bcbc8a,
+  // Unity Catalog 6e99222) with:
+  //   build/sbt -DsparkVersion=4.3 'set ThisBuild / version := "4.5.0-starlake.1"' \
+  //     storage/publishLocal kernelApi/publishLocal kernelDefaults/publishLocal \
+  //     kernelUnityCatalog/publishLocal "runOnlyForReleasableSparkModules publishLocal"
+  // then published with scripts/publish-delta-release.sh.
+  val deltaSpark = "4.5.0-starlake.1"
   val scalatest = "3.2.19"
   // scalacheck-1-18 has no 3.2.20.0 on Maven Central (3.2.19.0 is the last of its line),
   // so scalatest is held at 3.2.19 to move together with it.

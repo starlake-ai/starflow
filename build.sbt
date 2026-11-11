@@ -92,6 +92,9 @@ dependencyOverrides := Seq(
   "org.scala-lang"                    % "scala-compiler"            % scalaVersion.value,
   "com.google.guava"                  %  "guava"                    % "33.6.0-jre", // match Spark 4.3.0; jinjava is fine with it
   "com.fasterxml.jackson.dataformat"  % "jackson-dataformat-csv"    % Versions.jacksonForSpark4,
+  // Bundled in the assembly (Spark does not ship it) and needed by the Delta kernel: same Jackson
+  // as Spark, not the 2.16.0 that eviction would pick.
+  "com.fasterxml.jackson.datatype"    % "jackson-datatype-jdk8"     % Versions.jacksonForSpark4,
   "com.manticore-projects.jsqlformatter" % "jsqlparser"             % Versions.jSqlParser // avoid MethodTooLargeException during assembly shading
 )
 

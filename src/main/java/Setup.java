@@ -383,7 +383,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.46.1");
 
     // deltalake
-    private static final String DELTA_SPARK = getEnv("SPARK_DELTA").orElse("4.5.0");
+    // Delta 4.5.0, the first release for Spark 4.3, is not out. Until it is, we serve our own build
+    // of Delta master and of the Unity Catalog snapshot it pins, from a starflow release.
+    private static final String DELTA_SPARK = getEnv("SPARK_DELTA").orElse("4.5.0-starlake.1");
+    // Delta excludes the Jackson and openapitools dependencies of the Unity Catalog client, and the
+    // Delta kernel's jackson-datatype-jdk8 is bundled in the starlake assembly: no extra jar.
+    private static final String UNITY_CATALOG_VERSION = getEnv("UNITY_CATALOG_VERSION").orElse("0.8.0-SNAPSHOT-6e99222");
 
     // ICEBERG
     private static final String ICEBERG_SPARK = getEnv("SPARK_ICEBERG").orElse("1.11.0");
@@ -476,14 +481,35 @@ public class Setup extends ProxySelector implements X509TrustManager {
                     "spark-" + SPARK_BQ_SPARK_MINOR + "-bigquery-" + SPARK_BQ_VERSION + ".jar");
 
     // Delta 4.x publishes one artifact per supported Spark minor: delta-spark_<spark>_<scala>.
+    // Our builds (version "*-starlake.N") are served from a starflow release, official ones from
+    // Maven Central. From 4.5, delta-spark needs the delta kernel and the Unity Catalog client.
+    private static final String DELTA_BASE_URL = DELTA_SPARK.contains("-starlake.")
+            ? SL_RELEASE_BASE_URL + "/deps-delta-" + DELTA_SPARK
+            : null;
+    private static String deltaUrl(String artifact, String version) {
+        String file = artifact + "-" + version + ".jar";
+        if (DELTA_BASE_URL != null) return DELTA_BASE_URL + "/" + file;
+        String group = artifact.startsWith("unitycatalog-") ? "io/unitycatalog" : "io/delta";
+        return "https://repo1.maven.org/maven2/" + group + "/" + artifact + "/" + version + "/" + file;
+    }
     private static final ResourceDependency DELTA_SPARK_JAR = new ResourceDependency("delta-spark",
-            "https://repo1.maven.org/maven2/io/delta/delta-spark_" + DELTA_SPARK_MINOR + "_" + SCALA_VERSION + "/" + DELTA_SPARK + "/delta-spark_" + DELTA_SPARK_MINOR + "_" + SCALA_VERSION + "-" + DELTA_SPARK + ".jar");
+            deltaUrl("delta-spark_" + DELTA_SPARK_MINOR + "_" + SCALA_VERSION, DELTA_SPARK));
+    private static final ResourceDependency DELTA_KERNEL_API_JAR = new ResourceDependency("delta-kernel-api",
+            deltaUrl("delta-kernel-api", DELTA_SPARK));
+    private static final ResourceDependency DELTA_KERNEL_DEFAULTS_JAR = new ResourceDependency("delta-kernel-defaults",
+            deltaUrl("delta-kernel-defaults", DELTA_SPARK));
+    private static final ResourceDependency DELTA_KERNEL_UNITYCATALOG_JAR = new ResourceDependency("delta-kernel-unitycatalog",
+            deltaUrl("delta-kernel-unitycatalog", DELTA_SPARK));
+    private static final ResourceDependency UNITYCATALOG_CLIENT_JAR = new ResourceDependency("unitycatalog-client",
+            deltaUrl("unitycatalog-client", UNITY_CATALOG_VERSION));
+    private static final ResourceDependency UNITYCATALOG_HADOOP_JAR = new ResourceDependency("unitycatalog-hadoop",
+            deltaUrl("unitycatalog-hadoop", UNITY_CATALOG_VERSION));
 
     private static final ResourceDependency ICEBERG_SPARK_JAR = new ResourceDependency("iceberg-spark",
             "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-" + ICEBERG_SPARK_MINOR + "_" + SCALA_VERSION + "/" + ICEBERG_SPARK + "/iceberg-spark-runtime-" + ICEBERG_SPARK_MINOR + "_" + SCALA_VERSION + "-" + ICEBERG_SPARK + ".jar");
 
     private static final ResourceDependency DELTA_STORAGE_JAR = new ResourceDependency("delta-storage",
-            "https://repo1.maven.org/maven2/io/delta/delta-storage" + "/" + DELTA_SPARK + "/delta-storage" +"-" + DELTA_SPARK + ".jar");
+            deltaUrl("delta-storage", DELTA_SPARK));
     private static final ResourceDependency HADOOP_AZURE_JAR = new ResourceDependency("hadoop-azure", "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/" + HADOOP_AZURE_VERSION + "/hadoop-azure-" + HADOOP_AZURE_VERSION + ".jar");
     private static final ResourceDependency AZURE_STORAGE_JAR = new ResourceDependency("azure-storage", "https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/" + AZURE_STORAGE_VERSION + "/azure-storage-" + AZURE_STORAGE_VERSION + ".jar");
     private static final ResourceDependency JETTY_SERVER_JAR = new ResourceDependency("jetty-server", "https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-server/" + JETTY_VERSION + "/jetty-server-" + JETTY_VERSION + ".jar");
@@ -573,7 +599,12 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     private static final ResourceDependency[] deltaSparkDependencies = {
             DELTA_SPARK_JAR,
-            DELTA_STORAGE_JAR
+            DELTA_STORAGE_JAR,
+            DELTA_KERNEL_API_JAR,
+            DELTA_KERNEL_DEFAULTS_JAR,
+            DELTA_KERNEL_UNITYCATALOG_JAR,
+            UNITYCATALOG_CLIENT_JAR,
+            UNITYCATALOG_HADOOP_JAR
     };
 
     private static final ResourceDependency[] icebergSparkDependencies = {
