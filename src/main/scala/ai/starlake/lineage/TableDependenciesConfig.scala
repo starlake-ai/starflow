@@ -11,14 +11,10 @@ import better.files.File
   *   JSON output
   * @param outputFile
   *   Where to save the generated dot file ? Output to the console by default
-  * @param png
-  *   Generate PNG
   * @param related
   *   Include only entities with relations
   * @param reload
   *   Reload domains first
-  * @param svg
-  *   Generate SVG
   * @param tables
   *   Which tables should we include in the dot file ?
   */
@@ -27,10 +23,8 @@ case class TableDependenciesConfig(
   includeAllAttributes: Boolean = true,
   json: Boolean = false,
   outputFile: Option[File] = None,
-  png: Boolean = false,
   related: Boolean = false,
   reload: Boolean = false,
-  svg: Boolean = false,
   tables: Option[Seq[String]] = None,
   reportFormat: Option[String] = None
 ) extends ReportFormatConfig

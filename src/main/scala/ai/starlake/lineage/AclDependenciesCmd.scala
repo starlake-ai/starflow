@@ -18,12 +18,12 @@ object AclDependenciesCmd extends Cmd[AclDependenciesConfig] {
   val command = "acl-dependencies"
 
   override def pageDescription: String =
-    "Generate GraphViz dot, SVG, PNG or JSON files visualizing ACL dependencies from Domain and Schema YAML definitions."
+    "Generate DOT or JSON files visualizing ACL dependencies from Domain and Schema YAML definitions."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake acl-dependencies",
       "ACL dependencies",
-      "GraphViz",
+      "DOT",
       "access control",
       "data governance"
     )
@@ -34,9 +34,9 @@ object AclDependenciesCmd extends Cmd[AclDependenciesConfig] {
       builder.programName(s"$shell $command"),
       builder.head(shell, command, "[options]"),
       builder.note(
-        """Generate an ACL (Access Control List) dependency graph showing which roles and permissions apply across tables and domains. Use this command to visualize access control relationships as GraphViz dot, SVG, PNG, or JSON files.
+        """Generate an ACL (Access Control List) dependency graph showing which roles and permissions apply across tables and domains. Use this command to visualize access control relationships as DOT or JSON files.
           |
-          |Generate GraphViz files from Domain / Schema YAML files""".stripMargin
+          |Generate DOT or JSON files from Domain / Schema YAML files""".stripMargin
       ),
       builder
         .opt[String]("output")
@@ -60,25 +60,11 @@ object AclDependenciesCmd extends Cmd[AclDependenciesConfig] {
           "Should we reload the domains first ?"
         ),
       builder
-        .opt[Unit]("svg")
-        .action((_, c) => c.copy(svg = true))
-        .optional()
-        .text(
-          "Should we generate SVG files ?"
-        ),
-      builder
         .opt[Unit]("json")
         .action((_, c) => c.copy(json = true))
         .optional()
         .text(
           "Should we generate JSON files ?"
-        ),
-      builder
-        .opt[Unit]("png")
-        .action((_, c) => c.copy(png = true))
-        .optional()
-        .text(
-          "Should we generate PNG files ?"
         ),
       builder
         .opt[Seq[String]]("tables")

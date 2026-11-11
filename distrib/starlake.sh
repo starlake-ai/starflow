@@ -889,14 +889,29 @@ launch_main() {
     -cp "$classpath" "$SL_MAIN" "$@"
 }
 
-# The Hadoop that Spark bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM
-# flag brings it back. Without this, users only get a stack trace. Read from the release file of
-# the JDK to start no JVM: a JDK that has none gets no warning.
+# Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
+# an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
+# bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
+# Without this, users only get a stack trace. Read from the release file of the JDK to start no
+# JVM: a JDK that has none gets no warning.
 warn_if_jdk_unsupported() {
-  local java_home="$JAVA_HOME" major
+  local java_home="$JAVA_HOME" major sl_major=0 sl_minor=0
   if [ -z "$java_home" ]; then java_home="$(dirname "$(dirname "$(command -v java)")")"; fi
   major="$(sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$java_home/release" 2>/dev/null || true)"
-  if [ -n "$major" ] && [ "$major" -ge 24 ]
+  if [ -z "$major" ]; then return 0; fi
+  # Java 8 and older report 1.x
+  if [ "$major" -eq 1 ]; then major=8; fi
+  if [[ "$SL_VERSION" =~ ^([0-9]+)\.([0-9]+) ]]; then
+    sl_major="${BASH_REMATCH[1]}"
+    sl_minor="${BASH_REMATCH[2]}"
+  fi
+  if [ "$sl_major" -gt 1 ] || { [ "$sl_major" -eq 1 ] && [ "$sl_minor" -ge 9 ]; }
+  then
+    if [ "$major" -lt 25 ]
+    then
+      echo "Warning: Java $major cannot run Starflow $SL_VERSION, which requires Java 25 or above. Set JAVA_HOME to JDK 25." >&2
+    fi
+  elif [ "$major" -ge 24 ]
   then
     echo "Warning: Java $major cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21." >&2
   fi

@@ -221,12 +221,16 @@ Check 'the previous archive still works once the jars are back' ($fresh.Count -g
 Write-Host '--- JDK warning'
 $fakeJdk = Join-Path $env:TEMP 'sl-fake-jdk'
 New-Item -ItemType Directory -Force -Path $fakeJdk | Out-Null
-[IO.File]::WriteAllText((Join-Path $fakeJdk 'release'), "JAVA_VERSION=`"25.0.1`"`n")
+# From 1.9, Starflow requires Java 25; up to 1.8, the Hadoop bundled with Spark fails on JDK 24+.
+$installedVersion = (Select-String -Path (Join-Path $InstallDir 'versions.cmd') -Pattern 'SL_VERSION=(\d+)\.(\d+)').Matches[0]
+$requires25 = ([int]$installedVersion.Groups[1].Value -gt 1) -or ([int]$installedVersion.Groups[1].Value -eq 1 -and [int]$installedVersion.Groups[2].Value -ge 9)
+$unsupportedJdk = if ($requires25) { '21' } else { '25' }
+[IO.File]::WriteAllText((Join-Path $fakeJdk 'release'), "JAVA_VERSION=`"$unsupportedJdk.0.1`"`n")
 $realJavaHome = $env:JAVA_HOME
 $env:Path = "$realJavaHome\bin;$env:Path"
 $warned = Starlake 'validate' @{ JAVA_HOME = $fakeJdk; SL_APPCDS = 'false' }
 $env:JAVA_HOME = $realJavaHome
-Check 'JDK 24 and newer print a warning that names the version' ($warned.Text.Contains('Java 25 cannot run Starflow')) $warned.Text
+Check "an unsupported JDK ($unsupportedJdk) prints a warning that names the version" ($warned.Text.Contains("Java $unsupportedJdk cannot run Starflow")) $warned.Text
 $supported = Starlake 'validate' @{ SL_APPCDS = 'false' }
 Check 'a supported JDK prints no warning' (-not $supported.Text.Contains('cannot run Starflow'))
 $env:JAVA_HOME = $realJavaHome

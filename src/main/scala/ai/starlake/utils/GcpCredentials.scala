@@ -78,11 +78,15 @@ object GcpCredentials extends LazyLogging {
   }
 
   /** Maps a connection's `authType` (as declared in the YAML config) onto the google.cloud.auth.*
-    * Hadoop properties the GCS connector reads.
+    * Hadoop properties the GCS connector reads, and their fs.gs.auth.* copies.
     *
     * gcs-connector defaults `google.cloud.auth.type` to COMPUTE_ENGINE, so any Hadoop configuration
     * that does not carry these keys ends up querying the GCE metadata server, which only exists on
     * Google infrastructure.
+    *
+    * The connector looks a key up under fs.gs first, then under google.cloud, and Hadoop 3.5 sets
+    * `fs.gs.auth.type` to COMPUTE_ENGINE in its core-default.xml (for its own hadoop-gcp module):
+    * the google.cloud keys alone no longer win, so each one is also set under fs.gs.
     */
   def hadoopAuthConf(
     connectionOptions: Map[String, String]
@@ -145,6 +149,8 @@ object GcpCredentials extends LazyLogging {
       case _ =>
         Map.empty[String, String]
     }
-    authConf
+    authConf ++ authConf.map { case (key, value) =>
+      key.replaceFirst("^google\\.cloud\\.", "fs.gs.") -> value
+    }
   }
 }

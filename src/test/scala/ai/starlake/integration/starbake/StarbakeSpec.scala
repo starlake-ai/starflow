@@ -101,11 +101,22 @@ class StarbakeSpec extends IntegrationTestBase {
       "SL_ENV"              -> "DUCKDB",
       "SL_VALIDATE_ON_LOAD" -> "true"
     ) {
-      assert(
-        new Main().run(
-          Array("lineage", "--svg", "--task", "kpi.order_summary", "--output", "lineage.svg")
+      val output = better.files.File.newTemporaryFile("lineage", ".json")
+      try {
+        assert(
+          new Main().run(
+            Array(
+              "lineage",
+              "--json",
+              "--task",
+              "kpi.order_summary",
+              "--output",
+              output.pathAsString
+            )
+          )
         )
-      )
+        output.contentAsString should include("kpi.order_summary")
+      } finally output.delete(swallowIOExceptions = true)
     }
   }
 

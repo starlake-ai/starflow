@@ -1,6 +1,10 @@
 package ai.starlake.config
 
+// The copy relocated inside the shaded gcs-connector jar, the one the connector runs
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.hadoop.util.HadoopCredentialsConfiguration
+import com.google.cloud.hadoop.repackaged.gcs.com.google.cloud.hadoop.util.HadoopCredentialsConfiguration.AuthenticationType
 import com.typesafe.config.{ConfigFactory, ConfigParseOptions}
+import org.apache.hadoop.conf.Configuration
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -55,5 +59,30 @@ class SparkEnvGcsAuthSpec extends AnyFlatSpec with Matchers {
 
   "a BigQuery connection without authType" should "default to APPLICATION_DEFAULT" in {
     confFor("")("spark.hadoop.google.cloud.auth.type") shouldEqual "APPLICATION_DEFAULT"
+  }
+
+  // The connector reads fs.gs.auth.type before google.cloud.auth.type, and Hadoop 3.5's
+  // core-default.xml sets fs.gs.auth.type to COMPUTE_ENGINE: resolve it the way the connector does,
+  // on a Hadoop conf that loads core-default.xml.
+  private def connectorAuthType(sparkConf: Map[String, String]): AuthenticationType = {
+    val hadoopConf = new Configuration()
+    sparkConf.collect {
+      case (key, value) if key.startsWith("spark.hadoop.") =>
+        hadoopConf.set(key.stripPrefix("spark.hadoop."), value)
+    }
+    HadoopCredentialsConfiguration.AUTHENTICATION_TYPE_SUFFIX
+      .withPrefixes(HadoopCredentialsConfiguration.getConfigKeyPrefixes("fs.gs"))
+      .get(hadoopConf, (key, default) => hadoopConf.getEnum(key, default))
+  }
+
+  "the GCS connector" should "use the connection's authType over Hadoop's COMPUTE_ENGINE default" in {
+    new Configuration().get("fs.gs.auth.type") shouldEqual "COMPUTE_ENGINE"
+    connectorAuthType(confFor("")) shouldEqual AuthenticationType.APPLICATION_DEFAULT
+    connectorAuthType(
+      confFor("""      "authType": "USER_CREDENTIALS"
+                |      "clientId": "id"
+                |      "clientSecret": "secret"
+                |      "refreshToken": "token"""".stripMargin)
+    ) shouldEqual AuthenticationType.USER_CREDENTIALS
   }
 }

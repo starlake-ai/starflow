@@ -1,6 +1,16 @@
 object Versions {
-  val spark4 = "4.1.3"
-  val deltaSpark = "4.4.0" // artifact id is delta-spark_4.1
+  val spark4 = "4.3.0"
+  // artifact id is delta-spark_4.3. Delta 4.5.0 is the first release built for Spark 4.3
+  // (delta-io/delta#7989). Until it ships, we serve our own build of Delta master and of the
+  // Unity Catalog snapshot it pins from the starflow release deps-delta-<deltaSpark>
+  // (Resolvers.deltaGithubRelease, Setup.java). Our builds are labelled "-starlake.N" so that
+  // they never collide with an upstream 4.5.0-SNAPSHOT. Built in ../delta (Delta 812bcbc8a,
+  // Unity Catalog 6e99222) with:
+  //   build/sbt -DsparkVersion=4.3 'set ThisBuild / version := "4.5.0-starlake.1"' \
+  //     storage/publishLocal kernelApi/publishLocal kernelDefaults/publishLocal \
+  //     kernelUnityCatalog/publishLocal "runOnlyForReleasableSparkModules publishLocal"
+  // then published with scripts/publish-delta-release.sh.
+  val deltaSpark = "4.5.0-starlake.1"
   val scalatest = "3.2.19"
   // scalacheck-1-18 has no 3.2.20.0 on Maven Central (3.2.19.0 is the last of its line),
   // so scalatest is held at 3.2.19 to move together with it.
@@ -13,7 +23,7 @@ object Versions {
   val log4s = "1.3.3"
   val swaggerParser = "2.1.48"
   val betterFiles = "3.9.2"
-  val jacksonForSpark4 = "2.21.2" // exactly what Spark 4.1.3 ships via jackson-bom
+  val jacksonForSpark4 = "2.21.2" // exactly what Spark 4.3.0 ships via jackson-bom
   // jackson-annotations dropped patch versioning at jackson-bom 2.20 (kept as "2.21", not "2.21.2");
   // see jackson-bom's own pom comment on <jackson.version.annotations>. No 2.21.2 artifact exists.
   val jacksonAnnotationsForSpark4 = "2.21"
@@ -32,10 +42,11 @@ object Versions {
   // the SDK falls back to the default JSSE provider. Verified green on 2.71.0.
   val bigquery = "2.71.0"
   val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
-  val hadoop = "3.4.2" // must match Spark 4.1.3's Hadoop line; aws/azure artifacts use this too
-  val awsSdkBundle = "2.29.52" // software.amazon.awssdk (v2), pinned by hadoop-project 3.4.2
+  val hadoop = "3.5.0" // must match Spark 4.3.0's Hadoop line; aws/azure artifacts use this too
+  val awsSdkBundle = "2.35.4" // software.amazon.awssdk (v2), pinned by hadoop-project 3.5.0
   val sparkBigquery =
-    "0.45.0" // artifact spark-4.1-bigquery, no scala suffix, first GA build for 4.1
+    "0.46.1" // artifact spark-4.2-bigquery, no scala suffix. No spark-4.3-bigquery exists yet:
+  // the 4.2 build runs on Spark 4.3 (DataSource V2 only).
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.250" // Test only
   val poi = "4.1.2"
@@ -46,11 +57,11 @@ object Versions {
   val gcpDataCatalog = "1.102.0"
   val jinja = "2.7.4" // forces dependency override on guava
   val snowflakeJDBC = "4.3.4" // spark-snowflake 3.2.x requires >= 4.0.2
-  val snowflakeSpark: String = "3.2.2-spark_4.1"
+  val snowflakeSpark: String = "3.2.3-spark_4.1" // no spark_4.3 build; the 4.1 one runs on 4.3
   val duckdb = "2.0.0.0"
   val bigQueue = "0.7.0"
   val redshiftJDBC = "2.2.8"
-  val scalaParallelCollections = "1.2.0" // matches Spark 4.1.3
+  val scalaParallelCollections = "1.2.0" // matches Spark 4.3.0
   val derbyVersion =
     "10.15.2.0" // last version compatible with Java 11, see https://db.apache.org/derby/derby_downloads.html
   // jSqlParser must match the version jsqltranspiler's pom pins
@@ -62,8 +73,10 @@ object Versions {
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
-  val starlakeStreaming =
-    "1.4.0" // Spark 4 build, resolved from the starlake-streaming GitHub release
+  // Spark 4.3 build, resolved from the starlake-streaming GitHub release. Its assembly bundles
+  // spark-sql-kafka and Hadoop, so it must match the Spark line exactly: 1.4.0 (Spark 4.1.3)
+  // shadows Spark 4.3's Kafka source with NoSuchMethodError.
+  val starlakeStreaming = "1.5.0"
   val sparkRedshift =
     "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }

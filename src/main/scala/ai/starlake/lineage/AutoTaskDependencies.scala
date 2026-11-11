@@ -269,12 +269,7 @@ class AutoTaskDependencies(
       .mkString("\n")
     val dotContent = List(prefix, entitiesAsDot, relationsAsDot, suffix).mkString("\n")
 
-    if (config.svg)
-      Utils.dot2Svg(config.outputFile, dotContent)
-    else if (config.png)
-      Utils.dot2Png(config.outputFile, dotContent)
-    else
-      Utils.save(config.outputFile, dotContent)
+    Utils.save(config.outputFile, dotContent)
   }
 }
 

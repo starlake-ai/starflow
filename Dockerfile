@@ -1,6 +1,6 @@
 # Pin the distro flavor: the default python3 must stay within the range
 # supported by the bundled Spark's PySpark (noble ships Python 3.12).
-FROM eclipse-temurin:21-noble
+FROM eclipse-temurin:25-noble
 
 ARG BUILD_DATE
 ARG VCS_REF
@@ -23,7 +23,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         findutils \
         jq \
-        graphviz \
         unzip \
         curl \
         bash \

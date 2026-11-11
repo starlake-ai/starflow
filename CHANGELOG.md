@@ -1,6 +1,12 @@
 
 # Release notes
 
+# 1.9.0:
+__Breaking change__:
+- **Starflow 1.9 runs on Spark 4.3.0 and requires Java 25**. `setup.sh` and `setup.ps1` install JDK 25 when the one they find is older.
+- **`lineage`, `table-dependencies` and `acl-dependencies` no longer take `--svg` or `--png`**, and Starflow no longer needs GraphViz: the UI draws these diagrams from the JSON output. `--json` and the DOT output are unchanged.
+  - **Upgrade note**: to keep rendering images, render the DOT output with GraphViz yourself, for example `starlake lineage --viz --output lineage.dot && dot -Tsvg lineage.dot -o lineage.svg`.
+
 # 1.8.18:
 __Improvement__:
 - **`transform --parallelism N` no longer fails on DuckDB, and gains from running tasks at the same time**: every connection ran all the `preActions`, whose `CREATE OR REPLACE SECRET` conflicted between tasks (`Catalog write-write conflict`), and each conflict cost a second of waiting before one retry.

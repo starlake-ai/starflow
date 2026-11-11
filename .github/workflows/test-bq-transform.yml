@@ -17,13 +17,11 @@ jobs:
           echo "GCP_PROJECT=${{ secrets.GCP_PROJECT }}" >>  $GITHUB_ENV
           echo "TEMPORARY_GCS_BUCKET=${{ secrets.TEMPORARY_GCS_BUCKET }}" >>  $GITHUB_ENV
       - uses: actions/checkout@v4
-      - name: Install graphviz
-        run: sudo apt-get install -y graphviz
-      - name: Set up Temurin 17
+      - name: Set up Temurin 25
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '25'
       - name: Setup sbt launcher
         uses: sbt/setup-sbt@v1
       - id: 'auth'

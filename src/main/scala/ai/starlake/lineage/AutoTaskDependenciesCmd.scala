@@ -18,7 +18,7 @@ object AutoTaskDependenciesCmd extends Cmd[AutoTaskDependenciesConfig] {
   val command = "lineage"
 
   override def pageDescription: String =
-    "Generate task dependency graphs as DOT, SVG, PNG or JSON to visualize data lineage across your Starflow project."
+    "Generate task dependency graphs as DOT or JSON to visualize data lineage across your Starflow project."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake lineage",
@@ -57,23 +57,11 @@ object AutoTaskDependenciesCmd extends Cmd[AutoTaskDependenciesConfig] {
         .action((_, c) => c.copy(viz = true))
         .optional()
         .text("Should we generate a dot file ?"),
-      opt[Unit]("svg")
-        .action((_, c) => c.copy(svg = true, viz = true))
-        .optional()
-        .text(
-          "Should we generate SVG files ?"
-        ),
       opt[Unit]("json")
         .action((_, c) => c.copy(json = true))
         .optional()
         .text(
           "Should we generate JSON files ?"
-        ),
-      opt[Unit]("png")
-        .action((_, c) => c.copy(png = true, viz = true))
-        .optional()
-        .text(
-          "Should we generate PNG files ?"
         ),
       opt[Unit]("print")
         .action((_, c) => c.copy(print = true))

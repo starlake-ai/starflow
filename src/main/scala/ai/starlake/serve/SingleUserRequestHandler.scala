@@ -4,8 +4,8 @@ import ai.starlake.utils.Utils
 import better.files.File
 
 import java.io.IOException
-import javax.servlet.ServletException
-import javax.servlet.http.{HttpServlet, HttpServletRequest, HttpServletResponse}
+import jakarta.servlet.ServletException
+import jakarta.servlet.http.{HttpServlet, HttpServletRequest, HttpServletResponse}
 
 class SingleUserRequestHandler extends HttpServlet {
   @throws[ServletException]

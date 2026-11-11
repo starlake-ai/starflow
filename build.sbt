@@ -4,11 +4,15 @@ import sbt.Tests.{Group, SubProcess}
 import java.time.format.DateTimeFormatter
 import java.time.{LocalDateTime, ZoneId}
 
-lazy val javacCompilerVersion = "17"
+// Starflow is Java 25 bytecode (scalac). The Java sources stay at 17: they are mostly the
+// installer (setup.jar), which runs on whatever JDK the user has, so that `starlake upgrade`
+// from a 1.8 install on JDK 17 still starts and installs a release that then asks for Java 25.
+lazy val javaRelease = "25"
+lazy val setupJavaRelease = "17"
 
 
 javacOptions ++= Seq(
-  "--release", javacCompilerVersion,
+  "--release", setupJavaRelease,
   "-Xlint"
 )
 
@@ -76,7 +80,7 @@ dependencyOverrides := Seq(
   // proto-google-iam-v1 (pulled in by google-cloud-bigquery/-bigquerystorage/-datacatalog)
   // ships gencode stamped 4.33.2, and protobuf enforces runtime >= gencode since 4.26
   // ("poison pill" checks), so PolicyTagManagerClient (BigQuery CLS) throws
-  // ProtobufRuntimeVersionException under 4.33.0. gcs-connector-4.0.4 and spark-4.1-bigquery
+  // ProtobufRuntimeVersionException under 4.33.0. gcs-connector-4.0.4 and spark-4.2-bigquery
   // fully shade/relocate their own protobuf-java, so raising this override does not affect
   // GCS batch requests (an earlier 4.33.2 regression report was collateral eviction churn,
   // not a protobuf conflict through this path). google-cloud-datacatalog 1.101.0's own gencode
@@ -86,8 +90,11 @@ dependencyOverrides := Seq(
   "org.scala-lang"                    % "scala-library"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-reflect"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-compiler"            % scalaVersion.value,
-  "com.google.guava"                  %  "guava"                    % "33.4.8-jre", // match Spark 4.1.3; jinjava is fine with it
+  "com.google.guava"                  %  "guava"                    % "33.6.0-jre", // match Spark 4.3.0; jinjava is fine with it
   "com.fasterxml.jackson.dataformat"  % "jackson-dataformat-csv"    % Versions.jacksonForSpark4,
+  // Bundled in the assembly (Spark does not ship it) and needed by the Delta kernel: same Jackson
+  // as Spark, not the 2.16.0 that eviction would pick.
+  "com.fasterxml.jackson.datatype"    % "jackson-datatype-jdk8"     % Versions.jacksonForSpark4,
   "com.manticore-projects.jsqlformatter" % "jsqlparser"             % Versions.jSqlParser // avoid MethodTooLargeException during assembly shading
 )
 
@@ -115,7 +122,10 @@ scalacOptions ++= {
     "-feature",
     "-Xmacro-settings:materialize-derivations",
     "-Ywarn-unused:imports",
-    "-Xsource:3"  ) ++ extractOptions
+    "-Xsource:3",
+    "-release",
+    javaRelease
+  ) ++ extractOptions
 
 }
 
@@ -175,12 +185,16 @@ Test / unmanagedJars ++= snowflakeJDBCNoConscryptJar.value.map(Attributed.blank)
 
 excludeDependencies ++= Seq(
   ExclusionRule("org.javassist", "javassist"),
-  // google-cloud-bigquery 2.69.0+ (also embedded in spark-4.1-bigquery 0.45.0+) probes Conscrypt
+  // google-cloud-bigquery 2.69.0+ (also embedded in spark-4.2-bigquery 0.46.x) probes Conscrypt
   // and uses it when present; on macOS arm64 Conscrypt's JNI_OnLoad aborts the JVM outright
   // ("could not find method serverCertificateRequested", the 2.6.0 ABI change; see
   // googleapis/google-cloud-java#14151). The SDK falls back to the default JSSE provider when
   // Conscrypt is absent, so the crash-proof state is to keep it off the classpath entirely.
-  ExclusionRule("org.conscrypt", "conscrypt-openjdk-uber")
+  ExclusionRule("org.conscrypt", "conscrypt-openjdk-uber"),
+  // Spark 4.3 ships the at.yawk.lz4 fork of lz4-java (1.11.0), same net.jpountz package. The old
+  // org.lz4 artifact (kafka-clients, hadoop, bigquery-connector-common) has another groupId, so it
+  // is not evicted and shadows it: NoSuchMethodError LZ4BlockInputStream.newBuilder in shuffles.
+  ExclusionRule("org.lz4", "lz4-java")
 )
 
 assembly / assemblyExcludedJars := {
@@ -350,7 +364,7 @@ packageSetup := {
     manifest.getMainAttributes().putValue("Manifest-Version", "1.0")
     manifest.getMainAttributes().putValue("Implementation-Version", version.value)
     manifest.getMainAttributes().putValue("Implementation-Vendor", "starlake")
-    manifest.getMainAttributes().putValue("Compiler-Version", javacCompilerVersion)
+    manifest.getMainAttributes().putValue("Compiler-Version", setupJavaRelease)
 
     // relativize against the classes dir: `getName` alone flattens ai/starlake/setup/X.class
     // to X.class, which the JVM then refuses to load as ai.starlake.setup.X

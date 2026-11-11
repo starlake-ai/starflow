@@ -18,12 +18,12 @@ object TableDependenciesCmd extends Cmd[TableDependenciesConfig] {
   val command = "table-dependencies"
 
   override def pageDescription: String =
-    "Generate GraphViz dependency diagrams from domain and schema YAML files, with SVG, PNG, and JSON output options."
+    "Generate table dependency diagrams from domain and schema YAML files, as DOT or JSON."
   override def pageKeywords: Seq[String] =
     Seq(
       "starlake table-dependencies",
       "schema dependencies",
-      "GraphViz",
+      "DOT",
       "entity relationship",
       "data modeling"
     )
@@ -36,7 +36,7 @@ object TableDependenciesCmd extends Cmd[TableDependenciesConfig] {
       builder.note(
         """Generate a table dependency graph showing foreign key and lineage relationships between tables.
           |
-          |Generate GraphViz files from Domain / Schema YAML files""".stripMargin
+          |Generate DOT or JSON files from Domain / Schema YAML files""".stripMargin
       ),
       builder
         .opt[String]("output")
@@ -56,20 +56,6 @@ object TableDependenciesCmd extends Cmd[TableDependenciesConfig] {
         .optional()
         .text(
           "Should we reload the domains first ?"
-        ),
-      builder
-        .opt[Unit]("svg")
-        .action((_, c) => c.copy(svg = true))
-        .optional()
-        .text(
-          "Should we generate SVG files ?"
-        ),
-      builder
-        .opt[Unit]("png")
-        .action((_, c) => c.copy(png = true))
-        .optional()
-        .text(
-          "Should we generate PNG files ?"
         ),
       builder
         .opt[Unit]("related")

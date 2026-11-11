@@ -28,8 +28,9 @@ class InstallerVersionSyncSpec extends AnyFlatSpec with Matchers {
       .map(_.group(1))
       .getOrElse(fail(s"$name not found in project/Versions.scala"))
 
+  // The constant is usually named after its variable (SPARK_DELTA is the exception: DELTA_SPARK).
   private def setupPin(name: String): String =
-    s"""String $name = getEnv\\("$name"\\)\\.orElse\\("([^"]+)"\\)""".r
+    s"""String \\w+ = getEnv\\("$name"\\)\\.orElse\\("([^"]+)"\\)""".r
       .findFirstMatchIn(setupJava)
       .map(_.group(1))
       .getOrElse(fail(s"$name not found in src/main/java/Setup.java"))
@@ -51,6 +52,7 @@ class InstallerVersionSyncSpec extends AnyFlatSpec with Matchers {
   private val setupMappings: Seq[(String, String)] = Seq(
     "SPARK_VERSION"           -> "spark4",
     "SPARK_BQ_VERSION"        -> "sparkBigquery",
+    "SPARK_DELTA"             -> "deltaSpark",
     "SNOWFLAKE_JDBC_VERSION"  -> "snowflakeJDBC",
     "SPARK_SNOWFLAKE_VERSION" -> "snowflakeSpark",
     "DUCKDB_VERSION"          -> "duckdb",
@@ -69,6 +71,15 @@ class InstallerVersionSyncSpec extends AnyFlatSpec with Matchers {
 
   it should "pin POSTGRESQL_VERSION to the build's postgresql dependency" in {
     setupPin("POSTGRESQL_VERSION") shouldBe postgresqlBuild
+  }
+
+  // The BigQuery connector lags behind Spark, so its artifact names a Spark minor of its own.
+  it should "install the spark-<minor>-bigquery artifact that the build compiles against" in {
+    val buildMinor = """"com\.google\.cloud\.spark" % "spark-([0-9.]+)-bigquery"""".r
+      .findFirstMatchIn(dependenciesScala)
+      .map(_.group(1))
+      .getOrElse(fail("spark-<minor>-bigquery not found in project/Dependencies.scala"))
+    setupPin("SPARK_BQ_SPARK_MINOR") shouldBe buildMinor
   }
 
   behavior of ".versions docker pins"
