@@ -50,6 +50,14 @@ class BigQueryNativeJob(
 
   logger.debug(s"BigQuery Config $cliConfig")
 
+  @volatile private var wroteTables: Boolean = false
+
+  /** @return
+    *   true once a job of this one may have written to its tables: a job that succeeded, a script
+    *   that failed after committing some of its statements, or a job that may still be running
+    */
+  def mayHaveWritten: Boolean = wroteTables
+
   def loadPathsToBQ(
     tableInfo: SLTableInfo,
     tableInfoWithDefaultColumn: scala.Option[SLTableInfo] = None
@@ -115,22 +123,25 @@ class BigQueryNativeJob(
                         // waitFor throws when the job fails: the failed job reports its bad
                         // records, kept by the native loader
                         case exception: BigQueryException =>
-                          Try(
-                            bigquery(accessToken = cliConfig.accessToken).getJob(job.getJobId)
-                          ).toOption
-                            .flatMap(scala.Option(_))
-                            .filter(failed =>
-                              scala
-                                .Option(failed.getStatus)
-                                .flatMap(s => scala.Option(s.getError))
-                                .isDefined
-                            )
-                            .map(Success(_))
-                            .getOrElse(Failure(exception))
+                          val current =
+                            Try(
+                              bigquery(accessToken = cliConfig.accessToken).getJob(job.getJobId)
+                            ).toOption
+                              .flatMap(scala.Option(_))
+                          val failed = current.filter(failed =>
+                            scala
+                              .Option(failed.getStatus)
+                              .flatMap(s => scala.Option(s.getError))
+                              .isDefined
+                          )
+                          // A job that did not fail may still load its rows
+                          if (failed.isEmpty) wroteTables = true
+                          failed.map(Success(_)).getOrElse(Failure(exception))
                       }
                   }
                   .map { jobResult =>
                     if (scala.Option(jobResult.getStatus.getError()).isEmpty) {
+                      wroteTables = true
                       val stats = jobResult.getStatistics.asInstanceOf[LoadStatistics]
                       BqLoadInfo(
                         scala.Option(stats.getOutputRows).map(_.longValue).getOrElse(0L),
@@ -356,12 +367,24 @@ class BigQueryNativeJob(
               )
             if (!dryRun) {
               logger.info(s"Waiting for job $jobId")
-              BigQueryNativeJob.waitForQueryJob(
-                queryJob,
-                queryJobTimeoutMs
-                  .orElse(jobTimeoutMs)
-                  .getOrElse(settings.appConfig.longJobTimeoutMs)
-              )
+              val done =
+                try
+                  BigQueryNativeJob.waitForQueryJob(
+                    queryJob,
+                    queryJobTimeoutMs
+                      .orElse(jobTimeoutMs)
+                      .getOrElse(settings.appConfig.longJobTimeoutMs)
+                  )
+                catch {
+                  case failure: BigQueryException => throw failure
+                  case failure: RuntimeException  =>
+                    // A script that failed may have committed some of its statements, and a job
+                    // still running after the timeout may still write
+                    wroteTables = true
+                    throw failure
+                }
+              wroteTables = true
+              done
             } else {
               logger.info(s"Dry run $jobId")
               queryJob

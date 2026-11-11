@@ -263,12 +263,15 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           )
 
         try {
-          tempTableIds.zip(tableInfos).foreach { case (id, info) =>
-            val database = Option(id.getProject()).getOrElse("")
-            val schema = Option(id.getDataset()).getOrElse("")
-            val table = Option(id.getTable()).getOrElse("")
-            archiveTableTask(database, schema, table, info).foreach(_.run())
-          }
+          // The files are archived once the table may have their rows: a load that failed before
+          // gives its files back, and their next load archives them
+          if (ingestionJob.rowsWritten)
+            tempTableIds.zip(tableInfos).foreach { case (id, info) =>
+              val database = Option(id.getProject()).getOrElse("")
+              val schema = Option(id.getDataset()).getOrElse("")
+              val table = Option(id.getTable()).getOrElse("")
+              archiveTableTask(database, schema, table, info).foreach(_.run())
+            }
         } finally {
           Try(ParUtils.runInParallel(tempTableIds, Some(settings.appConfig.maxParTask)) { tableId =>
             BigQueryJobBase.recoverBigqueryException(settings.appConfig.onExceptionRetries) {
@@ -316,8 +319,10 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
               .build()
               .update()
           }
-        bigqueryJob
-          .loadPathsToBQ(tableInfo)
+        val loaded = bigqueryJob.loadPathsToBQ(tableInfo)
+        // A load job that did not fail may have loaded its rows
+        if (bigqueryJob.mayHaveWritten) ingestionJob.markRowsWritten()
+        loaded
           .flatMap { loadInfo =>
             // The bad records that a one-step load job skipped, known once it loaded the others: a
             // failure to keep them does not fail the load, whose rows are written. Two-step loads
@@ -1165,8 +1170,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       incomingSchema = Some(incomingSchema),
       createIfAbsent = true
     )
-    val jobResult = bqTask.run()
-    jobResult
+    ingestionJob.writingWith(bqTask)(bqTask.run())
   }
 
 }

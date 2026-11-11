@@ -125,6 +125,14 @@ class BigQuerySparkJob(
     conf
   }
 
+  @volatile private var savedRows: Boolean = false
+
+  /** @return
+    *   true once the connector has written the rows of the job, even when the update of the table
+    *   that follows failed
+    */
+  def rowsSaved: Boolean = savedRows
+
   def runSparkWriter(): Try[SparkJobResult] = {
     prepareConf()
     Try {
@@ -250,6 +258,7 @@ class BigQuerySparkJob(
               .option("intermediateFormat", intermediateFormat)
               .options(withFieldRelaxationOptions)
               .save()
+            savedRows = true
             Success(0L)
         }
       val stdTableDefinitionAfter =

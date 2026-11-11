@@ -163,7 +163,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             syncStrategy = TableSync.ALL,
             createIfAbsent = true
           )
-          job.run()
+          // A failed second step fails the load, whose files must not be archived
+          ingestionJob.writingWith(job)(job.run().get)
         } finally {
           tempTables.foreach { tempTable =>
             Try {
@@ -432,6 +433,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             }
           case _ =>
         }
+        // Inside the block, before the postActions of the connection, which run once it succeeded
+        if (!isTemporary) ingestionJob.markRowsWritten()
     }
   }
 }

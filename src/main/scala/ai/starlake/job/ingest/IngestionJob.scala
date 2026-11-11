@@ -10,6 +10,7 @@ import ai.starlake.job.ingest.loaders.{
   SnowflakeNativeLoader
 }
 import ai.starlake.job.sink.bigquery.*
+import ai.starlake.job.transform.AutoTask
 import ai.starlake.job.validator.{GenericRowValidator, SimpleRejectedRecord}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
@@ -303,7 +304,25 @@ trait IngestionJob
     new NativeLoader(this, None).buildSQLStatements()
   }
 
+  @volatile private var loadedRows: Boolean = false
+
+  /** @return
+    *   true once the load may have written rows to its table, even when it then failed: on its
+    *   access policies, its postsql, its audit row or an expectation. Loading its files again could
+    *   add these rows again.
+    */
+  def rowsWritten: Boolean = loadedRows
+
+  /** Called by the loaders once their write to the table succeeded */
+  private[ingest] def markRowsWritten(): Unit = loadedRows = true
+
+  /** Runs a task that writes the table of the load, and keeps whether it wrote it, failed or not */
+  private[ingest] def writingWith[T](task: AutoTask)(run: => T): T =
+    try run
+    finally if (task.targetWritten) markRowsWritten()
+
   def run(): Try[JobResult] = {
+    loadedRows = false
     // A failure to select the loader is logged in the audit, as a failure to load
     val jobResult = Try(selectLoader()).flatMap {
       case "bigquery" => new BigQueryNativeLoader(this, accessToken).run()
@@ -322,6 +341,12 @@ trait IngestionJob
       }
       .map { (counterResults: List[IngestionCounters]) =>
         val validCounterResults = counterResults.filter(!_.ignore)
+        // A loader that succeeded has written its rows, except under rejectAllOnError when it
+        // rejected records: then it writes none. The native DuckDB and Snowflake loaders, which
+        // count no rejected record (-1), write them all.
+        val allRejected =
+          settings.appConfig.rejectAllOnError && validCounterResults.exists(_.rejectedCount > 0)
+        if (!allRejected) markRowsWritten()
         logLoadInAudit(now, validCounterResults) match {
           case Failure(exception) => throw exception
           case Success(auditLogs) =>

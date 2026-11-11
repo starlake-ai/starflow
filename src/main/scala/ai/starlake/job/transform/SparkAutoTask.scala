@@ -167,6 +167,8 @@ class SparkAutoTask(
         options = sink.getOptions()
       )
 
+    // A failed bulk write may have indexed some documents
+    markTargetWritten()
     val res = new ESLoadJob(esConfig, storageHandler, schemaHandler).run()
     res
 
@@ -211,6 +213,8 @@ class SparkAutoTask(
   }
 
   private def sinkToKafka(mergedDF: DataFrame): Try[DataFrame] = Try {
+    // A failed write may have sent some records
+    markTargetWritten()
     Utils.withResources(new KafkaClient(settings.appConfig.kafka)) { kafkaClient =>
       kafkaClient.sinkToTopic(
         settings.appConfig.kafka.topics(taskDesc.table),
@@ -348,6 +352,7 @@ class SparkAutoTask(
                   s"Only one of 'sql' or 'python' attribute may be defined ${taskDesc.name}"
                 )
             }
+          markTargetWritten()
           runSqls(postSql, "Post")
           if (taskDesc._auditTableName.isEmpty) {
             if (taskDesc.comment.nonEmpty || taskDesc.tags.nonEmpty) {
@@ -739,7 +744,8 @@ class SparkAutoTask(
             truncateOverride = truncate
           )
           val secondStepTask = TransformContext.createBigQueryTask(secondStepContext)
-          val secondStepJobResult = secondStepTask.runNativeOnLoad(loadedDF.schema)
+          val secondStepJobResult =
+            writingWith(secondStepTask)(secondStepTask.runNativeOnLoad(loadedDF.schema))
           sparkBigQueryJob.dropTable(firstStepTemplateTableId)
           secondStepJobResult
         case Failure(e) =>
@@ -783,7 +789,7 @@ class SparkAutoTask(
           updatedSchema
         }
         .getOrElse(sparkSchema)
-      secondStepTask.runOnDFOnLoad(loadedDF, Some(updateSchema))
+      writingWith(secondStepTask)(secondStepTask.runOnDFOnLoad(loadedDF, Some(updateSchema)))
 
     }
   }
@@ -948,7 +954,7 @@ class SparkAutoTask(
             createIfAbsent = false
           )
         createDucklakePartitions()
-        val jobResult = secondStepAutoTask.runJDBC(None)
+        val jobResult = writingWith(secondStepAutoTask)(secondStepAutoTask.runJDBC(None))
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnectionRefOptions) {
           conn =>
             JdbcDbUtils.dropTable(conn, firstStepTempTable)
@@ -971,7 +977,7 @@ class SparkAutoTask(
           createIfAbsent = true
         )
         createDucklakePartitions()
-        val jobResult = secondAutoStepTask.runJDBC(Some(loadedDF))
+        val jobResult = writingWith(secondAutoStepTask)(secondAutoStepTask.runJDBC(Some(loadedDF)))
         jobResult
       }
     result

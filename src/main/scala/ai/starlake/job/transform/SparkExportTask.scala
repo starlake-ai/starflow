@@ -57,6 +57,8 @@ class SparkExportTask(
   }
 
   override protected def effectiveSinkToFile(dataset: DataFrame): Try[JobResult] = {
+    // A failed export may have written part of its files
+    markTargetWritten()
     val location = getExportFilePath(taskDesc.domain, taskDesc.table)
     (isCSV, isXls) match {
       case (true, _) =>
