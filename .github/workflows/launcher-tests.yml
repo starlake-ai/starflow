@@ -54,11 +54,12 @@ jobs:
         run: bats src/test/shell/starlake_appcds.bats
 
   # distrib/starlake.cmd has no stubs: it installs a real release and runs a real JVM.
+  # It installs the latest release, and 1.9 needs Java 25.
   windows:
     strategy:
       fail-fast: false
       matrix:
-        java: ['17', '21']
+        java: ['25']
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
