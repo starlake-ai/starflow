@@ -43,9 +43,10 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: ${{ matrix.java }}
+      # From npm, not apt: the Ubuntu mirrors are an outage away from failing every Linux job.
       - name: Install bats (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bats
+        run: sudo npm install -g bats@1.13.0
       - name: Install bats (macOS)
         if: runner.os == 'macOS'
         run: brew install bats-core
