@@ -66,10 +66,10 @@ object Versions {
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
   val snowflakeTemplates = "0.4.1"
-  // Spark 4.3 build. Its assembly bundles spark-sql-kafka and Hadoop, so it must match the Spark
-  // line exactly: 1.4.0 (Spark 4.1.3) shadows Spark 4.3's Kafka source with NoSuchMethodError.
-  // Until 1.5.0 is released: publishLocal from starlake-streaming branch spark43.
-  val starlakeStreaming = "1.5.0-SNAPSHOT"
+  // Spark 4.3 build, resolved from the starlake-streaming GitHub release. Its assembly bundles
+  // spark-sql-kafka and Hadoop, so it must match the Spark line exactly: 1.4.0 (Spark 4.1.3)
+  // shadows Spark 4.3's Kafka source with NoSuchMethodError.
+  val starlakeStreaming = "1.5.0"
   val sparkRedshift =
     "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }
