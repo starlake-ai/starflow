@@ -85,12 +85,7 @@ class TableDependencies(schemaHandler: SchemaHandler) extends LazyLogging {
         .domains()
         .map(_.asDot(config.includeAllAttributes, allTables.map(_.toLowerCase)))
     val dotStr = prefix + dots.mkString("\n") + suffix
-    if (config.svg)
-      Utils.dot2Svg(config.outputFile, dotStr)
-    else if (config.png)
-      Utils.dot2Png(config.outputFile, dotStr)
-    else
-      Utils.save(config.outputFile, dotStr)
+    Utils.save(config.outputFile, dotStr)
   }
 
   private def allTables(config: TableDependenciesConfig): List[String] = {

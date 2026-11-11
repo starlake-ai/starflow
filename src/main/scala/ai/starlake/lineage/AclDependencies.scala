@@ -749,12 +749,7 @@ class AclDependencies(schemaHandler: SchemaHandler) extends LazyLogging {
       granteesAsDot(configWithFinalTables) +
       aclRelationsAsDot(configWithFinalTables) +
       rlsRelationsAsDot(configWithFinalTables) + suffix
-    if (configWithFinalTables.svg)
-      Utils.dot2Svg(configWithFinalTables.outputFile, dotStr)
-    else if (configWithFinalTables.png)
-      Utils.dot2Png(configWithFinalTables.outputFile, dotStr)
-    else
-      Utils.save(configWithFinalTables.outputFile, dotStr)
+    Utils.save(configWithFinalTables.outputFile, dotStr)
   }
 
   def aclsAsDiagram(config: AclDependenciesConfig): Diagram = {

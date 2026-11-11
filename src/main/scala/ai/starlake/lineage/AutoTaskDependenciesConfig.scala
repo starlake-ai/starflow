@@ -10,8 +10,6 @@ case class AutoTaskDependenciesConfig(
   objects: Seq[String] = Seq("task", "table"),
   viz: Boolean = false,
   print: Boolean = false,
-  svg: Boolean = false,
-  png: Boolean = false,
   all: Boolean = false,
   verbose: Boolean = false,
   json: Boolean = false,

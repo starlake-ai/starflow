@@ -40,7 +40,7 @@ import scala.util.{Failure, Success, Try}
 /** Facade object that delegates to focused utility modules.
   *
   * All methods are re-exported here for backward compatibility. New code should import the specific
-  * utility objects directly: JinjaUtils, ProcessRunner, MapperFactory, GraphVizUtils, etc.
+  * utility objects directly: JinjaUtils, ProcessRunner, MapperFactory, etc.
   */
 object Utils extends LazyLogging {
 
@@ -268,10 +268,14 @@ object Utils extends LazyLogging {
   def setMapperProperties(mapper: ObjectMapper): ObjectMapper =
     MapperFactory.setMapperProperties(mapper)
 
-  // --- Delegated to GraphVizUtils ---
-  def dot2Svg(outputFile: Option[File], str: String): Unit = GraphVizUtils.dot2Svg(outputFile, str)
-  def dot2Png(outputFile: Option[File], str: String): Unit = GraphVizUtils.dot2Png(outputFile, str)
-  def save(outputFile: Option[File], result: String): Unit = GraphVizUtils.save(outputFile, result)
+  /** Writes result to outputFile, or to the console when there is none. */
+  def save(outputFile: Option[File], result: String): Unit =
+    outputFile match {
+      case None => printOut(result)
+      case Some(outputFile) =>
+        outputFile.parent.createDirectories()
+        outputFile.overwrite(result)
+    }
 
   // --- Delegated to ProcessRunner ---
   def runCommand(cmd: Seq[String], extraEnv: Map[String, String]): Try[CommandOutput] =

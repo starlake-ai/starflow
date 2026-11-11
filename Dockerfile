@@ -23,7 +23,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         findutils \
         jq \
-        graphviz \
         unzip \
         curl \
         bash \
