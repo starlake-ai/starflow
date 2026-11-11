@@ -78,7 +78,7 @@ object Dependencies {
     ) excludeAll (jacksonExclusions: _*),
     "org.apache.spark" %% "spark-sql-kafka-0-10" % Versions.spark4 excludeAll (jacksonExclusions: _*),
     "org.apache.spark" %% "spark-avro" % Versions.spark4 excludeAll (jacksonExclusions: _*),
-    "io.delta" %% "delta-spark_4.1" % Versions.deltaSpark % "provided" exclude (
+    "io.delta" %% "delta-spark_4.3" % Versions.deltaSpark % "provided" exclude (
       "com.google.guava",
       "guava"
     ) excludeAll (jacksonExclusions: _*)
@@ -196,7 +196,7 @@ object Dependencies {
     "com.google.cloud" % "google-cloud-bigquery" % Versions.bigquery exclude ("javax.jms", "jms") exclude ("com.sun.jdmk", "jmxtools") exclude ("com.sun.jmx", "jmxri") excludeAll (jacksonExclusions: _*),
     // see https://github.com/GoogleCloudDataproc/spark-bigquery-connector/issues/36
     // Add the jar file to spark dependencies
-    "com.google.cloud.spark" % "spark-4.1-bigquery" % Versions.sparkBigquery % "provided" excludeAll (jacksonExclusions: _*),
+    "com.google.cloud.spark" % "spark-4.2-bigquery" % Versions.sparkBigquery % "provided" excludeAll (jacksonExclusions: _*),
     "com.google.cloud" % "google-cloud-datacatalog" % Versions.gcpDataCatalog excludeAll (jacksonExclusions: _*),
     // gcs-connector 4.0.4 vendors com.google.cloud.logging unrelocated and wins classpath
     // precedence (MergeStrategy.first in assembly), so this artifact is shadowed at runtime.

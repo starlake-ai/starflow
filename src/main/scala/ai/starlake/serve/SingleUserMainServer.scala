@@ -5,7 +5,7 @@ import ai.starlake.serve.catalog.CatalogCommands
 import ai.starlake.utils.Utils
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.sparkproject.jetty.server.Server
-import org.sparkproject.jetty.servlet.ServletHandler
+import org.sparkproject.jetty.ee10.servlet.ServletContextHandler
 
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
@@ -15,9 +15,11 @@ object SingleUserMainServer {
   val mapper: ObjectMapper = Utils.newJsonMapper()
   def serve(host: String, port: Int): Try[Unit] = Try {
     val server = new Server(new InetSocketAddress(host, port))
-    val handler = new ServletHandler()
-    server.setHandler(handler)
-    handler.addServletWithMapping("SingleUserRequestHandler", "/api/v1/cli")
+    // Spark 4.3 shades Jetty 12, whose ee10 servlets live in a context, on Jakarta Servlet 6
+    val context = new ServletContextHandler()
+    context.setContextPath("/")
+    context.addServlet(classOf[SingleUserRequestHandler], "/api/v1/cli")
+    server.setHandler(context)
     server.start()
     println(s"Server started at $host:$port")
     server.join()

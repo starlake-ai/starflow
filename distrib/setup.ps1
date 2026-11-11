@@ -177,30 +177,33 @@ function resolve_java {
 
 function get_required_java_version {
     # The java floor depends on the Starflow version being installed:
-    #   up to 1.4.x (and every 0.x) -> java 11, from 1.5.0 on -> java 17.
-    # Unparseable versions get the current floor (17).
+    #   up to 1.4.x (and every 0.x) -> java 11, 1.5.0 to 1.8.x -> java 17,
+    #   from 1.9.0 on -> java 25.
+    # Unparseable versions get the current floor (25).
     param([string]$SlVersion)
     if ($SlVersion -match '^(\d+)\.(\d+)') {
         $major = [int]$Matches[1]
         $minor = [int]$Matches[2]
         if ($major -lt 1 -or ($major -eq 1 -and $minor -le 4)) { return 11 }
+        if ($major -eq 1 -and $minor -le 8) { return 17 }
     }
-    return 17
+    return 25
 }
 
 function ensure_java {
     # Check the installed Java (JAVA_HOME first) against the floor required by
     # the Starflow version being installed. If none is found, or its version is
-    # below that floor, install an EMBEDDED portable Temurin 17 JDK inside the
+    # below that floor, install an EMBEDDED portable Temurin JDK inside the
     # starlake install directory (<install-dir>\jdk) and update the SESSION
-    # environment (JAVA_HOME + PATH). The embedded JDK is ALWAYS 17: it
-    # satisfies both floors (a newer JVM runs older-target bytecode). No
-    # administrator rights: portable zip + process-scoped variables only.
+    # environment (JAVA_HOME + PATH). The embedded JDK is 25 from 1.9 on, and
+    # 17 before: up to 1.8, the Hadoop bundled with Spark fails on JDK 24+,
+    # and 17 satisfies the 11 floor too. No administrator rights: portable
+    # zip + process-scoped variables only.
     # starlake.cmd picks the embedded JDK up automatically in later sessions.
     param([string]$InstallDir, [string]$SlVersion)
 
     $MinVersion = get_required_java_version $SlVersion
-    $EmbeddedVersion = 17
+    $EmbeddedVersion = if ($MinVersion -ge 25) { 25 } else { 17 }
 
     $java = resolve_java
     if ($java.Major -ge $MinVersion) {
@@ -266,7 +269,7 @@ function main {
     $INSTALL_DIR = get_installation_directory
     $VERSION = get_version_to_install -RequestedVersion $RequestedVersion
     # after version resolution: the java floor depends on the Starflow version
-    # (<= 1.4 -> java 11, >= 1.5 -> java 17), and an embedded JDK would land
+    # (<= 1.4 -> java 11, 1.5 to 1.8 -> java 17, >= 1.9 -> java 25), and an embedded JDK would land
     # in <install-dir>\jdk
     ensure_java -InstallDir $INSTALL_DIR -SlVersion $VERSION
     install_starlake $INSTALL_DIR $VERSION

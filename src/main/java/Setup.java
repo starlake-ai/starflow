@@ -365,25 +365,30 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
 
     // SPARK
-    private static final String SPARK_VERSION = getEnv("SPARK_VERSION").orElse("4.1.3");
+    private static final String SPARK_VERSION = getEnv("SPARK_VERSION").orElse("4.3.0");
     private static final String HADOOP_VERSION = getEnv("HADOOP_VERSION").orElse("3");
     // Artifacts that are published per Spark minor (bigquery, delta, iceberg) key off this,
     // not the full SPARK_VERSION, so a micro-version bump doesn't change their coordinates.
     // Assumes SPARK_VERSION is always major.minor.patch (3 components); a SPARK_VERSION override
     // without a patch segment (e.g. "4.1") would make this drop the minor instead of a no-op.
     private static final String SPARK_MAJOR_MINOR = SPARK_VERSION.substring(0, SPARK_VERSION.lastIndexOf('.'));
+    // Connectors lag behind Spark releases: each one is pinned to the newest Spark minor it is
+    // published for, which runs on SPARK_VERSION. Set them to SPARK_MAJOR_MINOR once they catch up.
+    private static final String SPARK_BQ_SPARK_MINOR = getEnv("SPARK_BQ_SPARK_MINOR").orElse("4.2");
+    private static final String DELTA_SPARK_MINOR = getEnv("DELTA_SPARK_MINOR").orElse(SPARK_MAJOR_MINOR);
+    private static final String ICEBERG_SPARK_MINOR = getEnv("ICEBERG_SPARK_MINOR").orElse("4.1");
 
 
     // BIGQUERY
-    private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.45.0");
+    private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.46.1");
 
     // deltalake
-    private static final String DELTA_SPARK = getEnv("SPARK_DELTA").orElse("4.3.1");
+    private static final String DELTA_SPARK = getEnv("SPARK_DELTA").orElse("4.5.0");
 
     // ICEBERG
     private static final String ICEBERG_SPARK = getEnv("SPARK_ICEBERG").orElse("1.11.0");
 
-    private static final String HADOOP_AZURE_VERSION = getEnv("HADOOP_AZURE_VERSION").orElse("3.4.2");
+    private static final String HADOOP_AZURE_VERSION = getEnv("HADOOP_AZURE_VERSION").orElse("3.5.0");
     private static final String AZURE_STORAGE_VERSION = getEnv("AZURE_STORAGE_VERSION").orElse("8.6.6");
     private static final String JETTY_VERSION = getEnv("JETTY_VERSION").orElse("9.4.58.v20250814");
 
@@ -405,7 +410,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
     // SNOWFLAKE
     private static final String SNOWFLAKE_JDBC_VERSION = getEnv("SNOWFLAKE_JDBC_VERSION").orElse("4.3.4");
-    private static final String SPARK_SNOWFLAKE_VERSION = getEnv("SPARK_SNOWFLAKE_VERSION").orElse("3.2.2-spark_4.1");
+    private static final String SPARK_SNOWFLAKE_VERSION = getEnv("SPARK_SNOWFLAKE_VERSION").orElse("3.2.3-spark_4.1");
 
     // POSTGRESQL
     private static final String POSTGRESQL_VERSION = getEnv("POSTGRESQL_VERSION").orElse("42.7.13");
@@ -431,8 +436,8 @@ public class Setup extends ProxySelector implements X509TrustManager {
     // compile scope; the legacy com.amazonaws:aws-java-sdk-core (v1) is only "provided" in its
     // POM, so it is not on the runtime classpath anymore - shipping the v1 bundle here would
     // leave S3A/Redshift staging without the credential/client classes hadoop-aws now calls.
-    private static final String AWS_JAVA_SDK_V2_VERSION = getEnv("AWS_JAVA_SDK_V2_VERSION").orElse("2.29.52");
-    private static final String HADOOP_AWS_VERSION = getEnv("HADOOP_AWS_VERSION").orElse("3.4.2");
+    private static final String AWS_JAVA_SDK_V2_VERSION = getEnv("AWS_JAVA_SDK_V2_VERSION").orElse("2.35.4");
+    private static final String HADOOP_AWS_VERSION = getEnv("HADOOP_AWS_VERSION").orElse("3.5.0");
     private static final String REDSHIFT_JDBC_VERSION = getEnv("REDSHIFT_JDBC_VERSION").orElse("2.2.8");
     private static final String SPARK_REDSHIFT_VERSION = getEnv("SPARK_REDSHIFT_VERSION").orElse("7.0.0");
 
@@ -461,20 +466,21 @@ public class Setup extends ProxySelector implements X509TrustManager {
     // The SHA-512 that Apache publishes. Pinned here rather than read from where the tarball
     // comes from, which could then replace both.
     private static final Map<String, String> SPARK_SHA512 = Map.of(
-            "spark-4.1.3-bin-hadoop3.tgz", "391d04f40da0f6e961513d1ad72a6e3d51aef99f751c835e058a329b01369d83d17c2a9c68fad6be9496eea6687107d0d3d6893f7a53f53ddbfe669022220523");
+            "spark-4.1.3-bin-hadoop3.tgz", "391d04f40da0f6e961513d1ad72a6e3d51aef99f751c835e058a329b01369d83d17c2a9c68fad6be9496eea6687107d0d3d6893f7a53f53ddbfe669022220523",
+            "spark-4.3.0-bin-hadoop3.tgz", "51a2473d09c74b6b755d3c4158275922fe4fed9c3801d9e48ade6083dc03b45693274020fe0fcf2be2a607a6a828f7159f78609ef913049e98c1882d2d0aab5f");
     // Spark-4-line artifact id is "spark-<major.minor>-bigquery" (no Scala suffix), replacing
     // the old "spark-bigquery-with-dependencies_<scala>" naming used for Spark 3.x.
     private static final ResourceDependency SPARK_BQ_JAR = new ResourceDependency("bigquery-with-dependencies",
-            "https://repo1.maven.org/maven2/com/google/cloud/spark/spark-" + SPARK_MAJOR_MINOR + "-bigquery/" +
+            "https://repo1.maven.org/maven2/com/google/cloud/spark/spark-" + SPARK_BQ_SPARK_MINOR + "-bigquery/" +
                     SPARK_BQ_VERSION + "/" +
-                    "spark-" + SPARK_MAJOR_MINOR + "-bigquery-" + SPARK_BQ_VERSION + ".jar");
+                    "spark-" + SPARK_BQ_SPARK_MINOR + "-bigquery-" + SPARK_BQ_VERSION + ".jar");
 
     // Delta 4.x publishes one artifact per supported Spark minor: delta-spark_<spark>_<scala>.
     private static final ResourceDependency DELTA_SPARK_JAR = new ResourceDependency("delta-spark",
-            "https://repo1.maven.org/maven2/io/delta/delta-spark_" + SPARK_MAJOR_MINOR + "_" + SCALA_VERSION + "/" + DELTA_SPARK + "/delta-spark_" + SPARK_MAJOR_MINOR + "_" + SCALA_VERSION + "-" + DELTA_SPARK + ".jar");
+            "https://repo1.maven.org/maven2/io/delta/delta-spark_" + DELTA_SPARK_MINOR + "_" + SCALA_VERSION + "/" + DELTA_SPARK + "/delta-spark_" + DELTA_SPARK_MINOR + "_" + SCALA_VERSION + "-" + DELTA_SPARK + ".jar");
 
     private static final ResourceDependency ICEBERG_SPARK_JAR = new ResourceDependency("iceberg-spark",
-            "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-" + SPARK_MAJOR_MINOR + "_" + SCALA_VERSION + "/" + ICEBERG_SPARK + "/iceberg-spark-runtime-" + SPARK_MAJOR_MINOR + "_" + SCALA_VERSION + "-" + ICEBERG_SPARK + ".jar");
+            "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-" + ICEBERG_SPARK_MINOR + "_" + SCALA_VERSION + "/" + ICEBERG_SPARK + "/iceberg-spark-runtime-" + ICEBERG_SPARK_MINOR + "_" + SCALA_VERSION + "-" + ICEBERG_SPARK + ".jar");
 
     private static final ResourceDependency DELTA_STORAGE_JAR = new ResourceDependency("delta-storage",
             "https://repo1.maven.org/maven2/io/delta/delta-storage" + "/" + DELTA_SPARK + "/delta-storage" +"-" + DELTA_SPARK + ".jar");

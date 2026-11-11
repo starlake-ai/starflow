@@ -1436,12 +1436,18 @@ assert_spark_classpath() { [[ "$(last_submit)" != *"starlake.classpath"* ]]; }
 
 jdk_warning="cannot run Starflow"
 set_java_version() { echo "JAVA_VERSION=\"$1\"" >"$INSTALL/jdk/release"; }
+# The launcher looks for the jar of SL_VERSION: give the stub jar the name of each version tried.
+with_sl_version() {
+  local jar="$INSTALL/bin/sl/starlake-core_2.13-$1-assembly.jar"
+  [ -e "$jar" ] || ln -s "$INSTALL/bin/sl/starlake-core_2.13-9.9.9-assembly.jar" "$jar"
+}
 
-@test "JDK 24 and newer print a warning that names the version, and the command still runs" {
+@test "up to 1.8, JDK 24 and newer print a warning that names the version, and the command still runs" {
   for version in 24.0.2 25.0.5 27-ea; do
     set_java_version "$version"
     : >"$STUB_LOG"
-    run "$INSTALL/starlake.sh" validate
+    with_sl_version 1.8.18
+    SL_VERSION=1.8.18 run "$INSTALL/starlake.sh" validate
     [ "$status" -eq 0 ]
     [[ "$output" == *"$jdk_warning"* ]]
     [[ "$output" == *"Java ${version%%[.-]*} "* ]]
@@ -1449,18 +1455,47 @@ set_java_version() { echo "JAVA_VERSION=\"$1\"" >"$INSTALL/jdk/release"; }
   done
 }
 
-@test "the JDK warning goes to stderr so that it does not pollute the output of a command" {
-  set_java_version 25.0.5
-  [ -z "$("$INSTALL/starlake.sh" validate 2>/dev/null)" ]
-}
-
-@test "supported JDKs print no warning" {
-  for version in 1.8.0_402 17.0.9 21.0.11 22.0.2 23.0.2; do
+@test "up to 1.8, supported JDKs print no warning" {
+  for version in 17.0.9 21.0.11 22.0.2 23.0.2; do
     set_java_version "$version"
-    run "$INSTALL/starlake.sh" validate
+    with_sl_version 1.8.18
+    SL_VERSION=1.8.18 run "$INSTALL/starlake.sh" validate
     [ "$status" -eq 0 ]
     [[ "$output" != *"$jdk_warning"* ]]
   done
+}
+
+@test "from 1.9, JDKs older than 25 print a warning that names both versions, and the command still runs" {
+  for sl in 1.9.0 1.9.1-SNAPSHOT 2.0.0; do
+    for version in 1.8.0_402 17.0.9 21.0.11 24.0.2; do
+      set_java_version "$version"
+      : >"$STUB_LOG"
+      with_sl_version "$sl"
+      SL_VERSION="$sl" run "$INSTALL/starlake.sh" validate
+      [ "$status" -eq 0 ]
+      [[ "$output" == *"$jdk_warning $sl, which requires Java 25"* ]]
+      [ -n "$(last_submit)" ]
+    done
+  done
+}
+
+@test "from 1.9, JDK 25 and newer print no warning" {
+  for version in 25.0.1 26.0.2 27-ea; do
+    set_java_version "$version"
+    with_sl_version 1.9.0
+    SL_VERSION=1.9.0 run "$INSTALL/starlake.sh" validate
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"$jdk_warning"* ]]
+  done
+}
+
+@test "the JDK warning goes to stderr so that it does not pollute the output of a command" {
+  with_sl_version 1.9.0
+  with_sl_version 1.8.18
+  set_java_version 21.0.11
+  [ -z "$(SL_VERSION=1.9.0 "$INSTALL/starlake.sh" validate 2>/dev/null)" ]
+  set_java_version 25.0.5
+  [ -z "$(SL_VERSION=1.8.18 "$INSTALL/starlake.sh" validate 2>/dev/null)" ]
 }
 
 @test "a JDK without a version prints no warning" {
@@ -1470,14 +1505,14 @@ set_java_version() { echo "JAVA_VERSION=\"$1\"" >"$INSTALL/jdk/release"; }
 }
 
 @test "the JDK warning also applies to SL_RUN_MODE=main" {
-  set_java_version 25.0.5
+  set_java_version 21.0.11
   SL_RUN_MODE=main run "$INSTALL/starlake.sh" validate
   [ "$status" -eq 0 ]
   [[ "$output" == *"$jdk_warning"* ]]
 }
 
 @test "the JDK warning finds the java on the PATH when JAVA_HOME is not set" {
-  set_java_version 25.0.5
+  set_java_version 21.0.11
   mv "$INSTALL/jdk" "$BATS_TEST_TMPDIR/path-jdk"
   PATH="$BATS_TEST_TMPDIR/path-jdk/bin:$PATH" JAVA_HOME="" run "$INSTALL/starlake.sh" validate
   [ "$status" -eq 0 ]
@@ -1485,7 +1520,7 @@ set_java_version() { echo "JAVA_VERSION=\"$1\"" >"$INSTALL/jdk/release"; }
 }
 
 @test "commands that only manage the install print no JDK warning" {
-  set_java_version 25.0.5
+  set_java_version 21.0.11
   run "$INSTALL/starlake.sh" --version
   [ "$status" -eq 0 ]
   [[ "$output" != *"$jdk_warning"* ]]

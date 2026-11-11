@@ -683,9 +683,11 @@ rem what needs a Spark session may behave differently, so this is for the user t
     java !_main_flags! !_main_memory! -Dlog4j.configurationFile="!_log_config!" !SPARK_DRIVER_OPTIONS! !_main_classpath_arg! %SL_MAIN% %*
     exit /b %errorlevel%
 
-rem The Hadoop that Spark bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM
-rem flag brings it back. Without this, users only get a stack trace. Read from the release file of
-rem the JDK to start no JVM: a JDK that has none gets no warning.
+rem Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
+rem an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
+rem bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
+rem Without this, users only get a stack trace. Read from the release file of the JDK to start no
+rem JVM: a JDK that has none gets no warning.
 :warn_if_jdk_unsupported
     set "_jdk_home=%JAVA_HOME%"
     if not defined _jdk_home for /f "delims=" %%j in ('where java 2^>nul') do if not defined _jdk_home set "_jdk_home=%%~dpj.."
@@ -696,6 +698,20 @@ rem the JDK to start no JVM: a JDK that has none gets no warning.
     for /f "delims=._+-" %%m in ("%_jdk_version%") do set "_jdk_major=%%m"
     if not defined _jdk_major exit /b 0
     set /a "_jdk_major_number=_jdk_major" 2>nul
+    rem Java 8 and older report 1.x
+    if %_jdk_major_number% EQU 1 set "_jdk_major_number=8" & set "_jdk_major=8"
+    set "_sl_major=0"
+    set "_sl_minor=0"
+    for /f "tokens=1,2 delims=.-" %%a in ("%SL_VERSION%") do set "_sl_major=%%a" & set "_sl_minor=%%b"
+    set /a "_sl_major=_sl_major" 2>nul
+    set /a "_sl_minor=_sl_minor" 2>nul
+    set "_sl_requires_25="
+    if %_sl_major% GTR 1 set "_sl_requires_25=1"
+    if %_sl_major% EQU 1 if %_sl_minor% GEQ 9 set "_sl_requires_25=1"
+    if defined _sl_requires_25 (
+        if %_jdk_major_number% LSS 25 >&2 echo Warning: Java %_jdk_major% cannot run Starflow %SL_VERSION%, which requires Java 25 or above. Set JAVA_HOME to JDK 25.
+        exit /b 0
+    )
     if %_jdk_major_number% GEQ 24 >&2 echo Warning: Java %_jdk_major% cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21.
     exit /b 0
 

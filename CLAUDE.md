@@ -8,7 +8,7 @@ Starlake Starflow is a declarative data pipeline tool (Extract, Load, Transform,
 
 ## Build Commands
 
-**Requires:** JDK 17, SBT 1.11.5
+**Requires:** JDK 25, SBT 1.11.7
 
 ```bash
 sbt compile                    # Compile
@@ -91,7 +91,7 @@ Transform jobs can target different engines via `Engine`: Spark, BigQuery, Snowf
 
 ## Key Dependencies
 
-- **Spark 4.1.3** (provided scope — not bundled in standard assembly)
+- **Spark 4.3.0** (provided scope — not bundled in standard assembly)
 - **Jackson 2.21.2** for JSON/YAML serialization
 - **scopt** for CLI parsing
 - **PureConfig** for typesafe config

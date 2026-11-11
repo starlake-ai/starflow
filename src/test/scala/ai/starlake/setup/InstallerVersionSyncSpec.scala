@@ -71,6 +71,15 @@ class InstallerVersionSyncSpec extends AnyFlatSpec with Matchers {
     setupPin("POSTGRESQL_VERSION") shouldBe postgresqlBuild
   }
 
+  // The BigQuery connector lags behind Spark, so its artifact names a Spark minor of its own.
+  it should "install the spark-<minor>-bigquery artifact that the build compiles against" in {
+    val buildMinor = """"com\.google\.cloud\.spark" % "spark-([0-9.]+)-bigquery"""".r
+      .findFirstMatchIn(dependenciesScala)
+      .map(_.group(1))
+      .getOrElse(fail("spark-<minor>-bigquery not found in project/Dependencies.scala"))
+    setupPin("SPARK_BQ_SPARK_MINOR") shouldBe buildMinor
+  }
+
   behavior of ".versions docker pins"
 
   private val dotMappings: Seq[(String, String)] = Seq(

@@ -44,7 +44,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin' # See 'Supported distributions' for available options
-          java-version: '17'
+          java-version: '25'
       - name: Setup sbt launcher
         uses: sbt/setup-sbt@v1
       - id: 'auth'
