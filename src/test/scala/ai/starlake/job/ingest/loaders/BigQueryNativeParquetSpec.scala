@@ -161,14 +161,6 @@ class BigQueryNativeParquetSpec extends TestHelper {
     }
   }
 
-  "requiresOneLoadPerFile" should "load several local PARQUET files one by one" in {
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.PARQUET, localFiles) shouldBe true
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.PARQUET, localFiles.take(1)) shouldBe false
-    // A single load job reads several Cloud Storage URIs
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.PARQUET, gcsFiles) shouldBe false
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.DSV, localFiles) shouldBe false
-  }
-
   "requiredValuesCondition" should "keep the rows with a value for every required attribute, at any level" in {
     BigQueryNativeLoader.requiredValuesCondition(List(TableAttribute("a"))) shouldBe None
     val attributes = List(

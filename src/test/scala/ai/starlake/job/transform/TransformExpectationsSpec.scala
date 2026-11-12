@@ -84,7 +84,7 @@ class TransformExpectationsSpec extends TestHelper {
         .autoJob(TransformConfig(name = s"expectations_it.$task", test = test))
     }
 
-    def load(table: String, expectation: ExpectationItem): Try[_] = {
+    def load(table: String, expectation: ExpectationItem, postsql: List[String] = Nil): Try[_] = {
       writeMacros()
       DomainInfo(
         name = "expectations_load",
@@ -102,7 +102,8 @@ class TransformExpectationsSpec extends TestHelper {
                 loader = Some("native")
               )
             ),
-            expectations = List(expectation)
+            expectations = List(expectation),
+            postsql = postsql
           )
         )
       ).writeDomainAsYaml(DatasetArea.load)(storageHandler)
@@ -190,11 +191,15 @@ class TransformExpectationsSpec extends TestHelper {
       tableRows("expectations_load.orders_blocking") shouldBe 2
       expectationResults("expectations_load", "orders_blocking") shouldBe List("false")
       auditRows("expectations_load", "orders_blocking", "LOAD") shouldBe List("true" -> "2")
+      // Its second step writes no audit row of its own (#1838)
+      auditRows("expectations_load", "orders_blocking", "TRANSFORM") shouldBe Nil
     }
 
     it should "not fail on an expectation with failOnError false" in {
       load("orders_warning", ExpectationItem(failing, failOnError = false)).isSuccess shouldBe true
       expectationResults("expectations_load", "orders_warning") shouldBe List("false")
+      auditRows("expectations_load", "orders_warning", "LOAD") shouldBe List("true" -> "2")
+      auditRows("expectations_load", "orders_warning", "TRANSFORM") shouldBe Nil
     }
   }
 
@@ -209,6 +214,16 @@ class TransformExpectationsSpec extends TestHelper {
     "run its expectations once and succeed" in {
       load("orders_recorded", ExpectationItem(failing)).isSuccess shouldBe true
       expectationResults("expectations_load", "orders_recorded") shouldBe List("false")
+    }
+
+    "A two-step native load whose second step fails" should
+    "write the TRANSFORM audit row of the failure, as a Spark load does (#1838)" in {
+      load(
+        "orders_postsql",
+        ExpectationItem(passing),
+        postsql = List("SELECT * FROM expectations_load.no_such_table")
+      ).isFailure shouldBe true
+      auditRows("expectations_load", "orders_postsql", "TRANSFORM") shouldBe List("false" -> "-1")
     }
   }
 
