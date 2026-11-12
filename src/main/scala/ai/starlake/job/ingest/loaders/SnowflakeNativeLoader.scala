@@ -90,7 +90,9 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 interactive = None,
                 truncate = false,
                 test = false,
-                logExecution = true,
+                // IngestionJob writes the LOAD audit row, as for Spark loads: a TRANSFORM row would
+                // duplicate it. A failure still writes one, as a Spark sink task does (#1838)
+                logExecution = false,
                 accessToken = ingestionJob.accessToken,
                 resultPageSize = 200,
                 resultPageNumber = 1,

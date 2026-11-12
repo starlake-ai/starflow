@@ -601,11 +601,10 @@ trait BigQueryJobBase extends LazyLogging {
   protected def setTagsOnTable(table: Table): Unit = {
     cliConfig.starlakeSchema.foreach { schema =>
       BigQueryJobBase.recoverBigqueryException(settings.appConfig.onExceptionRetries) {
-        val tags = Utils.extractTags(schema.tags)
-        val tableTagPairs = tags map { case (k, v) => (k.toLowerCase, v.toLowerCase) }
-        if (BigQueryJobBase.labelsChanged(table.getLabels, tableTagPairs.toMap)) {
+        val labels = declaredLabels(schema)
+        if (BigQueryJobBase.labelsChanged(table.getLabels, labels)) {
           logger.info("Table's tag has changed")
-          table.toBuilder.setLabels(tableTagPairs.toMap.asJava).build().update()
+          table.toBuilder.setLabels(labels.asJava).build().update()
         } else {
           logger.info("Table's tag has not changed")
         }
@@ -615,6 +614,51 @@ trait BigQueryJobBase extends LazyLogging {
       }
     }
   }
+
+  /** @return
+    *   the labels of a table, from the tags of its schema
+    */
+  private def declaredLabels(schema: model.SchemaInfo): Map[String, String] =
+    Utils.extractTags(schema.tags).map { case (k, v) => (k.toLowerCase, v.toLowerCase) }.toMap
+
+  /** Sets the labels of the table of the Starlake schema when they changed, as [[getOrCreateTable]]
+    * does on every run, and its primary and foreign keys if asked, which a table that it creates
+    * gets. The second step of a load in two steps writes its target as a transform does, which sets
+    * neither (#1838).
+    *
+    * @param withConstraints
+    *   true if the table was just created, by the second step of a load
+    */
+  def updateLabelsAndConstraints(withConstraints: Boolean)(implicit settings: Settings): Unit =
+    cliConfig.starlakeSchema.foreach { schema =>
+      BigQueryJobBase
+        .recoverBigqueryException(settings.appConfig.onExceptionRetries) {
+          val table = bigquery(accessToken = cliConfig.accessToken).getTable(tableId)
+          val labels = declaredLabels(schema)
+          val labelsChanged = BigQueryJobBase.labelsChanged(table.getLabels, labels)
+          val constraints =
+            if (withConstraints)
+              Some(getTableConstraints()).filter { constraints =>
+                scala.Option(constraints.getPrimaryKey).nonEmpty ||
+                scala.Option(constraints.getForeignKeys).exists(!_.isEmpty)
+              }
+            else None
+          // In one update: an update from the table read before another one would revert it
+          if (labelsChanged || constraints.nonEmpty) {
+            val builder = table.toBuilder
+            if (labelsChanged) builder.setLabels(labels.asJava)
+            constraints.foreach(builder.setTableConstraints)
+            builder.build().update()
+            logger.info(
+              s"Table $tableId updated with ${List(
+                  Some("its labels").filter(_ => labelsChanged),
+                  constraints.map(_ => "its keys")
+                ).flatten.mkString(" and ")}"
+            )
+          }
+        }
+        .get
+    }
 
   protected def updateTableDescription(bqTable: Table, description: String)(implicit
     settings: Settings
