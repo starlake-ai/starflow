@@ -19,8 +19,11 @@ function Check($name, [bool]$condition, $detail = '') {
 function Starlake([string]$arguments, [hashtable]$environment = @{}, [string]$launcherPath = $launcher, [int]$minutes = 10) {
   foreach ($key in $environment.Keys) { Set-Item "Env:$key" $environment[$key] }
   $log = Join-Path $env:TEMP ("starlake-" + [Guid]::NewGuid() + '.log')
-  $process = Start-Process -FilePath 'cmd.exe' -ArgumentList "/c `"`"$launcherPath`" $arguments > `"$log`" 2>&1`"" -NoNewWindow -PassThru
-  [void]$process.Handle
+  # Process.Start, not Start-Process: the ExitCode of Start-Process -PassThru is empty when the
+  # process exits before its handle is read, as a command refused by the JDK check can.
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo 'cmd.exe', "/c `"`"$launcherPath`" $arguments > `"$log`" 2>&1`""
+  $startInfo.UseShellExecute = $false
+  $process = [System.Diagnostics.Process]::Start($startInfo)
   $finished = $process.WaitForExit($minutes * 60 * 1000)
   foreach ($key in $environment.Keys) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
   $text = if (Test-Path $log) { Get-Content -Raw $log } else { '' }
@@ -218,7 +221,7 @@ Check 'a failed build releases its lock' (-not (Test-Path $lock))
 $fresh = Classes-From-Archive 'validate'
 Check 'the previous archive still works once the jars are back' ($fresh.Count -gt 1000) "count=$($fresh.Count) $($fresh.Text)"
 
-Write-Host '--- JDK warning'
+Write-Host '--- JDK check'
 $fakeJdk = Join-Path $env:TEMP 'sl-fake-jdk'
 New-Item -ItemType Directory -Force -Path $fakeJdk | Out-Null
 # From 1.9, Starflow requires Java 25; up to 1.8, the Hadoop bundled with Spark fails on JDK 24+.
@@ -228,9 +231,13 @@ $unsupportedJdk = if ($requires25) { '21' } else { '25' }
 [IO.File]::WriteAllText((Join-Path $fakeJdk 'release'), "JAVA_VERSION=`"$unsupportedJdk.0.1`"`n")
 $realJavaHome = $env:JAVA_HOME
 $env:Path = "$realJavaHome\bin;$env:Path"
-$warned = Starlake 'validate' @{ JAVA_HOME = $fakeJdk; SL_APPCDS = 'false' }
+$refused = Starlake 'validate' @{ JAVA_HOME = $fakeJdk; SL_APPCDS = 'false' }
 $env:JAVA_HOME = $realJavaHome
-Check "an unsupported JDK ($unsupportedJdk) prints a warning that names the version" ($warned.Text.Contains("Java $unsupportedJdk cannot run Starflow")) $warned.Text
+Check "an unsupported JDK ($unsupportedJdk) stops the command with an error that names the version" ($refused.Code -eq 1 -and $refused.Text.Contains("Error: Java $unsupportedJdk cannot run Starflow")) "code=$($refused.Code)`n$($refused.Text)"
+Check 'the JDK error names the override' ($refused.Text.Contains('SL_SKIP_JDK_CHECK=1')) $refused.Text
+$overridden = Starlake 'validate' @{ JAVA_HOME = $fakeJdk; SL_APPCDS = 'false'; SL_SKIP_JDK_CHECK = '1' }
+$env:JAVA_HOME = $realJavaHome
+Check 'SL_SKIP_JDK_CHECK turns the error into a warning, and the command runs' ($overridden.Code -eq 0 -and $overridden.Text.Contains("Warning: Java $unsupportedJdk cannot run Starflow") -and -not $overridden.Text.Contains('Error:')) "code=$($overridden.Code)`n$($overridden.Text)"
 $supported = Starlake 'validate' @{ SL_APPCDS = 'false' }
 Check 'a supported JDK prints no warning' (-not $supported.Text.Contains('cannot run Starflow'))
 $env:JAVA_HOME = $realJavaHome

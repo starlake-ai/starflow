@@ -912,10 +912,11 @@ launch_main() {
 # Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
 # an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
 # bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
-# Without this, users only get a stack trace. Read from the release file of the JDK to start no
-# JVM: a JDK that has none gets no warning.
-warn_if_jdk_unsupported() {
-  local major sl_major=0 sl_minor=0
+# Without this, users only get a stack trace. So the command stops before starting a JVM, unless
+# SL_SKIP_JDK_CHECK is set, which only warns. Read from the release file of the JDK to start no
+# JVM: a JDK that has none is not checked.
+check_jdk_supported() {
+  local major sl_major=0 sl_minor=0 problem="" fix=""
   major="$(jdk_major)"
   if [ -z "$major" ]; then return 0; fi
   if [[ "$SL_VERSION" =~ ^([0-9]+)\.([0-9]+) ]]; then
@@ -926,18 +927,28 @@ warn_if_jdk_unsupported() {
   then
     if [ "$major" -lt 25 ]
     then
-      echo "Warning: Java $major cannot run Starflow $SL_VERSION, which requires Java 25 or above. Set JAVA_HOME to JDK 25." >&2
+      problem="Java $major cannot run Starflow $SL_VERSION, which requires Java 25 or above."
+      fix="Set JAVA_HOME to JDK 25"
     fi
   elif [ "$major" -ge 24 ]
   then
-    echo "Warning: Java $major cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21." >&2
+    problem="Java $major cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer."
+    fix="Set JAVA_HOME to JDK 17 or 21"
   fi
+  if [ -z "$problem" ]; then return 0; fi
+  if [ -n "$SL_SKIP_JDK_CHECK" ]
+  then
+    echo "Warning: $problem $fix." >&2
+    return 0
+  fi
+  echo "Error: $problem $fix, or set SL_SKIP_JDK_CHECK=1 to run anyway." >&2
+  return 1
 }
 
 launch_starlake() {
   if [ -f "$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME" ]
   then
-    warn_if_jdk_unsupported
+    check_jdk_supported || exit 1
     if  [ -n "$SL_LOG_LEVEL" ] && [ "$SL_LOG_LEVEL" != "error" ]; then
       echo "- JAVA_HOME=$JAVA_HOME"
       echo "- SL_ROOT=$SL_ROOT"

@@ -715,9 +715,10 @@ rem JDK 24 removed sun.security.action, and opening it there prints a warning on
 rem Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
 rem an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
 rem bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
-rem Without this, users only get a stack trace. Read from the release file of the JDK to start no
-rem JVM: a JDK that has none gets no warning.
-:warn_if_jdk_unsupported
+rem Without this, users only get a stack trace. So the command stops before starting a JVM, unless
+rem SL_SKIP_JDK_CHECK is set, which only warns. Read from the release file of the JDK to start no
+rem JVM: a JDK that has none is not checked.
+:check_jdk_supported
     call :jdk_major
     if not defined _jdk_major exit /b 0
     set "_sl_major=0"
@@ -728,12 +729,23 @@ rem JVM: a JDK that has none gets no warning.
     set "_sl_requires_25="
     if %_sl_major% GTR 1 set "_sl_requires_25=1"
     if %_sl_major% EQU 1 if %_sl_minor% GEQ 9 set "_sl_requires_25=1"
-    if defined _sl_requires_25 (
-        if %_jdk_major_number% LSS 25 >&2 echo Warning: Java %_jdk_major% cannot run Starflow %SL_VERSION%, which requires Java 25 or above. Set JAVA_HOME to JDK 25.
+    set "_jdk_problem="
+    set "_jdk_fix="
+    if defined _sl_requires_25 if %_jdk_major_number% LSS 25 (
+        set "_jdk_problem=Java %_jdk_major% cannot run Starflow %SL_VERSION%, which requires Java 25 or above."
+        set "_jdk_fix=Set JAVA_HOME to JDK 25"
+    )
+    if not defined _sl_requires_25 if %_jdk_major_number% GEQ 24 (
+        set "_jdk_problem=Java %_jdk_major% cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer."
+        set "_jdk_fix=Set JAVA_HOME to JDK 17 or 21"
+    )
+    if not defined _jdk_problem exit /b 0
+    if defined SL_SKIP_JDK_CHECK (
+        >&2 echo Warning: !_jdk_problem! !_jdk_fix!.
         exit /b 0
     )
-    if %_jdk_major_number% GEQ 24 >&2 echo Warning: Java %_jdk_major% cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21.
-    exit /b 0
+    >&2 echo Error: !_jdk_problem! !_jdk_fix!, or set SL_SKIP_JDK_CHECK=1 to run anyway.
+    exit /b 1
 
 rem The block at the end of this file: what cmd cannot do by itself. A file of its own would have
 rem to be downloaded by every install and upgrade.
@@ -748,7 +760,8 @@ rem to be downloaded by every install and upgrade.
         exit /b 1
     )
 
-    call :warn_if_jdk_unsupported
+    call :check_jdk_supported
+    if errorlevel 1 exit /b 1
 
     if defined SL_LOG_LEVEL (
         if /i not "%SL_LOG_LEVEL%" == "error" (

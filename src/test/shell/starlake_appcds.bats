@@ -120,7 +120,7 @@ EOF
   cd "$BATS_TEST_TMPDIR/cwd"
 
   unset SPARK_CONF_DIR SPARK_DRIVER_OPTIONS SPARK_MASTER_URL SPARK_CONF_OPTIONS \
-    HADOOP_CONF_DIR YARN_CONF_DIR SPARK_DIST_CLASSPATH SL_APPCDS SL_ENV SL_ROOT SL_RUN_MODE SL_DRY_RUN SL_DEBUG SL_HTTP_PORT HTTP_PROXY HTTPS_PROXY
+    HADOOP_CONF_DIR YARN_CONF_DIR SPARK_DIST_CLASSPATH SL_APPCDS SL_ENV SL_ROOT SL_RUN_MODE SL_SKIP_JDK_CHECK SL_DRY_RUN SL_DEBUG SL_HTTP_PORT HTTP_PROXY HTTPS_PROXY
   export -n JAVA_OPTS 2>/dev/null || true
   unset JAVA_OPTS
 }
@@ -1443,16 +1443,16 @@ with_sl_version() {
   [ -e "$jar" ] || ln -s "$INSTALL/bin/sl/starlake-core_2.13-9.9.9-assembly.jar" "$jar"
 }
 
-@test "up to 1.8, JDK 24 and newer print a warning that names the version, and the command still runs" {
+@test "up to 1.8, JDK 24 and newer stop the command with an error that names the version and the override" {
   for version in 24.0.2 25.0.5 27-ea; do
     set_java_version "$version"
     : >"$STUB_LOG"
     with_sl_version 1.8.18
     SL_VERSION=1.8.18 run "$INSTALL/starlake.sh" validate
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"$jdk_warning"* ]]
-    [[ "$output" == *"Java ${version%%[.-]*} "* ]]
-    [ -n "$(last_submit)" ]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: Java ${version%%[.-]*} $jdk_warning"* ]]
+    [[ "$output" == *"SL_SKIP_JDK_CHECK=1"* ]]
+    [ -z "$(last_submit)" ]
   done
 }
 
@@ -1466,17 +1466,33 @@ with_sl_version() {
   done
 }
 
-@test "from 1.9, JDKs older than 25 print a warning that names both versions, and the command still runs" {
+@test "from 1.9, JDKs older than 25 stop the command with an error that names both versions" {
   for sl in 1.9.0 1.9.1-SNAPSHOT 2.0.0; do
     for version in 1.8.0_402 17.0.9 21.0.11 24.0.2; do
       set_java_version "$version"
       : >"$STUB_LOG"
       with_sl_version "$sl"
       SL_VERSION="$sl" run "$INSTALL/starlake.sh" validate
-      [ "$status" -eq 0 ]
-      [[ "$output" == *"$jdk_warning $sl, which requires Java 25"* ]]
-      [ -n "$(last_submit)" ]
+      [ "$status" -eq 1 ]
+      [[ "$output" == *"Error: Java"*"$jdk_warning $sl, which requires Java 25"* ]]
+      [[ "$output" == *"SL_SKIP_JDK_CHECK=1"* ]]
+      [ -z "$(last_submit)" ]
     done
+  done
+}
+
+@test "SL_SKIP_JDK_CHECK turns the error into a warning, and the command runs" {
+  with_sl_version 1.9.0
+  with_sl_version 1.8.18
+  for case in "1.9.0 21.0.11" "1.8.18 25.0.5"; do
+    set -- $case
+    set_java_version "$2"
+    : >"$STUB_LOG"
+    SL_SKIP_JDK_CHECK=1 SL_VERSION="$1" run "$INSTALL/starlake.sh" validate
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: Java ${2%%.*} $jdk_warning"* ]]
+    [[ "$output" != *"Error:"* ]]
+    [ -n "$(last_submit)" ]
   done
 }
 
@@ -1490,7 +1506,7 @@ with_sl_version() {
   done
 }
 
-@test "the JDK warning goes to stderr so that it does not pollute the output of a command" {
+@test "the JDK error goes to stderr so that it does not pollute the output of a command" {
   with_sl_version 1.9.0
   with_sl_version 1.8.18
   set_java_version 21.0.11
@@ -1505,14 +1521,18 @@ with_sl_version() {
   [[ "$output" != *"$jdk_warning"* ]]
 }
 
-@test "the JDK warning also applies to SL_RUN_MODE=main" {
+@test "the JDK check also applies to SL_RUN_MODE=main, and starts no JVM" {
   set_java_version 21.0.11
+  : >"$STUB_LOG"
   SL_RUN_MODE=main run "$INSTALL/starlake.sh" validate
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"$jdk_warning"* ]]
+  [ -z "$(last_java)" ]
 }
 
 @test "SL_RUN_MODE=main opens sun.security.action only on the JDKs that still have it" {
+  # Starflow 1.9, the version of the stub jar, refuses these JDKs without the override
+  export SL_SKIP_JDK_CHECK=1
   for version in 17.0.9 21.0.11 23.0.2; do
     set_java_version "$version"
     main validate
@@ -1531,11 +1551,11 @@ with_sl_version() {
   [[ "$(last_java)" == *"--add-opens=java.base/sun.security.action=ALL-UNNAMED"* ]]
 }
 
-@test "the JDK warning finds the java on the PATH when JAVA_HOME is not set" {
+@test "the JDK check finds the java on the PATH when JAVA_HOME is not set" {
   set_java_version 21.0.11
   mv "$INSTALL/jdk" "$BATS_TEST_TMPDIR/path-jdk"
   PATH="$BATS_TEST_TMPDIR/path-jdk/bin:$PATH" JAVA_HOME="" run "$INSTALL/starlake.sh" validate
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"$jdk_warning"* ]]
 }
 
@@ -1556,6 +1576,8 @@ make_real_install() {
     skip "needs a JDK in JAVA_HOME"
   fi
   export JAVA_HOME="$REAL_JAVA_HOME"
+  # The JDK of the test runs these stub classes, whatever version the stub jar claims
+  export SL_SKIP_JDK_CHECK=1
   export REAL_LOG="$BATS_TEST_TMPDIR/classes.log"
   local src="$BATS_TEST_TMPDIR/src" out="$BATS_TEST_TMPDIR/out" name
   mkdir -p "$src/ai/starlake/job" "$src/org/apache/spark/deploy" "$src/stub" "$out"

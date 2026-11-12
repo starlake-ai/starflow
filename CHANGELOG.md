@@ -2,6 +2,10 @@
 # Release notes
 
 # 1.9.1:
+__Breaking change__:
+- **`starlake.sh` and `starlake.cmd` stop a command on a JDK that cannot run it**, with an error that names the JDK and the version it needs, instead of a warning followed by a stack trace: below Java 25 from 1.9, Java 24 and newer up to 1.8. The command exits with 1 and starts no JVM.
+  - **Upgrade note**: set `SL_SKIP_JDK_CHECK=1` to only warn and run the command anyway. A JDK without a `release` file is still not checked.
+
 __Improvement__:
 - **`serve`, and `SL_RUN_MODE=main` without an AppCDS archive, no longer print `WARNING: package sun.security.action not in java.base` on JDK 24 and newer**: the launchers opened a package that JDK 24 removed. They still open it on JDK 17 to 23, which 1.8 runs on.
   - Commands run through `spark-submit`, the default, still print it: Spark 4.3 opens that package itself. So does `SL_RUN_MODE=main` with an archive, which reuses the flags of `spark-submit`.

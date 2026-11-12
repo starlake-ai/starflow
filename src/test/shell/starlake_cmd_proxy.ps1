@@ -10,6 +10,8 @@ New-Item -ItemType Directory -Force -Path "$root\bin\sl", "$root\bin\deps", "$ro
 [IO.File]::WriteAllText("$root\bin\spark\bin\spark-submit.cmd", "@echo SUBMIT %*`r`n@exit /b %STUB_EXIT%`r`n")
 $env:STUB_EXIT = '0'
 $env:SL_SKIP_CONSISTENCY_CHECK = '1'
+# Whatever JDK the runner has: this tests the proxy flags, not the JDK check
+$env:SL_SKIP_JDK_CHECK = '1'
 $script:failures = 0
 
 function Invoke-Launcher([hashtable]$environment) {
