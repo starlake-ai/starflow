@@ -143,32 +143,54 @@ class BigQueryNativeRejectedValuesIntegrationSpec extends IntegrationTestBase {
     Record(parts.head.split("\n").toList.filter(_.nonEmpty), file, row)
   }
 
-  /** @return
-    *   the records that the loads of a file wrote since this time
-    */
-  private def rejected(table: String, since: Long, file: File): List[Record] =
-    run(
-      s"""SELECT error FROM `audit.rejected`
-         |WHERE domain = '$dataset' AND schema = '$table' AND timestamp >= TIMESTAMP_MILLIS($since)
-         |AND path = '${new Path(file.uri.toString).toString}'""".stripMargin
-    ).iterateAll()
-      .asScala
-      .map(row => record(row.get(0).getStringValue))
-      .toList
+  private def path(file: File): String = new Path(file.uri.toString).toString
 
   /** @return
-    *   the accepted and rejected counts of the audit log of the loads of a file since this time.
-    *   The audit log keeps the second of its timestamp only.
+    *   the records that the loads of a file wrote since this time, none if they cannot be read: the
+    *   checks that read them fail, and the others are still reported
+    */
+  private def rejected(table: String, since: Long, file: File): List[Record] =
+    Try(
+      run(
+        s"""SELECT error FROM `audit.rejected`
+           |WHERE domain = '$dataset' AND schema = '$table' AND timestamp >= TIMESTAMP_MILLIS($since)
+           |AND path = '${path(file)}'""".stripMargin
+      ).iterateAll()
+        .asScala
+        .map(row => record(row.get(0).getStringValue))
+        .toList
+    ).getOrElse(Nil)
+
+  /** @return
+    *   the rows of the audit log of the loads of a file since this time, none if they cannot be
+    *   read. The audit log keeps the second of its timestamp only.
+    */
+  private def audit(table: String, since: Long, file: File): List[FieldValueList] =
+    Try(
+      run(
+        s"""SELECT COUNTACCEPTED, COUNTREJECTED, SUCCESS, MESSAGE FROM `audit.audit`
+           |WHERE DOMAIN = '$dataset' AND SCHEMA = '$table' AND STEP = 'LOAD'
+           |AND TIMESTAMP >= TIMESTAMP_SECONDS(${since / 1000}) AND PATHS LIKE '%${path(
+            file
+          )}%'""".stripMargin
+      ).iterateAll().asScala.toList
+    ).getOrElse(Nil)
+
+  /** @return
+    *   the accepted and rejected counts of the audit log of the loads of a file since this time
     */
   private def auditCounts(table: String, since: Long, file: File): List[(Long, Long)] =
-    run(
-      s"""SELECT COUNTACCEPTED, COUNTREJECTED FROM `audit.audit`
-         |WHERE DOMAIN = '$dataset' AND SCHEMA = '$table' AND STEP = 'LOAD'
-         |AND TIMESTAMP >= TIMESTAMP_SECONDS(${since / 1000}) AND PATHS LIKE '%${file.name}%'""".stripMargin
-    ).iterateAll()
-      .asScala
-      .map(row => row.get(0).getLongValue -> row.get(1).getLongValue)
-      .toList
+    audit(table, since, file).map(row => row.get(0).getLongValue -> row.get(1).getLongValue)
+
+  /** @return
+    *   true if a load of a file since this time failed with this error
+    */
+  private def failedWith(table: String, since: Long, file: File, error: String): Boolean =
+    audit(table, since, file).exists(row =>
+      !row.get(2).getBooleanValue && Option(row.get(3))
+        .filterNot(_.isNull)
+        .exists(_.getStringValue.contains(error))
+    )
 
   private def replayFiles(table: String): Set[File] =
     Try(
@@ -239,14 +261,16 @@ class BigQueryNativeRejectedValuesIntegrationSpec extends IntegrationTestBase {
       )
     )
 
-  /** The table of the issue: a typed value, a number read by the load job, two scripts */
+  /** The table of the issue: a typed value, a number read by the load job, two scripts. BigQuery
+    * accepts no parameterized type in a CAST: the issue's `DECIMAL(18,2)` fails every query.
+    */
   private val issueAttributes = List(
     TableAttribute("ID", "string"),
     TableAttribute("D_TYPED", "date_yyyymmdd"),
     TableAttribute("N_TYPED", "decimal"),
     TableAttribute("N_RAW", "string", ignore = Some(true)),
     TableAttribute("D_RAW", "string", ignore = Some(true)),
-    TableAttribute("N_CALC", "decimal", script = Some("CAST(N_RAW AS DECIMAL(18,2))")),
+    TableAttribute("N_CALC", "decimal", script = Some("CAST(N_RAW AS NUMERIC)")),
     TableAttribute("D_CALC", "date", script = Some("PARSE_DATE('%Y%m%d', D_RAW)"))
   )
 
@@ -347,7 +371,7 @@ class BigQueryNativeRejectedValuesIntegrationSpec extends IntegrationTestBase {
           records,
           Map(
             "2" -> List("`D_TYPED` is not a valid DATE with the pattern `yyyyMMdd`: 2026AB15"),
-            "4" -> List("`N_CALC` is not computed: CAST(N_RAW AS DECIMAL (18, 2)) fails: 10A0"),
+            "4" -> List("`N_CALC` is not computed: CAST(N_RAW AS NUMERIC) fails: 10A0"),
             "5" -> List("`D_CALC` is not computed: PARSE_DATE('%Y%m%d', D_RAW) fails: 2026AB15")
           ),
           file
@@ -402,6 +426,9 @@ class BigQueryNativeRejectedValuesIntegrationSpec extends IntegrationTestBase {
         val thresholdLoaded =
           withEnvs("SL_REJECT_MAX_RECORDS" -> "1")(load(thresholdTable, thresholdFile))
         check("the load above rejectMaxRecords fails")(!thresholdLoaded)
+        check("the load fails because of rejectMaxRecords") {
+          failedWith(thresholdTable, thresholdStart, thresholdFile, "rejectMaxRecords is 1")
+        }
         check("it loads no row")(rows(thresholdTable, columns).isEmpty)
         checkRecords(
           "Threshold",
@@ -416,10 +443,14 @@ class BigQueryNativeRejectedValuesIntegrationSpec extends IntegrationTestBase {
         val secondFile = incoming / s"$filesTable-2.csv"
         firstFile.overwrite(s"1|20260115|10|100|20260115\n$badRecord\n")
         secondFile.overwrite(s"6|20260115|10|100|20260115\n${badRecord.replace("3|", "7|")}\n")
+        val filesStart = System.currentTimeMillis()
         val filesLoaded = withEnvs("SL_REJECT_MAX_RECORDS" -> "1", "SL_GROUPED" -> "true")(
           load(filesTable, firstFile, secondFile)
         )
         check("the grouped load above rejectMaxRecords over its files fails")(!filesLoaded)
+        check("the grouped load fails because of rejectMaxRecords") {
+          failedWith(filesTable, filesStart, firstFile, "rejectMaxRecords is 1")
+        }
         check("it loads no row")(rows(filesTable, columns).isEmpty)
 
         // A partition column read as a string, and an ignored attribute read with its pattern

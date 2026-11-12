@@ -25,12 +25,13 @@ class BigQueryScriptChecksSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "check a CAST, and evaluate it as a SAFE_CAST, the script kept as it is written" in {
-    analyze("CAST(N_RAW AS DECIMAL(18,2))") shouldBe Script(
-      "SAFE_CAST(N_RAW AS DECIMAL(18,2))",
+    // BigQuery accepts no parameterized type, such as NUMERIC(18, 2), in a CAST
+    analyze("CAST(N_RAW AS NUMERIC)") shouldBe Script(
+      "SAFE_CAST(N_RAW AS NUMERIC)",
       List(
         Conversion(
-          "CAST(N_RAW AS DECIMAL (18, 2))",
-          "((N_RAW) IS NULL OR (SAFE_CAST(N_RAW AS DECIMAL (18, 2))) IS NOT NULL)",
+          "CAST(N_RAW AS NUMERIC)",
+          "((N_RAW) IS NULL OR (SAFE_CAST(N_RAW AS NUMERIC)) IS NOT NULL)",
           "N_RAW",
           List("N_RAW")
         )
