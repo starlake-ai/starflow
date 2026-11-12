@@ -175,6 +175,30 @@ class SchemaInfoSpec extends TestHelper {
       sql should not include "SUBSTR"
     }
 
+    "buildSecondStepSqlSelectOnLoad" should "compute the scripted attributes with the SQL given instead of their script" in {
+      val schema = SchemaInfo(
+        name = "account",
+        pattern = Pattern.compile(".*\\.csv"),
+        metadata = Some(Metadata(format = Some(Format.DSV))),
+        attributes = List(
+          TableAttribute(name = "raw", `type` = "string", ignore = Some(true)),
+          TableAttribute(name = "n", `type` = "long", script = Some("CAST(raw AS INT64)")),
+          TableAttribute(name = "m", `type` = "long", script = Some("CAST(raw AS INT64) * 2"))
+        )
+      )
+      val sql = schema
+        .buildSecondStepSqlSelectOnLoad(
+          "tmp_table",
+          scripts = Map("n" -> "SAFE_CAST(raw AS INT64)")
+        )
+        .replaceAll("\\s+", " ")
+      sql should include("SAFE_CAST(raw AS INT64) AS n")
+      sql should include("CAST(raw AS INT64) * 2 AS m")
+      schema.secondStepProjections(None, Map.empty, Map.empty, Map("m" -> "0")) should contain(
+        "0 AS m"
+      )
+    }
+
     "buildSecondStepSqlSelectOnLoad" should "wrap POSITION projections in SAFE_CAST for non-string DDL types" in {
       val schema = SchemaInfo(
         name = "account",

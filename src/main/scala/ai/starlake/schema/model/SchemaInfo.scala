@@ -728,10 +728,11 @@ case class SchemaInfo(
     table: String,
     jdbcEngine: Option[JdbcEngine] = None,
     ddlTypesByAttribute: Map[String, String] = Map.empty,
-    typesByAttribute: Map[String, Type] = Map.empty
+    typesByAttribute: Map[String, Type] = Map.empty,
+    scripts: Map[String, String] = Map.empty
   ): String = {
     val (allAttributes, allFinalAttributes) =
-      secondStepColumns(jdbcEngine, ddlTypesByAttribute, typesByAttribute)
+      secondStepColumns(jdbcEngine, ddlTypesByAttribute, typesByAttribute, scripts)
     val sourceTableFilterSQL = this.filter match {
       case Some(filter) => s"WHERE $filter"
       case None         => ""
@@ -755,18 +756,23 @@ case class SchemaInfo(
   def secondStepProjections(
     jdbcEngine: Option[JdbcEngine],
     ddlTypesByAttribute: Map[String, String],
-    typesByAttribute: Map[String, Type]
+    typesByAttribute: Map[String, Type],
+    scripts: Map[String, String] = Map.empty
   ): List[String] =
-    secondStepColumns(jdbcEngine, ddlTypesByAttribute, typesByAttribute)._1
+    secondStepColumns(jdbcEngine, ddlTypesByAttribute, typesByAttribute, scripts)._1
 
-  /** @return
+  /** @param scripts
+    *   the SQL that computes a scripted attribute instead of its script, by attribute name: the
+    *   native BigQuery loader evaluates the safe form of the scripts that it checks (#1935)
+    * @return
     *   the columns that the second step of a native load selects from the rows of its first step,
     *   and the final names of those that it loads
     */
   private def secondStepColumns(
     jdbcEngine: Option[JdbcEngine],
     ddlTypesByAttribute: Map[String, String],
-    typesByAttribute: Map[String, Type]
+    typesByAttribute: Map[String, Type],
+    scripts: Map[String, String]
   ): (List[String], List[String]) = {
     val attributeQuote = jdbcEngine.map(_.quote).getOrElse("")
     val (scriptAttributes, transformAttributes) =
@@ -797,8 +803,10 @@ case class SchemaInfo(
     }
 
     val sqlScripts: List[String] = scriptAttributes.map { scriptField =>
-      val script =
-        scriptField.script.getOrElse(throw new IllegalStateException("Should never happen"))
+      val script = scripts
+        .get(scriptField.name)
+        .orElse(scriptField.script)
+        .getOrElse(throw new IllegalStateException("Should never happen"))
       s"$script AS $attributeQuote${scriptField.getFinalName()}$attributeQuote"
     }
 

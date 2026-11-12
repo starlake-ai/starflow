@@ -41,13 +41,20 @@ object BigQueryPositionValues {
     *   the type of its column, if known
     * @param tpe
     *   the type of its attribute, if known
+    * @param padded
+    *   true if the values other than strings and bytes are trimmed first, since fixed-width fields
+    *   are padded; the values of DSV files are not (#1935)
     * @return
     *   the SQL of the value of the slice in its column, NULL when it does not convert: a short or
-    *   malformed line fails no INSERT. A string or bytes keep their spaces; the other values are
-    *   trimmed first, since fixed-width fields are padded. A value without column type is the
-    *   slice.
+    *   malformed line fails no INSERT. A string or bytes keep their spaces. A value without column
+    *   type is the slice.
     */
-  def value(raw: String, ddlType: Option[String], tpe: Option[Type]): String =
+  def value(
+    raw: String,
+    ddlType: Option[String],
+    tpe: Option[Type],
+    padded: Boolean = true
+  ): String =
     ddlType match {
       case None => raw
       case Some(ddlType) =>
@@ -55,7 +62,7 @@ object BigQueryPositionValues {
         val textual = parsed.exists(t =>
           t.standardType == StandardSQLTypeName.STRING || t.standardType == StandardSQLTypeName.BYTES
         )
-        val text = if (textual) raw else s"TRIM($raw)"
+        val text = if (textual || !padded) raw else s"TRIM($raw)"
         patternValue(text, parsed, tpe).getOrElse {
           val upper = ddlType.trim.toUpperCase
           // BigQuery cannot cast a string to these types: it parses them
@@ -84,10 +91,7 @@ object BigQueryPositionValues {
     *   not: its pattern, or its zone, sets a format that BigQuery cannot apply in SQL
     */
   def unreadable(tpe: Type, columnType: Option[String] = None): Option[String] = {
-    val parsed = columnType
-      .orElse(tpe.ddlMapping.flatMap(_.get("bigquery")))
-      .flatMap(c => BigQueryType.parse(c.trim))
-      .orElse(patternColumnTypes.get(tpe.primitiveType).map(BigQueryType(_)))
+    val parsed = readColumnType(tpe, columnType)
     if (tpe.primitiveType == PrimitiveType.double && tpe.zone.exists(_.trim.nonEmpty))
       Some(
         s"the zone ${tpe.zone.get} of its type ${tpe.name}, which sets the format of its numbers"
@@ -96,6 +100,63 @@ object BigQueryPositionValues {
       Some(s"the pattern ${tpe.pattern} of its type ${tpe.name}")
     else None
   }
+
+  /** @return
+    *   the type of the column that the values of the type are read into: this one, or by default
+    *   the `ddlMapping.bigquery` of the type, or else the type that its primitive type is read into
+    */
+  private def readColumnType(tpe: Type, columnType: Option[String]): Option[BigQueryType] =
+    columnType
+      .orElse(tpe.ddlMapping.flatMap(_.get("bigquery")))
+      .flatMap(c => BigQueryType.parse(c.trim))
+      .orElse(patternColumnTypes.get(tpe.primitiveType).map(BigQueryType(_)))
+
+  /** The pattern of the built-in `boolean` type, which reads the values that the load job of a CSV
+    * file reads: true, false, t, f, yes, no, y, n, 1 and 0, whatever their case
+    */
+  private val defaultBooleanPattern = "(?i)true|yes|[y1]|t<-TF->(?i)false|no|[n0]|f"
+
+  /** @param columnType
+    *   the type of the column that the values are read into, by default the `ddlMapping.bigquery`
+    *   of the type, or else the type that its primitive type is read into
+    * @return
+    *   true if the load job of a CSV file does not read the values of the type as the Spark loader
+    *   does, and they must be read as strings, then converted with SQL (#1935): they are read with
+    *   their pattern, which is neither one that BigQuery casts from a string, nor `ISO_DATE_TIME`
+    *   or `ISO_DATE`, whose usual values the load job reads, nor the default pattern of booleans,
+    *   or they are timestamps without offset in a zone other than UTC
+    */
+  def readWithSql(tpe: Type, columnType: Option[String] = None): Boolean = {
+    val column = readColumnType(tpe, columnType)
+    readsPattern(column, tpe) && (
+      if (tpe.primitiveType == PrimitiveType.boolean) tpe.pattern != defaultBooleanPattern
+      else
+        !castFromText(tpe) && !(
+          // Read into a TIMESTAMP column only: a DATE or DATETIME one does not read an offset
+          tpe.primitiveType == PrimitiveType.timestamp && csvPatterns(tpe.pattern) &&
+          timestampZone(tpe).isEmpty && column.exists(
+            _.standardType == StandardSQLTypeName.TIMESTAMP
+          )
+        )
+    )
+  }
+
+  /** The predefined formatters of timestamps whose usual values the load job of a CSV file reads,
+    * as the Spark loader does: `2011-12-03T10:15:30+01:00` or `2011-12-03`. A zone name, as in
+    * `[Europe/Paris]`, makes a bad record.
+    */
+  private val csvPatterns = Set("ISO_DATE_TIME", "ISO_DATE")
+
+  /** @return
+    *   why the native loader does not read the values of this type in DSV files, if it does not:
+    *   the second step reads them with SQL (see [[readWithSql]]), with a format that BigQuery
+    *   cannot apply (see [[unreadable]]), or the zone of a `double` type sets the format of its
+    *   numbers
+    */
+  def unreadableInCsv(tpe: Type, columnType: Option[String] = None): Option[String] =
+    unreadable(tpe, columnType).filter(_ =>
+      tpe.primitiveType == PrimitiveType.double || readWithSql(tpe, columnType)
+    )
 
   /** The column type that a primitive type with a pattern is read into */
   private val patternColumnTypes: Map[PrimitiveType, StandardSQLTypeName] = Map(
@@ -189,10 +250,7 @@ object BigQueryPositionValues {
     * The timestamps without offset are in the zone of their type, UTC by default.
     */
   private def temporalValue(text: String, tpe: Type): Option[String] = {
-    val zone =
-      if (tpe.primitiveType == PrimitiveType.timestamp)
-        tpe.zone.map(_.trim).filterNot(z => z.isEmpty || utcZones(z))
-      else None
+    val zone = timestampZone(tpe)
     val pattern = tpe.pattern
     // An epoch has no zone
     if (tpe.primitiveType == PrimitiveType.timestamp && pattern == "epoch_second")
@@ -200,10 +258,7 @@ object BigQueryPositionValues {
     else if (tpe.primitiveType == PrimitiveType.timestamp && pattern == "epoch_milli")
       Some(s"SAFE.TIMESTAMP_MILLIS(SAFE_CAST($text AS INT64))")
     else if (zone.exists(z => !bigQueryZone(z))) None
-    else if (
-      castPatterns.get(tpe.primitiveType).exists(_.contains(pattern)) &&
-      (zone.isEmpty || offsetPatterns.contains(pattern))
-    )
+    else if (castFromText(tpe))
       Some(s"SAFE_CAST($text AS ${patternColumnTypes(tpe.primitiveType).name()})")
     else {
       // The dates of Spark read Java patterns only, the others predefined formatters too
@@ -222,6 +277,22 @@ object BigQueryPositionValues {
       }
     }
   }
+
+  /** @return
+    *   the zone of a timestamp type, if it is not UTC
+    */
+  private def timestampZone(tpe: Type): Option[String] =
+    if (tpe.primitiveType == PrimitiveType.timestamp)
+      tpe.zone.map(_.trim).filterNot(z => z.isEmpty || utcZones(z))
+    else None
+
+  /** @return
+    *   true if BigQuery casts the values of the date and time type from their text: its pattern is
+    *   one of [[castPatterns]], and a timestamp is in UTC or has an offset
+    */
+  private def castFromText(tpe: Type): Boolean =
+    castPatterns.get(tpe.primitiveType).exists(_.contains(tpe.pattern)) &&
+    (timestampZone(tpe).isEmpty || offsetPatterns.contains(tpe.pattern))
 
   private lazy val predefinedFormatters: Set[String] =
     PrimitiveType.dateFormatters.keySet ++ PrimitiveType.datetimeFormatters.keySet ++
