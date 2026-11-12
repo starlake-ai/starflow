@@ -848,23 +848,43 @@ build_appcds_after_setup() {
 
 # The JVM of spark-submit without spark-submit: same classpath order, flags and archive. Only
 # what needs a Spark session may behave differently, so this is for the user to choose.
-launch_main() {
-  local classpath memory_flag=() flags=(
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/java.io=ALL-UNNAMED
-    --add-opens=java.base/java.net=ALL-UNNAMED
-    --add-opens=java.base/java.nio=ALL-UNNAMED
-    --add-opens=java.base/java.util=ALL-UNNAMED
-    --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
-    --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
-    --add-opens=java.base/sun.security.action=ALL-UNNAMED
-    --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+# The major version of the JDK, read from its release file to start no JVM. Empty when the JDK
+# has none.
+jdk_major() {
+  local java_home="$JAVA_HOME" major
+  if [ -z "$java_home" ]; then java_home="$(dirname "$(dirname "$(command -v java)")")"; fi
+  major="$(sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$java_home/release" 2>/dev/null || true)"
+  # Java 8 and older report 1.x
+  if [ "$major" = 1 ]; then major=8; fi
+  echo "$major"
+}
+
+# The packages that Spark opens, for the JVMs started without spark-submit. JDK 24 removed
+# sun.security.action, and opening it there prints a warning on every command.
+java_module_flags() {
+  local major
+  major="$(jdk_major)"
+  printf '%s ' \
+    --add-opens=java.base/java.lang=ALL-UNNAMED \
+    --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
+    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
+    --add-opens=java.base/java.io=ALL-UNNAMED \
+    --add-opens=java.base/java.net=ALL-UNNAMED \
+    --add-opens=java.base/java.nio=ALL-UNNAMED \
+    --add-opens=java.base/java.util=ALL-UNNAMED \
+    --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
+    --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+    --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
+    --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
     --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
-  )
+  if [ -z "$major" ] || [ "$major" -lt 24 ]; then printf '%s ' --add-opens=java.base/sun.security.action=ALL-UNNAMED; fi
+}
+
+launch_main() {
+  local classpath memory_flag=() flags=()
+  # shellcheck disable=SC2207
+  flags=($(java_module_flags))
   if [[ $SPARK_MASTER_URL == local* ]]
   then
     if [ -f "$APPCDS_LAUNCH" ]; then enable_appcds; fi
@@ -895,12 +915,9 @@ launch_main() {
 # Without this, users only get a stack trace. Read from the release file of the JDK to start no
 # JVM: a JDK that has none gets no warning.
 warn_if_jdk_unsupported() {
-  local java_home="$JAVA_HOME" major sl_major=0 sl_minor=0
-  if [ -z "$java_home" ]; then java_home="$(dirname "$(dirname "$(command -v java)")")"; fi
-  major="$(sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$java_home/release" 2>/dev/null || true)"
+  local major sl_major=0 sl_minor=0
+  major="$(jdk_major)"
   if [ -z "$major" ]; then return 0; fi
-  # Java 8 and older report 1.x
-  if [ "$major" -eq 1 ]; then major=8; fi
   if [[ "$SL_VERSION" =~ ^([0-9]+)\.([0-9]+) ]]; then
     sl_major="${BASH_REMATCH[1]}"
     sl_minor="${BASH_REMATCH[2]}"
@@ -1133,37 +1150,11 @@ case "$1" in
   serve)
     chmod +x $SCRIPT_DIR/bin/api/git/*.sh
     chmod +x $SCRIPT_DIR/bin/api/bin/*
-    if [[ -z "$SL_API_DEBUG" ]]
+    JAVA_OPTS="$(java_module_flags)$JAVA_OPTS"
+    export JAVA_OPTS
+    if [[ -n "$SL_API_DEBUG" ]]
     then
-      export JAVA_OPTS="--add-opens=java.base/java.lang=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-                          --add-opens=java.base/java.io=ALL-UNNAMED \
-                          --add-opens=java.base/java.net=ALL-UNNAMED \
-                          --add-opens=java.base/java.nio=ALL-UNNAMED \
-                          --add-opens=java.base/java.util=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
-                          --add-opens=java.base/sun.security.action=ALL-UNNAMED \
-                          --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
-                          --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED $JAVA_OPTS"
-    else
-      export JAVA_OPTS="--add-opens=java.base/java.lang=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-                          --add-opens=java.base/java.io=ALL-UNNAMED \
-                          --add-opens=java.base/java.net=ALL-UNNAMED \
-                          --add-opens=java.base/java.nio=ALL-UNNAMED \
-                          --add-opens=java.base/java.util=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
-                          --add-opens=java.base/sun.security.action=ALL-UNNAMED \
-                          --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
-                          --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED $JAVA_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
+      export JAVA_OPTS="$JAVA_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
     fi
     $SCRIPT_DIR/bin/api/bin/local-run-api $SCRIPT_DIR dummy
 

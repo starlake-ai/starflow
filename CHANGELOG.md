@@ -1,6 +1,14 @@
 
 # Release notes
 
+# 1.9.1:
+__Improvement__:
+- **`serve`, and `SL_RUN_MODE=main` without an AppCDS archive, no longer print `WARNING: package sun.security.action not in java.base` on JDK 24 and newer**: the launchers opened a package that JDK 24 removed. They still open it on JDK 17 to 23, which 1.8 runs on.
+  - Commands run through `spark-submit`, the default, still print it: Spark 4.3 opens that package itself. So does `SL_RUN_MODE=main` with an archive, which reuses the flags of `spark-submit`.
+
+__Bug fix__:
+- **The `sales_kpi` transforms of the `duckdb` sample run on DuckDB**: `byseller_kpi` was written in BigQuery syntax, and both tasks called `CURRENT_TIMESTAMP()`, which DuckDB does not have. The `byseller_kpi0` test no longer compares a timestamp that changes on every run.
+
 # 1.9.0:
 __Breaking change__:
 - **Starflow 1.9 runs on Spark 4.3.0 and requires Java 25**. `setup.sh` and `setup.ps1` install JDK 25 when the one they find is older.

@@ -644,7 +644,8 @@ rem The JVM of spark-submit without spark-submit: same classpath order, flags an
 rem what needs a Spark session may behave differently, so this is for the user to choose.
 :launch_main
     set "_main_classpath_arg="
-    set "_main_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+    call :java_module_flags
+    set "_main_flags=!_module_flags!"
     if /i not "%SPARK_MASTER_URL:~0,5%" == "local" goto :launch_main_classpath
     if exist "%APPCDS_LAUNCH%" call :enable_appcds
     call :enable_jdbc_c1 %1
@@ -683,12 +684,11 @@ rem what needs a Spark session may behave differently, so this is for the user t
     java !_main_flags! !_main_memory! -Dlog4j.configurationFile="!_log_config!" !SPARK_DRIVER_OPTIONS! !_main_classpath_arg! %SL_MAIN% %*
     exit /b %errorlevel%
 
-rem Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
-rem an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
-rem bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
-rem Without this, users only get a stack trace. Read from the release file of the JDK to start no
-rem JVM: a JDK that has none gets no warning.
-:warn_if_jdk_unsupported
+rem The major version of the JDK in _jdk_major and _jdk_major_number, read from its release file
+rem to start no JVM. Both are left undefined when the JDK has none.
+:jdk_major
+    set "_jdk_major="
+    set "_jdk_major_number="
     set "_jdk_home=%JAVA_HOME%"
     if not defined _jdk_home for /f "delims=" %%j in ('where java 2^>nul') do if not defined _jdk_home set "_jdk_home=%%~dpj.."
     set "_jdk_version="
@@ -700,6 +700,26 @@ rem JVM: a JDK that has none gets no warning.
     set /a "_jdk_major_number=_jdk_major" 2>nul
     rem Java 8 and older report 1.x
     if %_jdk_major_number% EQU 1 set "_jdk_major_number=8" & set "_jdk_major=8"
+    exit /b 0
+
+rem The packages that Spark opens, in _module_flags, for the JVMs started without spark-submit.
+rem JDK 24 removed sun.security.action, and opening it there prints a warning on every command.
+:java_module_flags
+    set "_module_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+    call :jdk_major
+    set "_open_security_action=1"
+    if defined _jdk_major_number if !_jdk_major_number! GEQ 24 set "_open_security_action="
+    if defined _open_security_action set "_module_flags=!_module_flags! --add-opens=java.base/sun.security.action=ALL-UNNAMED"
+    exit /b 0
+
+rem Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
+rem an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
+rem bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
+rem Without this, users only get a stack trace. Read from the release file of the JDK to start no
+rem JVM: a JDK that has none gets no warning.
+:warn_if_jdk_unsupported
+    call :jdk_major
+    if not defined _jdk_major exit /b 0
     set "_sl_major=0"
     set "_sl_minor=0"
     for /f "tokens=1,2 delims=.-" %%a in ("%SL_VERSION%") do set "_sl_major=%%a" & set "_sl_minor=%%b"
@@ -1009,10 +1029,11 @@ goto :eof
     exit /b %errorlevel%
 
 :serve_command
+    call :java_module_flags
     if defined SL_API_DEBUG (
-        set "JAVA_OPTS=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED %JAVA_OPTS% -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
+        set "JAVA_OPTS=!_module_flags! %JAVA_OPTS% -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
     ) else (
-        set "JAVA_OPTS=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED %JAVA_OPTS%"
+        set "JAVA_OPTS=!_module_flags! %JAVA_OPTS%"
     )
     call "%SCRIPT_DIR%bin\api\bin\local-run-api.bat" "%SCRIPT_DIR%" dummy
     exit /b %errorlevel%
