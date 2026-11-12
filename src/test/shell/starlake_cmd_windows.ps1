@@ -23,6 +23,8 @@ function Starlake([string]$arguments, [hashtable]$environment = @{}, [string]$la
   # process exits before its handle is read, as a command refused by the JDK check can.
   $startInfo = New-Object System.Diagnostics.ProcessStartInfo 'cmd.exe', "/c `"`"$launcherPath`" $arguments > `"$log`" 2>&1`""
   $startInfo.UseShellExecute = $false
+  # Set-Location moves PowerShell, not the working directory that Process.Start gives the child
+  $startInfo.WorkingDirectory = (Get-Location).ProviderPath
   $process = [System.Diagnostics.Process]::Start($startInfo)
   $finished = $process.WaitForExit($minutes * 60 * 1000)
   foreach ($key in $environment.Keys) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
