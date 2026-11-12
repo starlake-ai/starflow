@@ -2,9 +2,10 @@ package ai.starlake.job.sink.bigquery
 
 import ai.starlake.TestHelper
 import ai.starlake.job.ingest.loaders.BigQueryNativeLoader
-import ai.starlake.schema.model.{AccessControlEntry, RowLevelSecurity}
+import ai.starlake.schema.model.{AccessControlEntry, RowLevelSecurity, SchemaInfo, TableAttribute}
 import com.google.cloud.bigquery.{Field, JobInfo, PolicyTags, StandardSQLTypeName, TableId}
 
+import java.util.regex.Pattern
 import scala.jdk.CollectionConverters._
 
 class BigQueryAccessPoliciesSpec extends TestHelper {
@@ -14,15 +15,27 @@ class BigQueryAccessPoliciesSpec extends TestHelper {
     source = Left("gs://bucket/a.csv,gs://bucket/b.csv"),
     outputTableId = Some(TableId.of("project", "domain", "table")),
     outputPartition = Some("day"),
+    outputClustering = List("country"),
     days = Some(30),
     requirePartitionFilter = true,
     writeDisposition = JobInfo.WriteDisposition.WRITE_TRUNCATE.name(),
     rls = List(RowLevelSecurity("only_fr", "country = 'FR'", Set("group:fr@example.com"))),
     acl = List(AccessControlEntry("roles/bigquery.dataViewer", Set("group:all@example.com"))),
+    starlakeSchema = Some(
+      SchemaInfo(
+        "table",
+        Pattern.compile("table.*"),
+        attributes = List(
+          TableAttribute("id", "long", rename = Some("table_id")),
+          TableAttribute("customer", "string", foreignKey = Some("customers.id"))
+        ),
+        primaryKey = List("table_id")
+      )
+    ),
     accessToken = Some("token")
   )
 
-  "firstStepConfig" should "load a file into its temporary table without access policies or partition filter" in {
+  "firstStepConfig" should "load a file into its temporary table without access policies, partitioning, clustering or keys" in {
     val tempTable = TableId.of("project", "domain", "zztmp_table_0")
     val config = BigQueryNativeLoader.firstStepConfig(target, "gs://bucket/b.csv", tempTable)
     config.source shouldBe Left("gs://bucket/b.csv")
@@ -32,9 +45,15 @@ class BigQueryAccessPoliciesSpec extends TestHelper {
     config.rls shouldBe Nil
     config.acl shouldBe Nil
     config.requirePartitionFilter shouldBe false
+    // It lacks the partition, clustering and key columns of the target, under their final names
+    // (#1838)
+    config.outputPartition shouldBe None
+    config.outputClustering shouldBe Nil
+    config.days shouldBe None
+    config.starlakeSchema.map(_.primaryKey) shouldBe Some(Nil)
+    config.starlakeSchema.toList.flatMap(_.attributes.flatMap(_.foreignKey)) shouldBe Nil
+    config.starlakeSchema.toList.flatMap(_.attributes.map(_.name)) shouldBe List("id", "customer")
     // As the target otherwise
-    config.outputPartition shouldBe Some("day")
-    config.days shouldBe Some(30)
     config.accessToken shouldBe Some("token")
   }
 

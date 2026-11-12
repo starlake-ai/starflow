@@ -77,6 +77,23 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
 
   lazy val engineName: Engine = sinkConnection.getJdbcEngineName()
 
+  /** @return
+    *   the sink of the archive table, which has the columns of the temporary tables: partitioned
+    *   and clustered as the target on the columns that it has only (#1838)
+    */
+  private def archiveSink(columns: List[String]): AllSinks = {
+    val sink = mergedMetadata.getSink().toAllSinks()
+    val archived = NativeLoader.archiveSink(sink, columns)
+    if (archived != sink) archiveSinkWarning
+    archived
+  }
+
+  /** Logged once per load, whose files are archived one by one */
+  private lazy val archiveSinkWarning: Unit =
+    logger.warn(
+      s"The archive table of ${domain.finalName}.${starlakeSchema.finalName} is not partitioned or clustered as the table, on columns that it lacks"
+    )
+
   /** @param rows
     *   the SQL of the rows to archive, given the SQL of the temporary table of the first step
     */
@@ -118,7 +135,7 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
         database = archiveDatabaseName,
         archiveDomainName,
         archiveTableName,
-        sink = Some(mergedMetadata.getSink().toAllSinks()),
+        sink = Some(archiveSink(firstStepFields.toList)),
         connectionRef = Option(mergedMetadata.getSinkConnectionRef())
       )
 
@@ -321,7 +338,9 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       interactive = None,
       truncate = false,
       test = false,
-      logExecution = true,
+      // IngestionJob writes the LOAD audit row, as for Spark loads: a TRANSFORM row would
+      // duplicate it. A failure still writes one, as a Spark sink task does (#1838)
+      logExecution = false,
       accessToken = accessToken,
       resultPageSize = 200,
       resultPageNumber = 1,
@@ -531,4 +550,27 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
   lazy val schemaWithMergedMetadata: SchemaInfo =
     effectiveSchema.copy(metadata = Some(mergedMetadata))
 
+}
+
+object NativeLoader {
+
+  /** @param columns
+    *   the columns of the archive table
+    * @return
+    *   the sink of a table, without the partition, or the clustering, of the target when it names a
+    *   column that the archive table lacks. A partition by ingestion time, or on an expression, is
+    *   kept.
+    */
+  def archiveSink(sink: AllSinks, columns: List[String]): AllSinks = {
+    val names = columns.map(_.toLowerCase).toSet
+    def lacks(column: String): Boolean = {
+      val name = column.trim.stripPrefix("`").stripSuffix("`").toLowerCase
+      !name.contains("(") && !names.contains(name) &&
+      !Set("_partitiontime", "_partitiondate").contains(name)
+    }
+    sink.copy(
+      partition = sink.partition.filterNot(_.exists(lacks)),
+      clustering = sink.clustering.filterNot(_.exists(lacks))
+    )
+  }
 }

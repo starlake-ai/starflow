@@ -97,7 +97,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
   private lazy val format: Format = mergedMetadata.resolveFormat()
 
   override protected def requireTwoSteps(schema: SchemaInfo): Boolean =
-    super.requireTwoSteps(schema) || format == Format.DSV &&
+    super.requireTwoSteps(schema) ||
+    BigQueryNativeLoader.secondStepRequired(schema, path) || format == Format.DSV &&
     // The first step reads them as strings, that the second step converts (#1935). The target
     // table is not read yet: with the mappings or without, which may be disabled. `run` reads it.
     List(true, false).exists(fromDdlMapping =>
@@ -116,14 +117,9 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         )
         .nonEmpty
     ) || format == Format.PARQUET && (
-      // Local files are uploaded through a single stream per load job: the first step loads
-      // them one by one, since their concatenation is not a Parquet file
-      BigQueryNativeLoader.requiresOneLoadPerFile(format, path) ||
       // The first step reads every column as nullable, and the second step writes into the
       // target table, which fails on a null value of a required attribute
       BigQueryNativeLoader.hasRequiredAttributes(schema.attributes) ||
-      // Run by the second step, as Spark ran them: a load in one step does not
-      schema.presql.nonEmpty || schema.postsql.nonEmpty ||
       // The first step reads them as strings, that the second step converts. The target table
       // is not read yet: one of its columns can keep a mapped type even when the mappings are
       // disabled, so they are applied
@@ -257,13 +253,6 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           log = false
         )
       )
-      // A temporary table cannot be partitioned on a column that it reads as a string
-      val partitionReadAsString = targetConfig.outputPartition.exists(partition =>
-        typed.exists(_.columns.exists { column =>
-          column.attribute.name.equalsIgnoreCase(partition) ||
-          column.attribute.getFinalName().equalsIgnoreCase(partition)
-        })
-      )
       if (twoSteps || typed.nonEmpty) {
         val (loadResults, tempTableIds, tableInfos) =
           ParUtils
@@ -278,11 +267,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                       .get("projectId")
                       .orElse(settings.appConfig.getDefaultDatabase())
                   )
-                val firstStepConfig = {
-                  val config = BigQueryNativeLoader
-                    .firstStepConfig(targetConfig, sourceUri, firstStepTempTable)
-                  if (partitionReadAsString) config.copy(outputPartition = None) else config
-                }
+                val firstStepConfig = BigQueryNativeLoader
+                  .firstStepConfig(targetConfig, sourceUri, firstStepTempTable)
 
                 val firstStepBigqueryJob = new BigQueryNativeJob(firstStepConfig, "")
                 // For POSITION format the first step loads each line as a single VARCHAR
@@ -582,6 +568,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           _ <- targetBigqueryJob.cliConfig.outputTableId
             .map { _ =>
               applyBigQuerySecondStepSQL(
+                targetBigqueryJob,
                 tempTableNames,
                 existingTargetSchema,
                 incomingSchema,
@@ -1021,8 +1008,11 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   // of the attributes still protects their raw values
                   rls = Nil,
                   acl = Nil,
-                  starlakeSchema =
-                    Some(schemaWithMergedMetadata.copy(metadata = Some(diagnosticMetadata)))
+                  starlakeSchema = Some(
+                    BigQueryNativeLoader.withoutKeys(
+                      schemaWithMergedMetadata.copy(metadata = Some(diagnosticMetadata))
+                    )
+                  )
                 ),
                 ""
               )
@@ -1441,12 +1431,15 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     }
   }
 
-  /** @param condition
+  /** @param targetJob
+    *   the job of the target table of the load, with its Starlake schema
+    * @param condition
     *   the condition of the rows of the first step that the second step loads, if they are checked
     * @param typed
     *   the attributes of a DSV file that the first step reads as strings, if any
     */
   private def applyBigQuerySecondStepSQL(
+    targetJob: BigQueryNativeJob,
     firstStepTempTableTableNames: List[String],
     existingTargetSchema: Option[bigquery.Schema],
     incomingSchema: bigquery.Schema,
@@ -1477,7 +1470,11 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
       incomingSchema = Some(incomingSchema),
       createIfAbsent = true
     )
-    ingestionJob.writingWith(bqTask)(bqTask.run())
+    // The second step writes the target as a transform does, which sets neither its labels nor
+    // its keys: they are set as by a load in one step, before the rows are written, the keys on a
+    // target that did not exist before the load. Its writes keep them (#1838)
+    Try(targetJob.updateLabelsAndConstraints(withConstraints = existingTargetSchema.isEmpty))
+      .flatMap(_ => ingestionJob.writingWith(bqTask)(bqTask.run()))
   }
 
 }
@@ -1506,8 +1503,34 @@ object BigQueryNativeLoader {
       // applies the ACL and row access policies to the target
       requirePartitionFilter = false,
       rls = Nil,
-      acl = Nil
+      acl = Nil,
+      // Nor is it partitioned or clustered, since the second step reads all of it, nor does it
+      // get the keys of the target. The target names its partition, clustering and key columns
+      // after their final names, which a temporary table lacks: it has the source names of the
+      // attributes, and a single `value` column for POSITION files (#1838)
+      outputPartition = None,
+      outputClustering = Nil,
+      days = None,
+      starlakeSchema = targetConfig.starlakeSchema.map(withoutKeys)
     )
+
+  /** @return
+    *   the schema without primary key nor foreign keys, for a table of the load that has not the
+    *   columns of the target
+    */
+  def withoutKeys(schema: SchemaInfo): SchemaInfo =
+    schema.copy(
+      primaryKey = Nil,
+      attributes = schema.attributes.map(_.copy(foreignKey = None))
+    )
+
+  /** @return
+    *   true if a load takes two steps, whatever its attributes and its format (#1838): the second
+    *   step runs its presql and postsql statements, as Spark runs them, and its local files are
+    *   loaded one by one (see [[requiresOneLoadPerFile]])
+    */
+  def secondStepRequired(schema: SchemaInfo, paths: List[Path]): Boolean =
+    (schema.presql ++ schema.postsql).exists(_.trim.nonEmpty) || requiresOneLoadPerFile(paths)
 
   /** @return
     *   the schema of the temporary table of the first step, with the source names of the attributes
@@ -1818,11 +1841,14 @@ object BigQueryNativeLoader {
 
   /** @return
     *   true if each file must be loaded by its own load job: local files are uploaded through a
-    *   single stream per job, and the concatenation of Parquet files is not a Parquet file
+    *   single stream per job, and their concatenation is not one file of their format. The
+    *   concatenation of Parquet files is not a Parquet file, and that of CSV or JSON files reads
+    *   the headers of the files after the first one as rows, and joins the last line of a file
+    *   without a final newline to the first line of the next one.
     */
-  def requiresOneLoadPerFile(format: Format, paths: List[Path]): Boolean =
+  def requiresOneLoadPerFile(paths: List[Path]): Boolean =
     // Same test of local files as BigQueryNativeJob.loadPathsToBQ
-    format == Format.PARQUET && paths.size > 1 && paths.exists(_.toString.startsWith("file:"))
+    paths.size > 1 && paths.exists(_.toString.startsWith("file:"))
 
   /** @return
     *   the schema of an existing table, with the fields of the incoming schema that it lacks, at
