@@ -848,23 +848,43 @@ build_appcds_after_setup() {
 
 # The JVM of spark-submit without spark-submit: same classpath order, flags and archive. Only
 # what needs a Spark session may behave differently, so this is for the user to choose.
-launch_main() {
-  local classpath memory_flag=() flags=(
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/java.io=ALL-UNNAMED
-    --add-opens=java.base/java.net=ALL-UNNAMED
-    --add-opens=java.base/java.nio=ALL-UNNAMED
-    --add-opens=java.base/java.util=ALL-UNNAMED
-    --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
-    --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
-    --add-opens=java.base/sun.security.action=ALL-UNNAMED
-    --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+# The major version of the JDK, read from its release file to start no JVM. Empty when the JDK
+# has none.
+jdk_major() {
+  local java_home="$JAVA_HOME" major
+  if [ -z "$java_home" ]; then java_home="$(dirname "$(dirname "$(command -v java)")")"; fi
+  major="$(sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$java_home/release" 2>/dev/null || true)"
+  # Java 8 and older report 1.x
+  if [ "$major" = 1 ]; then major=8; fi
+  echo "$major"
+}
+
+# The packages that Spark opens, for the JVMs started without spark-submit. JDK 24 removed
+# sun.security.action, and opening it there prints a warning on every command.
+java_module_flags() {
+  local major
+  major="$(jdk_major)"
+  printf '%s ' \
+    --add-opens=java.base/java.lang=ALL-UNNAMED \
+    --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
+    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
+    --add-opens=java.base/java.io=ALL-UNNAMED \
+    --add-opens=java.base/java.net=ALL-UNNAMED \
+    --add-opens=java.base/java.nio=ALL-UNNAMED \
+    --add-opens=java.base/java.util=ALL-UNNAMED \
+    --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
+    --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+    --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
+    --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
     --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
-  )
+  if [ -z "$major" ] || [ "$major" -lt 24 ]; then printf '%s ' --add-opens=java.base/sun.security.action=ALL-UNNAMED; fi
+}
+
+launch_main() {
+  local classpath memory_flag=() flags=()
+  # shellcheck disable=SC2207
+  flags=($(java_module_flags))
   if [[ $SPARK_MASTER_URL == local* ]]
   then
     if [ -f "$APPCDS_LAUNCH" ]; then enable_appcds; fi
@@ -892,15 +912,13 @@ launch_main() {
 # Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
 # an older JDK only gets an UnsupportedClassVersionError. Up to 1.8, the Hadoop that Spark
 # bundles calls Subject.getSubject, which throws from JDK 24 on, and no JVM flag brings it back.
-# Without this, users only get a stack trace. Read from the release file of the JDK to start no
-# JVM: a JDK that has none gets no warning.
-warn_if_jdk_unsupported() {
-  local java_home="$JAVA_HOME" major sl_major=0 sl_minor=0
-  if [ -z "$java_home" ]; then java_home="$(dirname "$(dirname "$(command -v java)")")"; fi
-  major="$(sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$java_home/release" 2>/dev/null || true)"
+# Without this, users only get a stack trace. So the command stops before starting a JVM, unless
+# SL_SKIP_JDK_CHECK is set, which only warns. Read from the release file of the JDK to start no
+# JVM: a JDK that has none is not checked.
+check_jdk_supported() {
+  local major sl_major=0 sl_minor=0 problem="" fix=""
+  major="$(jdk_major)"
   if [ -z "$major" ]; then return 0; fi
-  # Java 8 and older report 1.x
-  if [ "$major" -eq 1 ]; then major=8; fi
   if [[ "$SL_VERSION" =~ ^([0-9]+)\.([0-9]+) ]]; then
     sl_major="${BASH_REMATCH[1]}"
     sl_minor="${BASH_REMATCH[2]}"
@@ -909,18 +927,28 @@ warn_if_jdk_unsupported() {
   then
     if [ "$major" -lt 25 ]
     then
-      echo "Warning: Java $major cannot run Starflow $SL_VERSION, which requires Java 25 or above. Set JAVA_HOME to JDK 25." >&2
+      problem="Java $major cannot run Starflow $SL_VERSION, which requires Java 25 or above."
+      fix="Set JAVA_HOME to JDK 25"
     fi
   elif [ "$major" -ge 24 ]
   then
-    echo "Warning: Java $major cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer. Set JAVA_HOME to JDK 17 or 21." >&2
+    problem="Java $major cannot run Starflow: the Hadoop bundled with Spark fails on JDK 24 and newer."
+    fix="Set JAVA_HOME to JDK 17 or 21"
   fi
+  if [ -z "$problem" ]; then return 0; fi
+  if [ -n "$SL_SKIP_JDK_CHECK" ]
+  then
+    echo "Warning: $problem $fix." >&2
+    return 0
+  fi
+  echo "Error: $problem $fix, or set SL_SKIP_JDK_CHECK=1 to run anyway." >&2
+  return 1
 }
 
 launch_starlake() {
   if [ -f "$STARLAKE_EXTRA_LIB_FOLDER/$SL_JAR_NAME" ]
   then
-    warn_if_jdk_unsupported
+    check_jdk_supported || exit 1
     if  [ -n "$SL_LOG_LEVEL" ] && [ "$SL_LOG_LEVEL" != "error" ]; then
       echo "- JAVA_HOME=$JAVA_HOME"
       echo "- SL_ROOT=$SL_ROOT"
@@ -1133,37 +1161,11 @@ case "$1" in
   serve)
     chmod +x $SCRIPT_DIR/bin/api/git/*.sh
     chmod +x $SCRIPT_DIR/bin/api/bin/*
-    if [[ -z "$SL_API_DEBUG" ]]
+    JAVA_OPTS="$(java_module_flags)$JAVA_OPTS"
+    export JAVA_OPTS
+    if [[ -n "$SL_API_DEBUG" ]]
     then
-      export JAVA_OPTS="--add-opens=java.base/java.lang=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-                          --add-opens=java.base/java.io=ALL-UNNAMED \
-                          --add-opens=java.base/java.net=ALL-UNNAMED \
-                          --add-opens=java.base/java.nio=ALL-UNNAMED \
-                          --add-opens=java.base/java.util=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
-                          --add-opens=java.base/sun.security.action=ALL-UNNAMED \
-                          --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
-                          --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED $JAVA_OPTS"
-    else
-      export JAVA_OPTS="--add-opens=java.base/java.lang=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
-                          --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-                          --add-opens=java.base/java.io=ALL-UNNAMED \
-                          --add-opens=java.base/java.net=ALL-UNNAMED \
-                          --add-opens=java.base/java.nio=ALL-UNNAMED \
-                          --add-opens=java.base/java.util=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
-                          --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-                          --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
-                          --add-opens=java.base/sun.security.action=ALL-UNNAMED \
-                          --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
-                          --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED $JAVA_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
+      export JAVA_OPTS="$JAVA_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
     fi
     $SCRIPT_DIR/bin/api/bin/local-run-api $SCRIPT_DIR dummy
 

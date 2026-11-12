@@ -35,7 +35,6 @@ val testJavaOptions = {
     "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
     "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
     "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
-    "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
     "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED").mkString(" ")
   s"-Xmx$heapSize -Xss4m -XX:ReservedCodeCacheSize=128m -Dfile.encoding=UTF-8 $extraTestJavaArgs"
     .split(" ").toSeq
