@@ -8,3 +8,5 @@ application:
       options:
         url: "jdbc:duckdb:{{SL_ROOT}}/datasets/duckdb.db"
         driver: "org.duckdb.DuckDBDriver"
+    files:
+      type: "fs"

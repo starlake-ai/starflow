@@ -122,7 +122,8 @@ case class TransformContext(
     *   - Engine.BQ with an FsSink writing Parquet, Avro or JSON files to a Cloud Storage path →
     *     BigQueryExportTask (EXPORT DATA)
     *   - Engine.BQ with BigQuerySink or interactive mode → BigQueryAutoTask
-    *   - Engine.JDBC with JdbcSink matching run connection → JdbcAutoTask
+    *   - Engine.JDBC with JdbcSink on the run connection, or on another connection with the same
+    *     options (see sinkOnRunDatabase) → JdbcAutoTask
     *   - FsSink with export mode → SparkExportTask
     *   - All other cases → SparkAutoTask
     *
@@ -145,9 +146,10 @@ case class TransformContext(
       case Engine.BQ if sinkConfig.isInstanceOf[BigQuerySink] || interactive.isDefined =>
         TransformContext.createBigQueryTask(this)
       case Engine.JDBC
-          if sinkConfig
-            .isInstanceOf[JdbcSink] && sinkConfig
-            .getConnectionRef() == runConnectionRef || interactive.isDefined =>
+          if sinkConfig.isInstanceOf[JdbcSink] && sinkOnRunDatabase(
+            sinkConfig.getConnectionRef(),
+            runConnectionRef
+          ) || interactive.isDefined =>
         TransformContext.createJdbcTask(this)
       case _ =>
         sinkConfig match {
@@ -156,6 +158,22 @@ case class TransformContext(
           case _ =>
             TransformContext.createSparkTask(this)
         }
+    }
+  }
+
+  /** @return
+    *   true if the sink connection is the run connection, or another connection with the same
+    *   options, which reaches the same database: in a test, every connection is the DuckDB database
+    *   of the test, so that a task whose sink is on another connection, such as a file sink, writes
+    *   its table there as the others do (#1897). A Python task whose sink is on another connection,
+    *   and a task whose sink connection declares a Spark format, keep running on Spark
+    */
+  private def sinkOnRunDatabase(sinkConnectionRef: String, runConnectionRef: String): Boolean = {
+    val connections = settings.appConfig.connections
+    sinkConnectionRef == runConnectionRef || taskDesc.python.isEmpty && {
+      val sinkOptions =
+        connections.get(sinkConnectionRef).filter(_.sparkFormat.isEmpty).map(_.options)
+      sinkOptions.isDefined && sinkOptions == connections.get(runConnectionRef).map(_.options)
     }
   }
 }

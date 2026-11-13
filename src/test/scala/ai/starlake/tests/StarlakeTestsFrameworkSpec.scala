@@ -1,6 +1,7 @@
 package ai.starlake.tests
 
 import ai.starlake.integration.IntegrationTestBase
+import ai.starlake.sql.StarlakeJdbcDialects
 import better.files.File
 
 class StarlakeTestsFrameworkSpec extends IntegrationTestBase {
@@ -13,6 +14,8 @@ class StarlakeTestsFrameworkSpec extends IntegrationTestBase {
   override protected def beforeAll(): Unit = {
     super.beforeAll()
     theSampleFolder.copyTo(projectDir, overwrite = true)
+    // As `starlake test` does, through Main.run
+    StarlakeJdbcDialects.registerDialects()
   }
 
   override protected def cleanup(): Unit = {
@@ -69,6 +72,14 @@ class StarlakeTestsFrameworkSpec extends IntegrationTestBase {
     val results = runTransformTest("kpi", "channel_refresh", "preloaded_target")
     results should not be empty
     results.filter(!_.success) shouldBe empty
+  }
+
+  it should "write the result of a task with a file sink to its table and compare it (#1897)" in {
+    val results = runTransformTest("kpi", "order_export", "file_sink")
+    withClue(results.flatMap(_.exception).mkString("\n")) {
+      results should not be empty
+      results.filter(!_.success) shouldBe empty
+    }
   }
 
   "a load unit test" should "load the incoming file and succeed when _expected matches" in {
