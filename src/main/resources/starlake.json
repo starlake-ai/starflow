@@ -875,7 +875,7 @@
         },
         "withHeader": {
           "type": "boolean",
-          "description": "does the dataset has a header ? true by default"
+          "description": "Does each file start with a header line? true by default, false for POSITION files"
         },
         "separator": {
           "$ref": "#/definitions/ConvertibleToString",

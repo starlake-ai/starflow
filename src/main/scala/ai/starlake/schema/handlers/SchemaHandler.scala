@@ -1206,7 +1206,15 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
             val tables = Option(domain.tables).getOrElse(Nil) ::: schemaRefs
             val finalTables =
               if (raw) tables
-              else tables.map(t => t.copy(metadata = Some(t.mergedMetadata(domain.metadata))))
+              else
+                tables.map { t =>
+                  // Once merged, the metadata of the table no longer tells where it comes from
+                  if (t.inheritsPositionHeader(domain.metadata))
+                    logger.warn(
+                      s"Table ${domain.name}.${t.name} inherits withHeader: true from its domain: the first line of each of its POSITION files is skipped. Set withHeader on the table to choose"
+                    )
+                  t.copy(metadata = Some(t.mergedMetadata(domain.metadata)))
+                }
             logger.info(s"Successfully loaded Domain  in $path")
             Success(domain.copy(tables = finalTables))
           case (path, Failure(e)) =>
