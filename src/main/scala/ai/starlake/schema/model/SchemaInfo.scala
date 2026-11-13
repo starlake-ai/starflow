@@ -493,6 +493,16 @@ case class SchemaInfo(
 
   }
 
+  /** @return
+    *   true if this POSITION table skips the first line of its files because of a `withHeader:
+    *   true` set on its domain, not on the table: a domain may set it for its DSV tables (#1946).
+    *   To call before the metadata of the table is merged with the one of its domain.
+    */
+  def inheritsPositionHeader(domainMetadata: Option[Metadata]): Boolean =
+    metadata.flatMap(_.withHeader).isEmpty &&
+    domainMetadata.flatMap(_.withHeader).contains(true) &&
+    mergedMetadata(domainMetadata).resolveFormat() == Format.POSITION
+
   def containsArrayOfRecords(): Boolean = attributes.exists(_.containsArrayOfRecords())
 
   def containsVariant(): Boolean = attributes.exists(_.containsVariant())

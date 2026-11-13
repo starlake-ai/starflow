@@ -55,7 +55,7 @@ import scala.jdk.CollectionConverters._
   *   : Is the json stored as a single object array ? false by default. This means that by default
   *   we have one json document per line.
   * @param withHeader
-  *   : does the dataset has a header ? true bu default
+  *   : does each file start with a header line? true by default, false for POSITION files
   * @param separator
   *   : the values delimiter, ';' by default value may be a multichar string starting from Spark3
   * @param quote
@@ -257,8 +257,12 @@ case class Metadata(
   def resolveArray(): java.lang.Boolean =
     getFinalValue(array.map(_.booleanValue()), false)
 
+  /** @return
+    *   true if each file starts with a header line: by default, except for POSITION files, whose
+    *   lines are all records
+    */
   def resolveWithHeader(): java.lang.Boolean =
-    getFinalValue(withHeader.map(_.booleanValue()), true)
+    getFinalValue(withHeader.map(_.booleanValue()), !format.contains(Format.POSITION))
 
   def resolveSeparator(): String = getFinalValue(separator, ";")
 
