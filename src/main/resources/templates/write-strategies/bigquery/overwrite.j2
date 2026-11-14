@@ -1,9 +1,69 @@
-
-
 {% if materializedView == 'MATERIALIZED_VIEW' %}
 DROP MATERIALIZED VIEW IF EXISTS {{ tableFullName }};
 CREATE MATERIALIZED VIEW {{ tableFullName }} AS {{ selectStatement }}
 {% else %}
+{#- The rows are replaced in a transaction: a failure in it leaves the table as it was, and no reader
+    sees it empty. The SELECT is evaluated before, into a table of the column types of the target, so
+    that it may read the table it replaces; outside the transaction, which would read materialized
+    views as logical views (#1938) -#}
+{#- A table cannot hold the pseudo-columns of a table partitioned by ingestion time: a SELECT that
+    returns one is inserted as it is, after the TRUNCATE, and reads the table empty -#}
+{%- set selectedColumns = ',' ~ (tableColumnNames | join(',') | replace('`', '') | upper) ~ ',' -%}
+{%- set inline = ',_PARTITIONTIME,' in selectedColumns or ',_PARTITIONDATE,' in selectedColumns -%}
+{#- The temporary table is typed by a SELECT of the target that does not filter its partitions: a
+    partition filter that the table requires is turned off around that statement only, and on again
+    on every path (#1880), so that the SELECT of the task is checked as before. Whether the table
+    requires one is read before the run; without it, the sink tells. The table keeps its option -#}
+{%- set partitionFilter = (tableRequirePartitionFilter == 'true') if tableRequirePartitionFilter is defined else (sinkRequirePartitionFilter == 'true') -%}
+BEGIN
+-- Set when the rollback fails, after a failed COMMIT for example: a handler needs a statement
+DECLARE sl_rollback_failed BOOL DEFAULT FALSE;
+
+{% if not inline %}
+{% if partitionFilter %}
+ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = false);
+BEGIN
+{% endif %}
+CREATE TEMP TABLE SL_INCOMING AS SELECT {{ tableColumnsCsv }} FROM {{ tableFullName }} WHERE FALSE;
+{% if partitionFilter %}
+EXCEPTION WHEN ERROR THEN
+  ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = true);
+  RAISE;
+END;
+ALTER TABLE {{ tableFullName }} SET OPTIONS (require_partition_filter = true);
+{% endif %}
+
+{# The terminator on a line of its own, after a SELECT that may end with a line comment #}
+INSERT INTO SL_INCOMING({{ tableColumnsCsv }}) {{ selectStatement }}
+;
+{% endif %}
+
+BEGIN
+BEGIN TRANSACTION;
+
 TRUNCATE TABLE {{ tableFullName }};
+
+{% if inline %}
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }}
+;
+{% else %}
+INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
+{% endif %}
+
+COMMIT TRANSACTION;
+EXCEPTION WHEN ERROR THEN
+  -- The transaction may be over already, after a failed COMMIT for example
+  BEGIN
+    ROLLBACK TRANSACTION;
+  EXCEPTION WHEN ERROR THEN
+    SET sl_rollback_failed = TRUE;
+  END;
+  -- The error of the run, as it was raised
+  RAISE;
+END;
+{% if not inline %}
+
+DROP TABLE SL_INCOMING;
+{% endif %}
+END;
 {% endif %}
