@@ -15,6 +15,7 @@ import java.sql.{Connection, SQLException, Types}
 import java.util
 import java.util.Locale
 import scala.collection.mutable.ArrayBuilder
+import scala.jdk.CollectionConverters.*
 
 private object StarlakeSnowflakeDialect extends JdbcDialect with SQLConfHelper {
   override def canHandle(url: String): Boolean = url.toLowerCase.startsWith("jdbc:snowflake:")
@@ -29,18 +30,22 @@ private object StarlakeSnowflakeDialect extends JdbcDialect with SQLConfHelper {
 
 private object StarlakeDuckDbDialect extends JdbcDialect with SQLConfHelper {
   override def createConnectionFactory(options: JDBCOptions): Int => Connection = {
-    (partitionId: Int) =>
-      {
-        try {
-          StarlakeConnectionPool.getConnection(None, options.parameters)
-        } catch {
-          case e: Throwable =>
-            throw new Exception(
-              s"Error while creating connection for partition $partitionId",
-              e
-            )
-        }
+    // Without the options of the Spark data source (query, fetchsize...), which DuckDB
+    // refuses as unknown settings (#1897)
+    val connectionOptions =
+      options.asConnectionProperties.asScala.toMap +
+      ("url" -> options.url) + ("driver" -> options.driverClass)
+    (partitionId: Int) => {
+      try {
+        StarlakeConnectionPool.getConnection(None, connectionOptions)
+      } catch {
+        case e: Throwable =>
+          throw new Exception(
+            s"Error while creating connection for partition $partitionId",
+            e
+          )
       }
+    }
   }
 
   override def canHandle(url: String): Boolean = url.toLowerCase.startsWith("jdbc:duckdb:")
