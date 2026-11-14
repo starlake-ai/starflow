@@ -765,14 +765,17 @@ class BigQueryAutoTask(
   ): BQSchema =
     BigQueryAutoTask.withSCD2Columns(incomingTableSchema, writeStrategy, existingTableSchema)
 
-  /** Whether the target table requires a partition filter, for the OVERWRITE_BY_PARTITION template,
-    * which turns the filter off around its transaction and on again after it, failed or not
-    * (#1880). It is read before the run, so that a retry of the script, after a failure to turn it
-    * on again, still knows it. Absent when the table cannot be read: the template then goes by the
-    * sink.
+  /** Whether the target table requires a partition filter, for the OVERWRITE (#1938) and
+    * OVERWRITE_BY_PARTITION templates, which turn the filter off around the statements that read
+    * the table without filtering its partitions, and on again after them, failed or not (#1880). It
+    * is read before the run, so that a retry of the script, after a failure to turn it on again,
+    * still knows it. Absent when the table cannot be read: the templates then go by the sink.
     */
   override protected def strategyTemplateVariables(): Map[String, Any] =
-    if (writeStrategy.getEffectiveType() != WriteStrategyType.OVERWRITE_BY_PARTITION)
+    if (
+      !Set(WriteStrategyType.OVERWRITE, WriteStrategyType.OVERWRITE_BY_PARTITION)
+        .contains(writeStrategy.getEffectiveType())
+    )
       Map.empty
     else {
       val job =
