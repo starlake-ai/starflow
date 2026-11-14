@@ -40,8 +40,7 @@ import org.apache.hadoop.fs.Path
 
 import java.io.{BufferedWriter, OutputStreamWriter, Writer}
 import java.nio.charset.Charset
-import java.time.{Duration, Instant, ZoneId}
-import java.time.format.DateTimeFormatter
+import java.time.Duration
 import java.util.UUID
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -1133,17 +1132,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     }
   }
 
-  /** @return
-    *   the name of new replay files of the domain, without extension: unique, so that two loads of
-    *   the table in the same second keep their files
-    */
-  private def replayName(): String = {
-    val timestamp = DateTimeFormatter
-      .ofPattern("yyyyMMddHHmmss")
-      .withZone(ZoneId.systemDefault())
-      .format(Instant.now())
-    s"${domain.name}.${starlakeSchema.name}.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
-  }
+  private def replayName(): String = IngestionJob.replayName(domain.name, starlakeSchema.name)
 
   /** The replay file of the rejected rows of CSV, JSON or POSITION files, in the replay area of the
     * domain, created with its first row: the lines of a JSON or POSITION file, the rows of a CSV

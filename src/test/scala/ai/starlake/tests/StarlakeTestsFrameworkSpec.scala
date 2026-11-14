@@ -4,6 +4,9 @@ import ai.starlake.integration.IntegrationTestBase
 import ai.starlake.sql.StarlakeJdbcDialects
 import better.files.File
 
+import java.sql.DriverManager
+import scala.util.Using
+
 class StarlakeTestsFrameworkSpec extends IntegrationTestBase {
 
   override def theSampleFolder: File =
@@ -98,5 +101,26 @@ class StarlakeTestsFrameworkSpec extends IntegrationTestBase {
     val results = runLoadTest("sales", "categories", "scd2")
     results should not be empty
     results.filter(!_.success) shouldBe empty
+  }
+
+  it should "load a Parquet file with a TIME column on DuckDB, as BigQuery exports it (#1952)" in {
+    val incoming =
+      projectDir / "metadata" / "tests" / "load" / "sales" / "visits" / "bigquery_export" /
+      "_incoming.visits-1.parquet"
+    // DuckDB writes a TIME WITH TIME ZONE column as BigQuery exports a TIME column:
+    // TIME(isAdjustedToUTC = true, unit = MICROS), which Spark does not read
+    Using.resource(DriverManager.getConnection("jdbc:duckdb:")) { connection =>
+      Using.resource(connection.createStatement()) { statement =>
+        statement.execute(
+          s"""COPY (SELECT * FROM (VALUES (1::BIGINT, TIMETZ '12:30:00+00'), (2::BIGINT, TIMETZ '23:59:59+00'))
+             |  t(id, visit_time)) TO '${incoming.pathAsString}' (FORMAT parquet)""".stripMargin
+        )
+      }
+    }
+    val results = runLoadTest("sales", "visits", "bigquery_export")
+    withClue(results.flatMap(_.exception).mkString("\n")) {
+      results should not be empty
+      results.filter(!_.success) shouldBe empty
+    }
   }
 }

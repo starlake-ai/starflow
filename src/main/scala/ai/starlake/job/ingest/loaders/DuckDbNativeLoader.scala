@@ -1,8 +1,8 @@
 package ai.starlake.job.ingest.loaders
 
-import ai.starlake.config.{CometColumns, Settings}
+import ai.starlake.config.{CometColumns, DatasetArea, Settings}
 import ai.starlake.extract.JdbcDbUtils
-import ai.starlake.job.ingest.{AuditTaskBuilder, IngestionJob}
+import ai.starlake.job.ingest.{AuditTaskBuilder, IngestionJob, IngestionUtil, RejectedRecord}
 import ai.starlake.job.transform.TransformContext
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
@@ -52,6 +52,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     // renamed attribute can be loaded directly so it's not in the condition.
     // POSITION always needs two steps: the first step loads each line as a single VARCHAR
     // column, the second step slices it via SUBSTR into the target columns.
+    // The rows of each Parquet file are checked while loading it into a table of the first step,
+    // before the second step writes the target (#1952)
+    mergedMetadata.resolveFormat() == Format.PARQUET ||
     schema
       .hasTransformOrIgnoreOrScriptColumns() ||
     strategy.isMerge() ||
@@ -69,6 +72,9 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     * inside the load.
     */
   private val spillFiles = ListBuffer[java.nio.file.Path]()
+
+  /** The rows of each Parquet file that the first step rejects, in the order of the files (#1952) */
+  private val parquetRejects = ListBuffer[RejectedRows]()
 
   def run(): Try[List[IngestionCounters]] = {
     try runLoad()
@@ -137,6 +143,25 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           val tempTables = tempTablesWithRejects.map(_._1)
           val rejectedLines =
             tempTablesWithRejects.map(_._2).foldLeft(RejectCapture.empty)(_ ++ _)
+          val targetFullTableName = s"${domain.finalName}.${schema.finalName}"
+          val parquetRejected = parquetRejects.map(_.count).sum
+          if (parquetRejected > 0) {
+            // As a load in one step, over the files of the load
+            val error = BigQueryNativeLoader.rejectedRowsError(
+              parquetRejected,
+              settings.appConfig.rejectAllOnError,
+              settings.appConfig.rejectMaxRecords
+            )
+            val message = s"$parquetRejected rows of $targetFullTableName are rejected"
+            logger.warn(s"$message. ${error.getOrElse("The others are loaded")}")
+            // As the Spark loads, the rejected rows are kept before the load fails because of them,
+            // once every file is loaded: a retry of a load that failed on a later file would write
+            // them again
+            if (settings.appConfig.sinkReplayToFile)
+              parquetRejects.flatMap(_.replay).foreach(writeReplayFile)
+            sinkRejected(parquetRejects.flatMap(_.records).toList)
+            error.foreach(error => throw new IllegalArgumentException(s"$message. $error"))
+          }
 
           if (rejectThresholdBreached(rejectedLines.count)) {
             // The target table has not been written yet at this point, so aborting here
@@ -154,15 +179,16 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           val unionTempTables = tempTables
             .map(s"SELECT * FROM ${domain.finalName}." + _)
             .mkString("(", " UNION ALL ", ")")
-          val targetFullTableName = s"${domain.finalName}.${schema.finalName}"
           // Per-attribute DDL type, used by POSITION to wrap each SUBSTR projection in
           // TRY_CAST (DuckDB's SAFE_CAST) so malformed cells yield NULL instead of
           // aborting the whole INSERT.
           val ddlTypesByAttribute: Map[String, String] = Try(
             schemaHandler.getAttributesWithDDLType(schema, "duckdb").toMap
           ).getOrElse(Map.empty)
+          // Quoted: a column may be named like a keyword
           val sqlWithTransformedFields = schema.buildSecondStepSqlSelectOnLoad(
             unionTempTables,
+            jdbcEngine = Some(settings.appConfig.jdbcEngines("duckdb")),
             ddlTypesByAttribute = ddlTypesByAttribute,
             safeCastFunction = "TRY_CAST"
           )
@@ -295,10 +321,15 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
       val acceptedCount =
         if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE) currentRowCount.toLong
         else (currentRowCount - initialRowCount).toLong
-      // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count.
+      // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count. The
+      // Parquet loads find their rejected rows in the first step (#1952)
       val format = mergedMetadata.resolveFormat()
-      val rejectsSupported = format == Format.DSV || format == Format.POSITION
-      val rejectedCount = if (rejectsSupported) rejected.count else -1L
+      val rejectsSupported =
+        format == Format.DSV || format == Format.POSITION || format == Format.PARQUET
+      val rejectedCount =
+        if (format == Format.PARQUET) parquetRejects.map(_.count).sum
+        else if (rejectsSupported) rejected.count
+        else -1L
       val inputCount = if (rejectsSupported) acceptedCount + rejectedCount else acceptedCount
       List(
         IngestionCounters(
@@ -712,6 +743,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                   ps
                 }
               }
+              .map(_.replace("'", "''"))
               .mkString("['", "','", "']")
           // recorded before the threshold check below, which throws with the capture in hand:
           // the spill file has to be deletable however this load ends
@@ -813,6 +845,18 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
                 }
               }
               RejectCapture.empty
+            case Format.PARQUET =>
+              // Always in two steps: one file, into a table of the first step. Its rejected rows
+              // are kept as the Spark loads keep theirs, not as the lines of a text file
+              parquetRejects += loadParquet(
+                conn,
+                domainAndTableName,
+                schema,
+                paths,
+                path,
+                attrsWithDDLTypes.toMap
+              )
+              RejectCapture.empty
             case _ => RejectCapture.empty
           })
           if (!isTemporary && rejectThresholdBreached(rejected.count)) {
@@ -845,4 +889,142 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         }
     }
   }
+
+  /** The rows of a file that the native loader rejects: their number, the first `audit.maxErrors`
+    * of them, for the audit, and the query of all of them, for a replay file
+    */
+  private case class RejectedRows(
+    count: Long,
+    records: List[RejectedRecord],
+    replay: Option[String]
+  )
+
+  private object RejectedRows {
+    val none: RejectedRows = RejectedRows(0, Nil, None)
+  }
+
+  /** Loads the rows of a Parquet file that its checks accept into a table of the first step, whose
+    * columns have the source names of the attributes, and finds the others, which the load keeps as
+    * the Spark loads keep their rejected rows (#1952)
+    *
+    * @param file
+    *   the file, as the list of paths that DuckDB reads
+    * @param ddlTypes
+    *   the DuckDB types of the columns of the table, by attribute name
+    */
+  private def loadParquet(
+    conn: Connection,
+    table: String,
+    schema: SchemaInfo,
+    file: String,
+    path: List[Path],
+    ddlTypes: Map[String, String]
+  ): RejectedRows = {
+    // As Spark, read the columns of the attributes by name: the other columns of the file are
+    // dropped, and an attribute that it does not hold has no value. Selecting a column that the
+    // file does not hold would fail with an obscure error of the driver.
+    val fileTypes = JdbcDbUtils
+      .executeQueryAsMap(s"DESCRIBE SELECT * FROM read_parquet($file);", conn)
+      .map(row => row("column_name") -> row("column_type"))
+      .toMap
+    val columns = schema.attributes.filter(_.script.isEmpty).map { attribute =>
+      DuckDbParquetRows.Column(
+        attribute,
+        attribute
+          .`type`(schemaHandler)
+          .getOrElse(throw new IllegalArgumentException(s"Unknown type ${attribute.`type`}")),
+        ddlTypes(attribute.name),
+        fileTypes.get(attribute.name)
+      )
+    }
+    if (!columns.exists(_.fileType.nonEmpty))
+      throw new IllegalArgumentException(
+        s"No attribute of ${schema.name} found in ${path.mkString(", ")}. Attributes: ${schema.attributes
+            .map(_.name)
+            .mkString(", ")}. Columns: ${fileTypes.keys.toList.sorted.mkString(", ")}"
+      )
+    val rows = DuckDbParquetRows(
+      columns,
+      // As Spark
+      emptyIsNull = mergedMetadata.emptyIsNull.getOrElse(settings.appConfig.emptyIsNull),
+      withValue = settings.appConfig.rejectWithValue
+    )
+    JdbcDbUtils.execute(rows.insertSql(table, file), conn)
+    val rejected =
+      if (rows.checks.isEmpty) 0L
+      else
+        JdbcDbUtils
+          .executeQueryAsMap(rows.rejectedCountSql(file), conn)
+          .head("rejected")
+          .toLong
+    if (rejected == 0) RejectedRows.none
+    else {
+      val maxErrors = settings.appConfig.audit.maxErrors
+      val records =
+        if (maxErrors <= 0) Nil
+        else
+          JdbcDbUtils.executeQueryAsMap(rows.rejectedRowsSql(file, maxErrors), conn).map { row =>
+            rejectedRecord(
+              row("errors").split('\n').toList.filter(_.nonEmpty),
+              path.mkString(","),
+              row.get("row_json")
+            )
+          }
+      RejectedRows(rejected, records, Some(rows.replaySql(file)))
+    }
+  }
+
+  /** Writes rejected rows to a Parquet replay file of the replay area of the domain, as the Spark
+    * loads write theirs, so that the table loads them again. DuckDB writes a local file, which is
+    * copied to the replay area, wherever it is. A failure fails the load, as with Spark.
+    *
+    * @param sql
+    *   the query of the rejected rows of a file
+    */
+  private def writeReplayFile(sql: String): Unit = {
+    val local = java.io.File.createTempFile("starlake-replay-", ".parquet")
+    try {
+      local.delete()
+      JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
+        conn =>
+          JdbcDbUtils.execute(
+            s"COPY ($sql) TO '${local.getPath.replace("'", "''")}' (FORMAT parquet);",
+            conn
+          )
+      }
+      val replayArea = DatasetArea.replay(domain.name)
+      storageHandler.mkdirs(replayArea)
+      val target =
+        new Path(replayArea, s"${IngestionJob.replayName(domain.name, schema.name)}.parquet")
+      // A path with a scheme: the storage handler would read a path without one on its own file
+      // system
+      storageHandler.copyFromLocal(new Path(local.toURI), target)
+      logger.info(s"Replay file of ${domain.finalName}.${schema.finalName} written to $target")
+    } finally local.delete()
+  }
+
+  /** Writes the rejected records of the load to the audit `rejected` table: a failure to write them
+    * fails the load, as with Spark
+    */
+  private def sinkRejected(records: List[RejectedRecord]): Unit =
+    IngestionUtil
+      .sinkRejectedRecords(
+        ingestionJob.applicationId(),
+        records,
+        path,
+        scheduledDate,
+        ingestionJob.accessToken,
+        ingestionJob.session
+      )(settings, storageHandler, schemaHandler)
+      .get
+
+  private def rejectedRecord(errors: List[String], file: String, value: Option[String]) =
+    RejectedRecord(
+      ingestionJob.applicationId(),
+      ingestionJob.now,
+      domain.name,
+      schema.name,
+      RejectedRecord.errorText(errors, file, value),
+      RejectedRecord.limited(path.map(_.toString).mkString(","))
+    )
 }
