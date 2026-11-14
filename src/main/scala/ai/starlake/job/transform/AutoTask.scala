@@ -268,9 +268,13 @@ abstract class AutoTask(
       if (resolvedSelectColumns.isEmpty || resolvedSelectColumns == List("*")) None
       else {
         val target = targetColumns.map(_.toLowerCase)
+        // Without their quotes, such as those of the second step of a native load (#1952)
         val missing =
           if (target.isEmpty) Nil
-          else resolvedSelectColumns.filterNot(c => target.contains(c.toLowerCase))
+          else
+            SQLUtils
+              .unquoteAgressive(resolvedSelectColumns)
+              .filterNot(c => target.contains(c.toLowerCase))
         if (missing.isEmpty) None
         else {
           val taskName = taskDesc.fullName()

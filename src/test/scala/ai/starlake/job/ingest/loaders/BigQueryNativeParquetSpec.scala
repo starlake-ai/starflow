@@ -83,7 +83,7 @@ class BigQueryNativeParquetSpec extends TestHelper {
     IngestionJob.isNativelySupported("bigquery", Format.JSON, array = true) shouldBe false
     // The array metadata, a JSON setting inherited from the domain, does not apply to Parquet
     IngestionJob.isNativelySupported("bigquery", Format.PARQUET, array = true) shouldBe true
-    IngestionJob.isNativelySupported("duckdb", Format.PARQUET, array = false) shouldBe false
+    IngestionJob.isNativelySupported("duckdb", Format.PARQUET, array = false) shouldBe true
     IngestionJob.isNativelySupported("snowflake", Format.PARQUET, array = false) shouldBe true
   }
 
