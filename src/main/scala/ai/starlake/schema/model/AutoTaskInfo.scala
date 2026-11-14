@@ -10,13 +10,14 @@ import ai.starlake.sql.{SQLTypeMappings, SQLUtils}
 import ai.starlake.transpiler.JSQLSchemaDiff
 import ai.starlake.transpiler.diff.{Attribute as DiffAttribute, DBSchema}
 import ai.starlake.transpiler.schema.CaseInsensitiveLinkedHashMap
-import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, YamlSerde}
+import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, Utils, YamlSerde}
 import com.fasterxml.jackson.annotation.{JsonIgnore, JsonIgnoreProperties}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.types.StructType
 
 import scala.jdk.CollectionConverters.*
-import scala.util.{Failure, Success}
+import scala.util.matching.Regex
+import scala.util.{Failure, Success, Try}
 
 case class TaskDesc(version: Int, task: AutoTaskInfo)
 
@@ -308,10 +309,19 @@ case class AutoTaskInfo(
     *   - ADDED: The attribute is new and not present in the existing attributes
     *   - MODIFIED: The attribute is present but its type or comment has changed
     *   - UNCHANGED: The attribute is present and its type and comment are unchanged
+    *   - REMOVED: The attribute is not returned by the SQL statement. The SCD2 validity columns,
+    *     which the write strategy writes and the SELECT does not return, are kept UNCHANGED (#1949)
+    * @throws IllegalStateException
+    *   when the SQL statement returns no column
     */
   def diffSqlAttributesWithYaml(
     sqlStatementAttributes: List[TableAttribute]
   )(implicit settings: Settings): List[(TableAttribute, AttributeStatus)] = {
+    // A SELECT returns at least one column: none means that its columns were not read (#1949)
+    if (sqlStatementAttributes.isEmpty)
+      throw new IllegalStateException(
+        s"The SELECT of task ${fullName()} returned no column: its attributes are left unchanged"
+      )
 
     var nochange: Boolean = true
     val addedAndModifiedAttributes = sqlStatementAttributes
@@ -341,9 +351,21 @@ case class AutoTaskInfo(
             sqlAttr -> AttributeStatus.ADDED
         }
       }
-    val deletedAttributes = this.attributes
+    val strategyColumns =
+      this.writeStrategy
+        .filter(_.getEffectiveType() == WriteStrategyType.SCD2)
+        .map { strategy =>
+          val (startTs, endTs) = strategy.validityColumns()
+          List(startTs, endTs)
+        }
+        .getOrElse(Nil)
+    val (keptAttributes, deletedAttributes) = this.attributes
       .filterNot(attDesc => sqlStatementAttributes.exists(_.name.equalsIgnoreCase(attDesc.name)))
-      .map(attDesc => attDesc -> AttributeStatus.REMOVED)
+      .partition { attDesc =>
+        strategyColumns.exists { column =>
+          column.equalsIgnoreCase(attDesc.name) || column.equalsIgnoreCase(attDesc.getFinalName())
+        } && !sqlStatementAttributes.exists(_.name.equalsIgnoreCase(attDesc.getFinalName()))
+      }
     if (deletedAttributes.nonEmpty)
       nochange = false
 
@@ -351,8 +373,25 @@ case class AutoTaskInfo(
     if (nochange)
       Nil
     else
-      addedAndModifiedAttributes ++ deletedAttributes
+      addedAndModifiedAttributes ++
+      keptAttributes.map(_ -> AttributeStatus.UNCHANGED) ++
+      deletedAttributes.map(_ -> AttributeStatus.REMOVED)
   }
+
+  /** The temporary tables that the presql of the task creates and that the SELECT reads, without
+    * defining them in a WITH clause, as named in the presql
+    */
+  private def presqlTemporaryTablesReadBy(select: String): List[String] =
+    presql
+      .flatMap(AutoTaskInfo.CreateTemporaryTable.findAllMatchIn(_).map(_.group(1)))
+      .distinct
+      .filter { table =>
+        val name = table.substring(table.lastIndexOf('.') + 1).filterNot("`\"[]".contains(_))
+        val reference = s"(?i)(?<!\\w)${Regex.quote(name)}(?!\\w)"
+        name.nonEmpty &&
+        reference.r.findFirstIn(select).isDefined &&
+        s"$reference\\s+AS\\s*\\(".r.findFirstIn(select).isEmpty
+      }
 
   def diffSqlAttributesWithSQL(
     sqlStatement: Option[String] = None,
@@ -369,21 +408,24 @@ case class AutoTaskInfo(
           )
           .withAccessToken(accessToken)
 
+      val selectStatement = Try(sqlStatement.getOrElse(this.getTranspiledSql()))
       val sqlSchema =
-        AutoTask.executeSelectSchema(
-          domain = "__ignore__",
-          table = "__ignore__",
-          sql = sqlStatement.getOrElse(this.getTranspiledSql()),
-          summarizeOnly = false,
-          connection = connection,
-          accessToken = accessToken,
-          connectionName = Some(settings.appConfig.connectionRef),
-          pageSize = 1,
-          pageNumber = 1,
-          test = false,
-          parseSQL = true,
-          scheduledDate = None
-        )(settings, settings.storageHandler(), settings.schemaHandler())
+        selectStatement.flatMap { sql =>
+          AutoTask.executeSelectSchema(
+            domain = "__ignore__",
+            table = "__ignore__",
+            sql = sql,
+            summarizeOnly = false,
+            connection = connection,
+            accessToken = accessToken,
+            connectionName = Some(settings.appConfig.connectionRef),
+            pageSize = 1,
+            pageNumber = 1,
+            test = false,
+            parseSQL = true,
+            scheduledDate = None
+          )(settings, settings.storageHandler(), settings.schemaHandler())
+        }
 
       val engineName = connection.getJdbcEngineName()
       val sqlAttributes =
@@ -399,7 +441,20 @@ case class AutoTaskInfo(
             }
             sqlStatementAttributes
           case Failure(exception) =>
-            Nil
+            // Without the columns of the SELECT, every attribute would be removed (#1949)
+            val presqlHint =
+              selectStatement.toOption.map(presqlTemporaryTablesReadBy).getOrElse(Nil) match {
+                case Nil => ""
+                case tables =>
+                  s"\nThe SELECT reads temporary tables that the presql of the task creates (${tables
+                      .mkString(", ")}), and the sync runs the SELECT without the presql, which may write:" +
+                  " pass an equivalent SELECT to transform --sync-apply --query, with a WITH clause instead of a temporary table for example."
+              }
+            val cause = Utils.exceptionMessagesChainAsString(exception)
+            throw new RuntimeException(
+              s"Could not get the columns of the SELECT of task ${fullName()}, its attributes are left unchanged:\n$cause$presqlHint",
+              exception
+            )
         }
 
       // Extract attributes from the SQL statement
@@ -540,6 +595,11 @@ case class AutoTaskInfo(
 }
 
 object AutoTaskInfo {
+
+  /** A temporary table created by a statement of the presql, its name in the first group */
+  private val CreateTemporaryTable: Regex =
+    """(?i)\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:LOCAL\s+|GLOBAL\s+)?(?:TEMP|TEMPORARY)\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w.`"\[\]$]+)""".r
+
   def compare(existing: AutoTaskInfo, incoming: AutoTaskInfo): ListDiff[Named] = {
     AnyRefDiff.diffAnyRef(existing.name, existing, incoming)
   }
