@@ -1,0 +1,11 @@
+version: 1
+table:
+  name: visits
+  pattern: "visits.*\\.parquet"
+  metadata:
+    format: "PARQUET"
+  attributes:
+    - name: id
+      type: long
+    - name: visit_time
+      type: time

@@ -23,7 +23,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.*
 
 import java.sql.Timestamp
-import java.time.Instant
+import java.time.format.DateTimeFormatter
+import java.time.{Instant, ZoneId}
+import java.util.UUID
 import scala.util.{Failure, Success, Try}
 
 trait IngestionJob
@@ -193,10 +195,11 @@ trait IngestionJob
         )
       binaryAttributes.isEmpty
     } && {
-      // Parquet tables were loaded with Spark before the native BigQuery loader read Parquet: they
-      // keep doing so when it would load them differently
+      // Parquet tables were loaded with Spark before the native BigQuery and DuckDB loaders read
+      // Parquet: they keep doing so when it would load them differently
       val unsupported =
-        if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.PARQUET)
+        if (mergedMetadata.resolveFormat() != Format.PARQUET) Nil
+        else if (dbName == "bigquery")
           IngestionJob.parquetFeaturesNotLoadedByBigQuery(
             mergedMetadata,
             schema.attributes,
@@ -212,10 +215,12 @@ trait IngestionJob
               )
             )
           )
+        else if (dbName == "duckdb")
+          IngestionJob.parquetFeaturesNotLoadedByDuckDb(mergedMetadata, schema.attributes)
         else Nil
       if (unsupported.nonEmpty)
         logger.warn(
-          s"Loading $targetTableName with Spark instead of the native bigquery loader, which does not load Parquet files with ${unsupported
+          s"Loading $targetTableName with Spark instead of the native $dbName loader, which does not load Parquet files with ${unsupported
               .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
         )
       unsupported.isEmpty
@@ -351,8 +356,9 @@ trait IngestionJob
       .map { (counterResults: List[IngestionCounters]) =>
         val validCounterResults = counterResults.filter(!_.ignore)
         // A loader that succeeded has written its rows, except under rejectAllOnError when it
-        // rejected records: then it writes none. The native DuckDB and Snowflake loaders, which
-        // count no rejected record (-1), write them all.
+        // rejected records: then it writes none. The native Snowflake loader, and the native
+        // DuckDB loader for other files than Parquet, which count no rejected record (-1), write
+        // them all; the native DuckDB loader of Parquet files fails under rejectAllOnError.
         val allRejected =
           settings.appConfig.rejectAllOnError && validCounterResults.exists(_.rejectedCount > 0)
         if (!allRejected) markRowsWritten()
@@ -444,9 +450,22 @@ trait IngestionJob
 }
 
 object IngestionJob {
+
+  /** @return
+    *   the name of new replay files of the table, without extension: unique, so that two loads of
+    *   the table in the same second keep their files
+    */
+  def replayName(domain: String, table: String): String = {
+    val timestamp = DateTimeFormatter
+      .ofPattern("yyyyMMddHHmmss")
+      .withZone(ZoneId.systemDefault())
+      .format(Instant.now())
+    s"$domain.$table.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
+  }
+
   private val nativeSupportedFormats: Map[String, Set[Format]] = Map(
     "bigquery"  -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION, Format.PARQUET),
-    "duckdb"    -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT),
+    "duckdb"    -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.PARQUET),
     "snowflake" -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.XML, Format.PARQUET),
     "redshift"  -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT)
   )
@@ -484,33 +503,12 @@ object IngestionJob {
     paths: List[Path],
     unconvertedFields: List[String]
   ): List[String] = {
-    // Every attribute, at every nesting level, with its path
-    def withPaths(
-      attributes: List[TableAttribute],
-      prefix: String
-    ): List[(String, TableAttribute)] =
-      attributes.flatMap { attribute =>
-        val path = prefix + attribute.name
-        (path, attribute) :: withPaths(attribute.attributes, path + ".")
-      }
-    // Scripted attributes are computed by the second step, ignored ones are not loaded
-    val loaded = withPaths(
-      attributes.filterNot(attribute => attribute.resolveIgnore() || attribute.script.nonEmpty),
-      ""
-    )
-    def feature(name: String, paths: List[String]): Option[String] =
-      if (paths.isEmpty) None else Some(s"$name (${paths.mkString(", ")})")
+    val loaded = loadedParquetAttributes(attributes)
     // Same test of local files as BigQueryNativeJob.loadPathsToBQ
     val localFiles = paths.exists(_.toString.startsWith("file:"))
     List(
-      feature(
-        "Spark read options",
-        metadata.getOptions().toList.sorted.collect {
-          case ("format", format) if !format.equalsIgnoreCase("parquet") => s"format $format"
-          case (option, _) if option != "format"                         => option
-        }
-      ),
-      feature(
+      sparkReadOptionsFeature(metadata),
+      parquetFeature(
         "array attributes in local files",
         if (localFiles)
           // Ignored attributes are in the files: they are loaded into the temporary table
@@ -519,27 +517,90 @@ object IngestionJob {
           }
         else Nil
       ),
-      feature(
+      parquetFeature(
         "nested renames",
         loaded.collect {
           case (path, attribute)
               if path.contains('.') && attribute.getFinalName() != attribute.name =>
             path
         }
-      ),
-      feature(
+      )
+    ).flatten ++
+    defaultAndTrimFeatures(loaded) ++
+    parquetFeature("nested or repeated JSON, INTERVAL or RANGE fields", unconvertedFields)
+  }
+
+  /** @return
+    *   the features of a Parquet table that the native DuckDB loader would not apply as the Spark
+    *   loader does, with the attributes they concern, if any:
+    *   - Spark read options (`options`), as for BigQuery;
+    *   - struct, variant and array attributes: the tables of the native DuckDB loader have no
+    *     `STRUCT` or `LIST` column. Ignored and scripted attributes are columns of its first step
+    *     table too;
+    *   - `default` and `trim`, which no native loader applies.
+    */
+  def parquetFeaturesNotLoadedByDuckDb(
+    metadata: Metadata,
+    attributes: List[TableAttribute]
+  ): List[String] =
+    List(
+      sparkReadOptionsFeature(metadata),
+      parquetFeature(
+        "struct, variant or array attributes",
+        withPaths(attributes, "").collect {
+          case (path, attribute)
+              if attribute.attributes.nonEmpty || attribute.resolveArray() ||
+              Set("struct", "variant").contains(attribute.`type`) =>
+            path
+        }
+      )
+    ).flatten ++ defaultAndTrimFeatures(loadedParquetAttributes(attributes))
+
+  /** Every attribute, at every nesting level, with its path */
+  private def withPaths(
+    attributes: List[TableAttribute],
+    prefix: String
+  ): List[(String, TableAttribute)] =
+    attributes.flatMap { attribute =>
+      val path = prefix + attribute.name
+      (path, attribute) :: withPaths(attribute.attributes, path + ".")
+    }
+
+  /** Scripted attributes are computed by the second step, ignored ones are not loaded */
+  private def loadedParquetAttributes(
+    attributes: List[TableAttribute]
+  ): List[(String, TableAttribute)] =
+    withPaths(
+      attributes.filterNot(attribute => attribute.resolveIgnore() || attribute.script.nonEmpty),
+      ""
+    )
+
+  private def parquetFeature(name: String, paths: List[String]): Option[String] =
+    if (paths.isEmpty) None else Some(s"$name (${paths.mkString(", ")})")
+
+  /** Spark reads the files with its read options, in another format (ORC, Avro...) for `format` */
+  private def sparkReadOptionsFeature(metadata: Metadata): Option[String] =
+    parquetFeature(
+      "Spark read options",
+      metadata.getOptions().toList.sorted.collect {
+        case ("format", format) if !format.equalsIgnoreCase("parquet") => s"format $format"
+        case (option, _) if option != "format"                         => option
+      }
+    )
+
+  private def defaultAndTrimFeatures(loaded: List[(String, TableAttribute)]): List[String] =
+    List(
+      parquetFeature(
         "default values",
         loaded.collect { case (path, attribute) if attribute.default.nonEmpty => path }
       ),
-      feature(
+      parquetFeature(
         "trim",
         loaded.collect {
           case (path, attribute) if attribute.trim.exists(_ != Trim.NONE) => path
         }
-      ),
-      feature("nested or repeated JSON, INTERVAL or RANGE fields", unconvertedFields)
+      )
     ).flatten
-  }
 
   /** @return
     *   the paths of the loaded leaf attributes, at every nesting level, scripted ones included, of
