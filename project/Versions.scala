@@ -41,7 +41,7 @@ object Versions {
   // and googleapis/google-cloud-java#14151). Resolved by excluding org.conscrypt in build.sbt:
   // the SDK falls back to the default JSSE provider. Verified green on 2.71.0.
   val bigquery = "2.71.0"
-  val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
+  val gcsConnector = "4.0.10" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.5.0" // must match Spark 4.3.0's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.35.4" // software.amazon.awssdk (v2), pinned by hadoop-project 3.5.0
   val sparkBigquery =
