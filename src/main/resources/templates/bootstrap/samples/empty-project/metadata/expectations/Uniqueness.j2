@@ -18,10 +18,10 @@ SELECT
             SELECT COUNT(*)
             FROM ( 
                 {% for val in values %}
-                SELECT '{{ val }}' AS v {% if not loop.last %} UNION ALL {% endif %}
+                SELECT {{ sl_literal(val) }} AS v {% if not loop.last %} UNION ALL {% endif %}
                 {% endfor %}
             ) AS value_list
-            WHERE v NOT IN (SELECT DISTINCT {{ column_name }} FROM {{ table_name }})
+            WHERE v NOT IN (SELECT DISTINCT {{ sl_as_string(column_name) }} FROM {{ table_name }} WHERE {{ column_name }} IS NOT NULL)
         ) > 0 
         THEN 1 
         ELSE 0 
@@ -35,21 +35,22 @@ SELECT
             WITH DistinctValues AS (
                 SELECT DISTINCT {{ column_name }}
                 FROM {{ table_name }}
+                WHERE {{ column_name }} IS NOT NULL
             ),
             ExpectedValues AS (
                 {% for value in values %}
-                SELECT '{{ value | replace("'", "''") }}' AS value
+                SELECT {{ sl_literal(value) }} AS value
                 {% if not loop.last %} UNION ALL {% endif %}
                 {% endfor %}
             )
             SELECT COUNT(*) 
             FROM (
                 SELECT value FROM ExpectedValues
-                WHERE value NOT IN (SELECT {{ column_name }} FROM DistinctValues)
+                WHERE value NOT IN (SELECT {{ sl_as_string(column_name) }} FROM DistinctValues)
                 UNION ALL
-                SELECT {{ column_name }}
+                SELECT {{ sl_as_string(column_name) }}
                 FROM DistinctValues
-                WHERE {{ column_name }} NOT IN (SELECT value FROM ExpectedValues)
+                WHERE {{ sl_as_string(column_name) }} NOT IN (SELECT value FROM ExpectedValues)
             ) AS mismatched
         ) = 0 
         THEN 0
@@ -68,7 +69,7 @@ TotalValueCount AS (
 )
 SELECT 
     CASE 
-        WHEN (CAST(unique_count AS FLOAT) / total_count) BETWEEN {{ lower_bound }} AND {{ upper_bound }}
+        WHEN {{ sl_ratio('unique_count', 'total_count') }} BETWEEN {{ lower_bound }} AND {{ upper_bound }}
         THEN 0
         ELSE 1
     END AS result

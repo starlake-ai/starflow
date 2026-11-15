@@ -34,7 +34,7 @@ SELECT
         WHEN NOT EXISTS (
             SELECT 1 FROM MostCommonValues WHERE value IN (
                 {% for val in value_set %}
-                    {% if val is string %}'{{ val | replace("'", "''") }}'{% else %}{{ val }}{% endif %}
+                    {% if val is string %}{{ sl_literal(val) }}{% else %}{{ val }}{% endif %}
                     {% if not loop.last %}, {% endif %}
                 {% endfor %}
             )
@@ -43,7 +43,7 @@ SELECT
         WHEN EXISTS (
             SELECT 1 FROM MostCommonValues WHERE value NOT IN (
                 {% for val in value_set %}
-                    {% if val is string %}'{{ val | replace("'", "''") }}'{% else %}{{ val }}{% endif %}
+                    {% if val is string %}{{ sl_literal(val) }}{% else %}{{ val }}{% endif %}
                     {% if not loop.last %}, {% endif %}
                 {% endfor %}
             )
@@ -103,8 +103,8 @@ WHERE NOT ({{ column_a }} IS NULL AND {{ column_b }} IS NULL)
 AND NOT (
     FALSE
     {% for pair in value_pairs %}
-    OR ({{ column_a }} IS NOT DISTINCT FROM {% if pair[0] is none %}NULL{% elif pair[0] is string %}'{{ pair[0] | replace("'", "''") }}'{% else %}{{ pair[0] }}{% endif %}
-    AND {{ column_b }} IS NOT DISTINCT FROM {% if pair[1] is none %}NULL{% elif pair[1] is string %}'{{ pair[1] | replace("'", "''") }}'{% else %}{{ pair[1] }}{% endif %})
+    OR ({{ column_a }} IS NOT DISTINCT FROM {% if pair[0] is none %}NULL{% elif pair[0] is string %}{{ sl_literal(pair[0]) }}{% else %}{{ pair[0] }}{% endif %}
+    AND {{ column_b }} IS NOT DISTINCT FROM {% if pair[1] is none %}NULL{% elif pair[1] is string %}{{ sl_literal(pair[1]) }}{% else %}{{ pair[1] }}{% endif %})
     {% endfor %}
 );
 {% endmacro %}
@@ -240,7 +240,7 @@ WHERE
 WITH validation AS (
     SELECT 
         COUNT({{ column_name }}) AS total_rows,
-        COUNT(CASE WHEN regexp_matches({{ column_name }}, '{{ regex }}') THEN 1 END) AS matching_rows
+        COUNT(CASE WHEN {{ sl_regex_contains(column_name, regex) }} THEN 1 END) AS matching_rows
     FROM {{ table_name }}
 )
 SELECT 
@@ -276,7 +276,7 @@ FROM {{ table_name }}
 WHERE NOT (
 FALSE
 {% for pattern in regex_patterns %}
-OR regexp_matches({{ column_name }}, '{{ pattern }}')
+OR {{ sl_regex_contains(column_name, pattern) }}
 {% endfor %}
 );
 {% endmacro %}
@@ -352,7 +352,7 @@ non_matching_count AS (
 )
 SELECT 
     CASE 
-        WHEN (CAST(non_matching_count.non_matching AS FLOAT) / total_count.total) <= (1 - {{ mostly }})
+        WHEN {{ sl_ratio('non_matching_count.non_matching', 'total_count.total') }} <= (1 - {{ mostly }})
         THEN 0 
         ELSE 1  
     END AS result
@@ -377,7 +377,7 @@ FROM total_count, non_matching_count;
 -- WHERE regexp_matches(column_name, 'regex_pattern');
 SELECT COUNT(*) AS result
 FROM {{ table_name }}
-WHERE regexp_matches({{ column_name }}, '{{ regex_pattern }}');
+WHERE {{ sl_regex_contains(column_name, regex_pattern) }};
 {% endmacro %}
 
 {% macro expect_column_values_to_not_match_regex_list(table_name, column_name, regex_patterns) %}
@@ -402,6 +402,6 @@ SELECT COUNT(*) AS result
 FROM {{ table_name }}
 WHERE FALSE
 {% for pattern in regex_patterns %}
-OR regexp_matches({{ column_name }}, '{{ pattern }}')
+OR {{ sl_regex_contains(column_name, pattern) }}
 {% endfor %};
 {% endmacro %}

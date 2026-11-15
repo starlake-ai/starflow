@@ -11,9 +11,21 @@ import scala.util.{Failure, Success, Try, Using}
 
 trait ExpectationAssertionHandler extends LazyLogging {
   def handle(sql: String)(implicit settings: Settings): Int
+
+  /** The engine that runs the expectation queries, given to the macros as `sl_engine`: `bigquery`,
+    * `spark`, or the engine named in the JDBC URL (`duckdb`, `snowflake`, `postgresql`...).
+    */
+  def engineName: Option[String] = None
 }
 
 object ExpectationAssertionHandler {
+
+  /** The engine named in a JDBC URL: `duckdb` for `jdbc:duckdb:` */
+  def engineOfUrl(url: String): Option[String] =
+    url.split(':').toList match {
+      case "jdbc" :: engine :: _ if engine.nonEmpty => Some(engine.toLowerCase())
+      case _                                        => None
+    }
 
   /** The result of an expectation query, an integer value: a count of offending rows for example
     * (#1879). A value beyond the range of an Int is kept at its bound, so that a count never wraps
@@ -38,6 +50,8 @@ object ExpectationAssertionHandler {
 }
 
 class SparkExpectationAssertionHandler(session: SparkSession) extends ExpectationAssertionHandler {
+  override def engineName: Option[String] = Some("spark")
+
   def handle(sql: String)(implicit settings: Settings): Int = {
     val rows = SparkUtils.sql(session, sql).collect()
     if (rows.length == 1)
@@ -51,6 +65,8 @@ class SparkExpectationAssertionHandler(session: SparkSession) extends Expectatio
 
 class BigQueryExpectationAssertionHandler(runner: BigQueryNativeJob)
     extends ExpectationAssertionHandler {
+  override def engineName: Option[String] = Some("bigquery")
+
   override def handle(sql: String)(implicit
     settings: Settings
   ): Int = {
@@ -77,6 +93,12 @@ class BigQueryExpectationAssertionHandler(runner: BigQueryNativeJob)
 
 class JdbcExpectationAssertionHandler(jdbcProperties: Map[String, String])
     extends ExpectationAssertionHandler {
+  override def engineName: Option[String] =
+    jdbcProperties
+      .get("url")
+      .flatMap(ExpectationAssertionHandler.engineOfUrl)
+      .orElse(jdbcProperties.get("sfUrl").map(_ => "snowflake"))
+
   override def handle(sql: String)(implicit
     settings: Settings
   ): Int = {
@@ -102,6 +124,11 @@ class JdbcExpectationAssertionHandler(jdbcProperties: Map[String, String])
 
 class SQLConnectionExpectationAssertionHandler(connection: java.sql.Connection)
     extends ExpectationAssertionHandler {
+  override def engineName: Option[String] =
+    Try(connection.getMetaData.getURL).toOption
+      .flatMap(Option(_))
+      .flatMap(ExpectationAssertionHandler.engineOfUrl)
+
   override def handle(sql: String)(implicit
     settings: Settings
   ): Int = {

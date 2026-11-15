@@ -18,7 +18,8 @@ another Starlake project uses it is a reason to check, not a reason to trust.
 write strategies either exist in this project's authorities or they do not
 exist. YAML keys → `metadata/starlake.json`, the JSON Schema for every `.sl.yml`.
 Expectation macros → `ls metadata/expectations/`, and that listing is the whole
-list. CLI flags → `starlake <command> --help`. A key you half-remember from
+list; the `sl_` macros of `Engine.j2` are the SQL fragments they share, not
+expectations. CLI flags → `starlake <command> --help`. A key you half-remember from
 documentation is not evidence: if you cannot point to where a name comes from,
 do not write it.
 
