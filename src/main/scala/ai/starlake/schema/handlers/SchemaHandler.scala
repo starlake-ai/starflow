@@ -2468,17 +2468,34 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         throw new IllegalStateException(
           s"The sync of task ${task.fullName()} would remove all its attributes: its YAML is left unchanged"
         )
-      val updatedTask =
-        task
-          .updateAttributes(incomingAttributes)
-          .copy(sql = None) // do not serialize sql. It is in its own file
-      val taskPath = new Path(DatasetArea.transform, s"${task.domain}/${task.name}.sl.yml")
-
-      YamlSerde.serializeToPath(taskPath, updatedTask)(
-        settings.storageHandler()
-      )
+      val attributes = task.updateAttributes(incomingAttributes).attributes
+      val folder = new Path(DatasetArea.transform, task.domain)
+      val taskPath = new Path(folder, s"${task.name}.sl.yml")
+      // The task is loaded rendered and merged with the job default: only its attributes are
+      // written, into the file as written (#1953)
+      val yaml =
+        if (storage.exists(taskPath))
+          TaskYamlAttributes.replace(
+            storage.read(taskPath),
+            attributes,
+            Utils.parseJinja(_, activeEnvVars()),
+            taskPath.toString
+          )
+        else if (declaredInJobConfig(folder, task.name))
+          throw new IllegalStateException(
+            s"Task ${task.fullName()} is declared in the _config.sl.yml of $folder: its attributes are left unchanged, update them there by hand"
+          )
+        else if (taskCommandPath(folder, task.name).isEmpty)
+          throw new IllegalStateException(
+            s"Neither the YAML file of task ${task.fullName()} nor its SQL or Python file is in $folder, the folder of its domain: its attributes are left unchanged"
+          )
+        else
+          // A task that has only an SQL or Python file
+          TaskYamlAttributes.create(attributes)
+      storage.write(yaml, taskPath)
+      // The SQL of the task is rendered too: the SQL file is written only from a given SQL text
       val sqlPath = new Path(DatasetArea.transform, s"${task.domain}/${task.name}.sql")
-      optSql.orElse(task.sql).foreach { sql =>
+      optSql.foreach { sql =>
         storage.write(sql, sqlPath)
       }
       taskUpdated(task.domain, task.name)
@@ -2491,6 +2508,17 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       taskUpdated(task.domain, task.name)
       this.taskOnly(task.fullName()).getOrElse(throw new IllegalStateException("Should not happen"))
       task
+    }
+  }
+
+  /** Whether the `_config.sl.yml` of a job folder declares the task among its `tasks` */
+  private def declaredInJobConfig(folder: Path, taskName: String): Boolean = {
+    val configPath = new Path(folder, "_config.sl.yml")
+    storage.exists(configPath) && loadJobDesc(configPath).toOption.exists { jobDesc =>
+      Option(jobDesc.tasks).getOrElse(Nil).exists { declared =>
+        val name = Option(declared.name).filter(_.nonEmpty).getOrElse(declared.table)
+        name.equalsIgnoreCase(taskName)
+      }
     }
   }
 
