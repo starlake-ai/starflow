@@ -60,7 +60,7 @@ object Versions {
   val snowflakeSpark: String = "3.2.3-spark_4.1" // no spark_4.3 build; the 4.1 one runs on 4.3
   val duckdb = "2.0.0.0"
   val bigQueue = "0.7.0"
-  val redshiftJDBC = "2.2.8"
+  val redshiftJDBC = "2.2.9"
   val scalaParallelCollections = "1.2.0" // matches Spark 4.3.0
   val derbyVersion =
     "10.15.2.0" // last version compatible with Java 11, see https://db.apache.org/derby/derby_downloads.html
