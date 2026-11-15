@@ -57,6 +57,9 @@ class TransformExpectationsSpec extends TestHelper {
       storageHandler.write(
         """{% macro always_fails() %}SELECT 1{% endmacro %}
           |{% macro always_passes() %}SELECT 0{% endmacro %}
+          |{% macro runs_on(engine, table_name, expected_table) %}
+          |SELECT {% if sl_engine == engine and table_name == expected_table %}0{% else %}1{% endif %}
+          |{% endmacro %}
           |""".stripMargin,
         new Path(DatasetArea.expectations, "transform_expectations.j2")
       )
@@ -179,6 +182,14 @@ class TransformExpectationsSpec extends TestHelper {
       expectationResults("expectations_it", "broken") shouldBe List("false")
     }
 
+    it should "give its macros the engine and the table of the expectation" in {
+      transform(
+        "on_table",
+        ExpectationItem("runs_on('duckdb', 'sl_this', 'expectations_it.on_table')")
+      ).isSuccess shouldBe true
+      expectationResults("expectations_it", "on_table") shouldBe List("true")
+    }
+
     it should "leave a failed expectation to the test framework in test mode" in {
       transform("tested", ExpectationItem(failing), test = true).isSuccess shouldBe true
     }
@@ -241,6 +252,14 @@ class TransformExpectationsSpec extends TestHelper {
         ExpectationItem(failing, failOnError = false)
       ).isSuccess shouldBe true
       expectationResults("expectations_it", "spark_warning") shouldBe List("false")
+    }
+
+    it should "give its macros the engine and the table of the expectation" in {
+      transform(
+        "spark_on_table",
+        ExpectationItem("runs_on('spark', 'sl_this', 'expectations_it.spark_on_table')")
+      ).isSuccess shouldBe true
+      expectationResults("expectations_it", "spark_on_table") shouldBe List("true")
     }
   }
 }

@@ -26,7 +26,7 @@ ReferenceDistribution AS (
     {% endfor %}
 ),
 KLDivergence AS (
-    SELECT SUM(cd.probability * LOG(cd.probability / rd.probability)) AS kl_divergence
+    SELECT SUM(cd.probability * LOG10(cd.probability / rd.probability)) AS kl_divergence
     FROM ColumnDistribution cd
     JOIN ReferenceDistribution rd ON cd.{{ column_name }} = rd.value
 )
@@ -92,7 +92,7 @@ FROM {{ table_name }};
 
 WITH MedianCalculation AS (
     SELECT {{ column_name }},
-           ROW_NUMBER() OVER (ORDER BY {{ column_name }}) AS row_num,
+           ROW_NUMBER() OVER (ORDER BY {{ sl_nulls_last(column_name) }}) AS row_num,
            COUNT(*) OVER () AS total_rows
     FROM {{ table_name }}
 )
@@ -163,6 +163,20 @@ SELECT
 -- Returns:
 -- The quantile values of the specified column if they are between the given ranges.
 
+{% if sl_engine == 'bigquery' %}
+WITH Ranked AS (
+    SELECT {{ column_name }} AS value,
+           ROW_NUMBER() OVER (ORDER BY ({{ column_name }} IS NULL), {{ column_name }}) - 1 AS position,
+           COUNT(*) OVER () AS total_rows
+    FROM {{ table_name }}
+),
+Quantiles AS (
+    SELECT
+        MAX(IF(position = CAST(ROUND(total_rows * {{ quantiles[0] }} / 100) AS INT64), value, NULL)) AS percentile_25,
+        MAX(IF(position = CAST(ROUND(total_rows * {{ quantiles[1] }} / 100) AS INT64), value, NULL)) AS percentile_75
+    FROM Ranked
+)
+{% else %}
 WITH Sorted AS (
     SELECT {{ column_name }}
     FROM {{ table_name }}
@@ -177,6 +191,7 @@ Quantiles AS (
          FROM Sorted 
          LIMIT 1 OFFSET (SELECT ROUND(COUNT(*) * {{ quantiles[1] }} / 100) FROM Sorted)) AS percentile_75
 )
+{% endif %}
 SELECT CASE
     WHEN percentile_25 >= {{ lower_bounds[0] }} 
          AND percentile_25 <= {{ upper_bounds[0] }}
