@@ -72,7 +72,7 @@ object Versions {
   val jSqlFormatter = "5.4.3"
   val dagsterTemplates = "0.5.9"
   val orchestrationTemplates = "0.5.6.1"
-  val snowflakeTemplates = "0.4.1"
+  val snowflakeTemplates = "0.4.2"
   // Spark 4.3 build, resolved from the starlake-streaming GitHub release. Its assembly bundles
   // spark-sql-kafka and Hadoop, so it must match the Spark line exactly: 1.4.0 (Spark 4.1.3)
   // shadows Spark 4.3's Kafka source with NoSuchMethodError.
