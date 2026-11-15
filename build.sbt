@@ -89,7 +89,7 @@ dependencyOverrides := Seq(
   "org.scala-lang"                    % "scala-library"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-reflect"             % scalaVersion.value,
   "org.scala-lang"                    % "scala-compiler"            % scalaVersion.value,
-  "com.google.guava"                  %  "guava"                    % "33.6.0-jre", // match Spark 4.3.0; jinjava is fine with it
+  "com.google.guava"                  %  "guava"                    % "33.8.0-jre", // match Spark 4.3.0; jinjava is fine with it
   "com.fasterxml.jackson.dataformat"  % "jackson-dataformat-csv"    % Versions.jacksonForSpark4,
   // Bundled in the assembly (Spark does not ship it) and needed by the Delta kernel: same Jackson
   // as Spark, not the 2.16.0 that eviction would pick.
