@@ -42,6 +42,18 @@ class ExpectationAssertionHandlerSpec extends TestHelper {
     ) shouldBe Int.MaxValue
   }
 
+  "The engine of the expectations" should "be the one named in a JDBC URL" in {
+    ExpectationAssertionHandler.engineOfUrl("jdbc:duckdb:") shouldBe Some("duckdb")
+    ExpectationAssertionHandler.engineOfUrl("jdbc:postgresql://host/db") shouldBe Some("postgresql")
+    ExpectationAssertionHandler.engineOfUrl("duckdb") shouldBe None
+    new JdbcExpectationAssertionHandler(Map("url" -> "jdbc:duckdb:")).engineName shouldBe Some(
+      "duckdb"
+    )
+    new JdbcExpectationAssertionHandler(
+      Map("sfUrl" -> "account.snowflakecomputing.com")
+    ).engineName shouldBe Some("snowflake")
+  }
+
   new WithSettings() {
     "The JDBC assertion handler" should "count a NULL or a fraction as a failure" in {
       Using.resource(DriverManager.getConnection("jdbc:duckdb:")) { connection =>
@@ -51,6 +63,7 @@ class ExpectationAssertionHandlerSpec extends TestHelper {
         handler.handle("SELECT 0.0") shouldBe 0
         handler.handle("SELECT NULL") shouldBe Integer.MIN_VALUE
         handler.handle("SELECT 0.5") shouldBe Integer.MIN_VALUE
+        handler.engineName shouldBe Some("duckdb")
       }
     }
 
@@ -58,6 +71,7 @@ class ExpectationAssertionHandlerSpec extends TestHelper {
       val handler = new SparkExpectationAssertionHandler(sparkSession)
       handler.handle("SELECT COUNT(*) FROM VALUES (1), (2) AS t(x)") shouldBe 2
       handler.handle("SELECT CAST(NULL AS INT)") shouldBe Integer.MIN_VALUE
+      handler.engineName shouldBe Some("spark")
     }
   }
 }

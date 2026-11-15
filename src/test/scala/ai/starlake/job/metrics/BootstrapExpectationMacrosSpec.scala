@@ -1,6 +1,7 @@
 package ai.starlake.job.metrics
 
 import ai.starlake.TestHelper
+import ai.starlake.config.Settings
 import ai.starlake.sql.SQLUtils
 import ai.starlake.utils.Utils
 import better.files.File
@@ -11,20 +12,142 @@ import scala.util.{Failure, Success, Try, Using}
 /** The expectation macros that `bootstrap` ships follow the rule of `ExpectationJob` (#1879): one
   * row holding one integer, 0 meaning that the expectation passed. Each macro runs on DuckDB, the
   * engine of the bootstrapped projects, against a table where its rule holds and one where it is
-  * broken.
+  * broken. On BigQuery, they render no SQL that only DuckDB reads (#1899, #1967).
   */
 class BootstrapExpectationMacrosSpec extends TestHelper {
+  import BootstrapExpectationMacrosSpec._
 
-  private def expectations(template: String): File =
+  new WithSettings() {
+
+    /** Runs a macro call as `ExpectationJob` does: one row, one integer */
+    private def run(call: String, table: String)(implicit connection: java.sql.Connection): Int = {
+      val handler = new SQLConnectionExpectationAssertionHandler(connection)
+      handler.handle(render(call, table, handler.engineName.getOrElse("")))
+    }
+
+    private def calls: List[String] = rules.flatMap(rule => List(rule.holds, rule.broken)).distinct
+
+    "The expectation macros of bootstrap" should "return 0 when their rule holds, a positive number when it is broken" in {
+      Using.resource(DriverManager.getConnection("jdbc:duckdb:")) { implicit connection =>
+        Using.resource(connection.createStatement())(statement =>
+          duckDbTables.foreach(statement.execute)
+        )
+        val failures = rulesNotKept("dq.ok", "dq.ko")((call, table) => run(call, table))
+        failures shouldBe Nil
+      }
+    }
+
+    it should "all be tested" in {
+      // The sl_ macros are the fragments that differ between the engines
+      definedMacros(expectations("empty-project"))
+        .filterNot(_.startsWith("sl_"))
+        .toSet shouldBe rules.map(_.name).toSet
+    }
+
+    it should "render no SQL that only DuckDB reads on BigQuery" in {
+      val duckDbOnly =
+        List(
+          "regexp_matches",
+          "pragma_table_info",
+          "typeof(",
+          " AS FLOAT",
+          " AS VARCHAR",
+          "LOG(",
+          "''"
+        )
+      val failures = calls.flatMap { call =>
+        val sql = render(call, "dq.ok", "bigquery")
+        duckDbOnly.filter(sql.contains).map(fragment => s"$call: $fragment")
+      }
+      failures shouldBe Nil
+    }
+
+    it should "read the columns of a BigQuery table from the catalog of its dataset" in {
+      val onProject =
+        render("expect_column_to_exist('sl_this', 'code')", "my-project.dq.ok", "bigquery")
+      onProject should include("`my-project`.`dq`.INFORMATION_SCHEMA.COLUMNS")
+      onProject should include("table_name = 'ok'")
+      render(
+        "expect_table_column_count_to_equal('dq.small', 2)",
+        "dq.ok",
+        "bigquery"
+      ) should include(
+        "`dq`.INFORMATION_SCHEMA.COLUMNS\nWHERE table_name = 'small'"
+      )
+    }
+
+    it should "escape the quotes of a BigQuery string with a backslash" in {
+      render(
+        """expect_column_distinct_values_to_contain_set('sl_this', 'v', ["O'K"])""",
+        "dq.quotes",
+        "bigquery"
+      ) should include("""SELECT 'O\'K' AS v""")
+    }
+
+    it should "escape the backslashes of a BigQuery string" in {
+      render(
+        """expect_column_distinct_values_to_contain_set('sl_this', 'v', ["a\\b"])""",
+        "dq.quotes",
+        "bigquery"
+      ) should include("""SELECT 'a\\b' AS v""")
+    }
+
+    it should "leave the comment stripper outside a string at the end of each file" in {
+      // Starlake strips the comments of all the macros at once, and counts the quotes of their
+      // Jinja code as SQL ones: a file with an odd number of quotes would change how the files
+      // read after it are stripped
+      expectations("empty-project").list.filter(_.name.endsWith(".j2")).toList.foreach { file =>
+        withClue(file.name) {
+          SQLUtils.stripComments(file.contentAsString + "\n-- end of file") should not include
+          "end of file"
+        }
+      }
+    }
+
+    "ExpectationJob" should "give the macros the table of the expectation in a quoted sl_this" in {
+      ExpectationJob.callOnTable(
+        "{{ m('sl_this', \"SL_THIS\", sl_this, 'sl_this_x') }}",
+        "p.d.t$1"
+      ) shouldBe "{{ m('p.d.t$1', \"p.d.t$1\", sl_this, 'sl_this_x') }}"
+    }
+
+    it should "define each macro once" in {
+      // The definition read last would replace the others
+      val names = definedMacros(expectations("empty-project"))
+      names.diff(names.distinct) shouldBe Nil
+    }
+
+    it should "be the same in the sample project" in {
+      val sample = expectations("sample-project")
+      val empty = expectations("empty-project")
+      def sampleName(name: String): String =
+        if (name == "UnexpectedRowsExpectation.j2") "UnexpectedRowsExpectation.sql.j2" else name
+      sample.list.map(_.name).toSet shouldBe empty.list.map(file => sampleName(file.name)).toSet
+      empty.list.map(_.name).toList.sorted.foreach { name =>
+        withClue(name) {
+          // The sample project names one macro in CamelCase
+          (sample / sampleName(name)).contentAsString.replace(
+            "ExpectColumnDistinctValuesToBeInSet",
+            "expect_column_distinct_values_to_be_in_set"
+          ) shouldBe (empty / name).contentAsString
+        }
+      }
+    }
+  }
+}
+
+object BootstrapExpectationMacrosSpec {
+
+  def expectations(template: String): File =
     File(
-      getClass
+      classOf[BootstrapExpectationMacrosSpec]
         .getResource(s"/templates/bootstrap/samples/$template/metadata/expectations")
         .toURI
     )
 
-  private val macroDefinition = """\{%-?\s*macro\s+(\w+)""".r
+  val macroDefinition = """\{%-?\s*macro\s+(\w+)""".r
 
-  private def definedMacros(directory: File): List[String] =
+  def definedMacros(directory: File): List[String] =
     directory.list
       .filter(_.name.endsWith(".j2"))
       .toList
@@ -34,16 +157,22 @@ class BootstrapExpectationMacrosSpec extends TestHelper {
     * stands for `dq.ok` in the first call and `dq.ko` in the second one, as `ExpectationJob`
     * replaces it with the table of the expectation.
     */
-  private case class Rule(name: String, holds: String, broken: String)
+  case class Rule(name: String, holds: String, broken: String)
 
-  private object Rule {
+  object Rule {
     def apply(name: String, arguments: String): Rule =
       Rule(name, s"$name($arguments)", s"$name($arguments)")
   }
 
-  private val rules = List(
+  val rules: List[Rule] = List(
     // Completeness
     Rule("expect_column_values_to_be_null", "'sl_this', 'empty', 0.9"),
+    // A ratio over an empty table is NULL, which fails on every engine
+    Rule(
+      "expect_column_values_to_be_null",
+      "expect_column_values_to_be_null('dq.ok', 'empty', 0.9)",
+      "expect_column_values_to_be_null('dq.none', 'v', 0.9)"
+    ),
     Rule("expect_column_values_to_not_be_null", "'sl_this', 'filled'"),
     // Numeric
     Rule(
@@ -110,7 +239,32 @@ class BootstrapExpectationMacrosSpec extends TestHelper {
     // Uniqueness
     Rule("expect_column_distinct_values_to_be_in_set", """'sl_this', 'code', ["'A01'", "'A02'"]"""),
     Rule("expect_column_distinct_values_to_contain_set", "'sl_this', 'code', ['A01', 'A02']"),
+    // A NULL in the column hides no missing value (#1899)
+    Rule(
+      "expect_column_distinct_values_to_contain_set",
+      "expect_column_distinct_values_to_contain_set('dq.nulls', 'v', ['a'])",
+      "expect_column_distinct_values_to_contain_set('dq.nulls', 'v', ['a', 'b'])"
+    ),
+    // A column that is not a string is compared as one (#1899)
+    Rule("expect_column_distinct_values_to_contain_set", "'sl_this', 'id', ['1', '2']"),
+    // Strings are quoted, their quotes doubled
+    Rule(
+      "expect_column_distinct_values_to_contain_set",
+      """expect_column_distinct_values_to_contain_set('dq.quotes', 'v', ["O'K"])""",
+      """expect_column_distinct_values_to_contain_set('dq.quotes', 'v', ["O'K", 'X'])"""
+    ),
     Rule("expect_column_distinct_values_to_equal_set", "'sl_this', 'code', ['A01', 'A02']"),
+    Rule(
+      "expect_column_distinct_values_to_equal_set",
+      "expect_column_distinct_values_to_equal_set('dq.nulls', 'v', ['a'])",
+      "expect_column_distinct_values_to_equal_set('dq.nulls', 'v', ['a', 'b'])"
+    ),
+    Rule("expect_column_distinct_values_to_equal_set", "'sl_this', 'id', ['1', '2', '3']"),
+    Rule(
+      "expect_column_distinct_values_to_equal_set",
+      """expect_column_distinct_values_to_equal_set('dq.quotes', 'v', ["O'K"])""",
+      """expect_column_distinct_values_to_equal_set('dq.quotes', 'v', ['OK'])"""
+    ),
     Rule("expect_column_proportion_of_unique_values_to_be_between", "'sl_this', 'id', 1, 1"),
     Rule("expect_column_unique_value_count_to_be_between", "'sl_this', 'id', 3, 3"),
     Rule("expect_column_values_to_be_unique", "'sl_this', 'id'"),
@@ -184,7 +338,8 @@ class BootstrapExpectationMacrosSpec extends TestHelper {
     )
   )
 
-  private val tables = List(
+  /** The tables of the rules, on DuckDB */
+  val duckDbTables: List[String] = List(
     "CREATE SCHEMA dq",
     """CREATE TABLE dq.ok (id INT, code VARCHAR, grade VARCHAR, amount DOUBLE, a INT, b INT,
       |x INT, y INT, s1 INT, s2 INT, label VARCHAR, empty VARCHAR, filled VARCHAR)""".stripMargin,
@@ -201,75 +356,50 @@ class BootstrapExpectationMacrosSpec extends TestHelper {
     "INSERT INTO dq.small VALUES (1, 1), (2, 2)",
     // Two most common values, one of them outside the set
     "CREATE TABLE dq.tie (grade VARCHAR)",
-    "INSERT INTO dq.tie VALUES ('A'), ('Z')"
+    "INSERT INTO dq.tie VALUES ('A'), ('Z')",
+    "CREATE TABLE dq.nulls (v VARCHAR)",
+    "INSERT INTO dq.nulls VALUES ('a'), (NULL)",
+    "CREATE TABLE dq.none (v VARCHAR)",
+    "CREATE TABLE dq.quotes (v VARCHAR)",
+    "INSERT INTO dq.quotes VALUES ('O''K')"
   )
 
-  new WithSettings() {
-    private val macros = {
-      val directory = expectations("empty-project")
-      SQLUtils.stripComments(
-        directory.list
-          .filter(_.name.endsWith(".j2"))
-          .toList
-          .sortBy(_.name)
-          .map(file => "\n" + file.contentAsString + "\n")
-          .mkString("\n")
-      )
-    }
-
-    /** Runs a macro call as `ExpectationJob` does: one row, one integer */
-    private def run(call: String, table: String)(implicit connection: java.sql.Connection): Int = {
-      val sql = Utils
-        .parseJinja(macros + "\n{{ " + call + " }}", Map.empty[String, Any])
-        .replaceAll("(?i)sl_this", table)
-      new SQLConnectionExpectationAssertionHandler(connection).handle(sql)
-    }
-
-    "The expectation macros of bootstrap" should "return 0 when their rule holds, a positive number when it is broken" in {
-      Using.resource(DriverManager.getConnection("jdbc:duckdb:")) { implicit connection =>
-        Using.resource(connection.createStatement())(statement => tables.foreach(statement.execute))
-        // Every failing call, reported together
-        val failures = rules.flatMap { rule =>
-          List(
-            (rule.holds, "dq.ok", (result: Int) => result == 0),
-            (rule.broken, "dq.ko", (result: Int) => result > 0)
-          ).flatMap { case (call, table, expected) =>
-            Try(run(call, table)) match {
-              case Success(result) if expected(result) => None
-              case Success(result)                     => Some(s"$call on $table: $result")
-              case Failure(exception) => Some(s"$call on $table: ${exception.getMessage}")
-            }
-          }
-        }
-        failures shouldBe Nil
-      }
-    }
-
-    it should "all be tested" in {
-      definedMacros(expectations("empty-project")).toSet shouldBe rules.map(_.name).toSet
-    }
-
-    it should "define each macro once" in {
-      // The definition read last would replace the others
-      val names = definedMacros(expectations("empty-project"))
-      names.diff(names.distinct) shouldBe Nil
-    }
-
-    it should "be the same in the sample project" in {
-      val sample = expectations("sample-project")
-      val empty = expectations("empty-project")
-      def sampleName(name: String): String =
-        if (name == "UnexpectedRowsExpectation.j2") "UnexpectedRowsExpectation.sql.j2" else name
-      sample.list.map(_.name).toSet shouldBe empty.list.map(file => sampleName(file.name)).toSet
-      empty.list.map(_.name).toList.sorted.foreach { name =>
-        withClue(name) {
-          // The sample project names one macro in CamelCase
-          (sample / sampleName(name)).contentAsString.replace(
-            "ExpectColumnDistinctValuesToBeInSet",
-            "expect_column_distinct_values_to_be_in_set"
-          ) shouldBe (empty / name).contentAsString
-        }
-      }
-    }
+  /** The macros of the bootstrapped empty project, as `ExpectationJob` concatenates them */
+  lazy val macros: String = {
+    val directory = expectations("empty-project")
+    SQLUtils.stripComments(
+      directory.list
+        .filter(_.name.endsWith(".j2"))
+        .toList
+        .sortBy(_.name)
+        .map(file => "\n" + file.contentAsString + "\n")
+        .mkString("\n")
+    )
   }
+
+  /** Renders a macro call as `ExpectationJob` does, for the given engine */
+  def render(call: String, table: String, engine: String)(implicit settings: Settings): String =
+    Utils
+      .parseJinja(
+        macros + "\n{{ " + ExpectationJob.callOnTable(call, table) + " }}",
+        Map("sl_engine" -> engine)
+      )
+      .replaceAll("(?i)sl_this", table)
+
+  /** Every call that does not give its expected result, reported together: 0 on the table where its
+    * rule holds, a positive number on the table where it is broken
+    */
+  def rulesNotKept(holds: String, broken: String)(run: (String, String) => Int): List[String] =
+    rules.flatMap { rule =>
+      List(
+        (rule.holds, holds, (result: Int) => result == 0),
+        (rule.broken, broken, (result: Int) => result > 0)
+      ).flatMap { case (call, table, expected) =>
+        Try(run(call, table)) match {
+          case Success(result) if expected(result) => None
+          case Success(result)                     => Some(s"$call on $table: $result")
+          case Failure(exception) => Some(s"$call on $table: ${exception.getMessage}")
+        }
+      }
+    }
 }
