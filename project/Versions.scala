@@ -23,7 +23,7 @@ object Versions {
   val log4s = "1.3.3"
   val swaggerParser = "2.1.48"
   val betterFiles = "3.9.2"
-  val jacksonForSpark4 = "2.21.2" // exactly what Spark 4.3.0 ships via jackson-bom
+  val jacksonForSpark4 = "2.21.8" // exactly what Spark 4.3.0 ships via jackson-bom
   // jackson-annotations dropped patch versioning at jackson-bom 2.20 (kept as "2.21", not "2.21.2");
   // see jackson-bom's own pom comment on <jackson.version.annotations>. No 2.21.2 artifact exists.
   val jacksonAnnotationsForSpark4 = "2.21"
