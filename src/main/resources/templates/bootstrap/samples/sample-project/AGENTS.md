@@ -108,7 +108,8 @@ another Starlake project uses it is a reason to check, not a reason to trust.
 write strategies either exist in this project's authorities or they do not
 exist. YAML keys → `metadata/starlake.json`, the JSON Schema for every `.sl.yml`.
 Expectation macros → `ls metadata/expectations/`, and that listing is the whole
-list. CLI flags → `starlake <command> --help`. A key you half-remember from
+list; the `sl_` macros of `Engine.j2` are the SQL fragments they share, not
+expectations. CLI flags → `starlake <command> --help`. A key you half-remember from
 documentation is not evidence: if you cannot point to where a name comes from,
 do not write it.
 
@@ -137,7 +138,7 @@ question.
 | which domains / tables exist | `ls metadata/load/` then `ls metadata/load/<domain>/` |
 | a table's columns, types, write strategy | `metadata/load/<domain>/<table>.sl.yml` |
 | which transforms exist | `ls metadata/transform/` and its `*.sl.yml` + `*.sql` pairs |
-| which expectation macros are available | `ls metadata/expectations/` — these `.j2` files are the whole list |
+| which expectation macros are available | `ls metadata/expectations/` — these `.j2` files are the whole list, except the `sl_` fragments of `Engine.j2` |
 | which types are available | `metadata/types/types.sl.yml` and `default.sl.yml` |
 | which connection / engine is active | `metadata/env.sl.yml`, then `starlake settings` |
 | what a load or transform actually did | the `audit.audit` table |

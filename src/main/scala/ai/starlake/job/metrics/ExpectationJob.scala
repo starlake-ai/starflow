@@ -12,7 +12,7 @@ import org.apache.hadoop.fs.Path
 
 import java.sql.Timestamp
 import java.time.Instant
-import java.util.regex.Pattern
+import java.util.regex.{Matcher, Pattern}
 import scala.util.{Failure, Success, Try}
 
 case class ExpectationReport(
@@ -156,6 +156,12 @@ class ExpectationJob(
     }
   }
 
+  /** The variables of the macros: the active environment, and `sl_engine`, the engine that runs the
+    * expectation queries
+    */
+  private def macroVars(): Map[String, Any] =
+    schemaHandler.activeEnvVars() ++ sqlRunner.engineName.map("sl_engine" -> _)
+
   def runExpectations(): List[ExpectationReport] = {
     val fullTableName = database match {
       case Some(db) => s"$db.$domainName.$schemaName"
@@ -166,11 +172,12 @@ class ExpectationJob(
       val queryCall = expectation.queryCall()
       // An expectation that cannot be rendered is reported as one whose query cannot run
       val renderedSql: Try[String] = Try {
-        val expectationWithMacroDefinitions = List(macros, queryCall).mkString("\n")
+        val expectationWithMacroDefinitions =
+          List(macros, ExpectationJob.callOnTable(queryCall, fullTableName)).mkString("\n")
         val sql =
           Utils.parseJinja(
             expectationWithMacroDefinitions,
-            schemaHandler.activeEnvVars()
+            macroVars()
           )
         transpileSql(
           if (sql.contains("sl_this")) {
@@ -313,11 +320,13 @@ class ExpectationJob(
 
     val macros = schemaHandler.allMacros
     val sqls = expectations.map { expectation =>
-      val expectationWithMacroDefinitions = List(macros, expectation.queryCall()).mkString("\n")
+      val expectationWithMacroDefinitions =
+        List(macros, ExpectationJob.callOnTable(expectation.queryCall(), fullTableName))
+          .mkString("\n")
       val sql = bqSlThisCTE +
         Utils.parseJinja(
           expectationWithMacroDefinitions,
-          schemaHandler.activeEnvVars()
+          macroVars()
         )
       logger.info(
         s"Applying expectation: ${expectation.expect} with request $sql"
@@ -329,6 +338,17 @@ class ExpectationJob(
 }
 
 object ExpectationJob {
+
+  /** A macro call where a quoted `sl_this` argument is already the table of the expectation, so
+    * that the macro can read its name: the schema macros look the table up in the catalog of
+    * BigQuery. `sl_this` is still replaced in the rendered query.
+    */
+  def callOnTable(queryCall: String, fullTableName: String): String =
+    queryCall.replaceAll(
+      """(?i)(['"])sl_this\1""",
+      "$1" + Matcher.quoteReplacement(fullTableName) + "$1"
+    )
+
   def apply(
     appId: Option[String],
     database: Option[String],

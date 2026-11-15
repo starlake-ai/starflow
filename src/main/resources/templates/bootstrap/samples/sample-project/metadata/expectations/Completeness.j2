@@ -25,7 +25,7 @@ total_count AS (
 )
 SELECT 
     CASE 
-        WHEN (CAST(null_count.null_values AS FLOAT) / total_count.total_values) >= {{ mostly }}
+        WHEN {{ sl_ratio('null_count.null_values', 'total_count.total_values') }} >= {{ mostly }}
         THEN 0
         ELSE 1
     END AS success
