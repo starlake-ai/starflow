@@ -2462,9 +2462,15 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   ): AutoTaskInfo = {
     logger.debug(s"Diff SQL attributes with YAML for task ${task.getName()}: $list")
     if (list.nonEmpty) {
+      val incomingAttributes = list.filterNot(_._2 == AttributeStatus.REMOVED).map(_._1)
+      // A SELECT returns at least one column: none means that its columns were not read (#1949)
+      if (incomingAttributes.isEmpty && task.attributes.nonEmpty)
+        throw new IllegalStateException(
+          s"The sync of task ${task.fullName()} would remove all its attributes: its YAML is left unchanged"
+        )
       val updatedTask =
         task
-          .updateAttributes(list.filterNot(_._2 == AttributeStatus.REMOVED).map(_._1))
+          .updateAttributes(incomingAttributes)
           .copy(sql = None) // do not serialize sql. It is in its own file
       val taskPath = new Path(DatasetArea.transform, s"${task.domain}/${task.name}.sl.yml")
 
