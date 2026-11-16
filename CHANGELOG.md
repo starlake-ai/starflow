@@ -2,6 +2,34 @@
 # Release notes
 
 # 1.7.9:
+__Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
+- **BigQuery permissions**:
+  - Row access policies are now replaced one by one, which needs `bigquery.rowAccessPolicies.update` (#1913).
+  - A transform in `OVERWRITE` now reads its table: it needs `bigquery.tables.getData`, the Fine-Grained Reader role on columns with a policy tag and, on a table that requires a partition filter, `bigquery.tables.update` (#1938).
+  - `createSchemaIfNotExists: false` now applies: no dataset is created, the one of the audit included, and a run fails when its dataset does not exist (#1913).
+- **Failures that were silent or ignored**:
+  - The timeouts of BigQuery query jobs apply: by default, each statement of a transform or of the second step of a load has 30 minutes (`SL_LONG_JOB_TIMEOUT_MS`, or the `taskTimeoutMs` of the task) (#1913).
+  - A native BigQuery load in one step fails when the `acl`, the row access policies or the policy tags of its table cannot be applied (#1838). A table whose `tags` are not valid BigQuery labels, or whose keys name a column that its target lacks, fails its loads in two steps (#1838).
+  - Under `expectations.failOnError: true`, a transform whose expectation fails now fails. `failOnError: false` on an expectation no longer fails a load (#1936).
+  - A file whose load fails before writing goes back to the stage area, and fails each next load of its table until it is removed (#1934).
+  - On a load in two steps, `rejectMaxRecords` and `rejectAllOnError` count the rejected rows of all its files together (#1935).
+  - A write of a table that runs during a BigQuery `OVERWRITE` of that table can now make the run fail (#1938).
+- **Loads and data**:
+  - A BigQuery task that creates a partitioned table sets the partition expiration of its sink (`days`), and BigQuery drops the older partitions at once. The tables that earlier versions created keep no expiration (#1883).
+  - POSITION files: `withHeader` now defaults to `false`. Native BigQuery loads now load the first line of each file, and Spark loads with `withHeader: true` now skip it (#1946).
+  - Native BigQuery loads: a table with `presql` or `postsql` now loads in two steps and runs them (#1838). A POSITION or DSV table with a type whose format BigQuery cannot apply loads with Spark, with a warning (#1886, #1935).
+  - The second step of a native load no longer writes a TRANSFORM row to the audit log, on BigQuery, DuckDB and Snowflake (#1838).
+  - Native DuckDB loads now load the `PARQUET` tables, with the SQL and the conversion rules of DuckDB; `loader: spark` keeps Spark (#1952).
+  - A JDBC task whose sink connection has the same options as its run connection now runs on that database with its write strategy, instead of going through Spark (#1897).
+  - SCD2: an existing table keeps the type of its validity columns, while a `date` type makes the templates write dates into them, which BigQuery refuses in a `TIMESTAMP` column (#1885).
+- **Project templates and macros**, to update by hand:
+  - An overridden `bigquery/create.j2` must add the partition expiration from `sinkDays` (#1883). An overridden `create.j2` or `scd2.j2` must use `strategyStartTsType`, `strategyEndTsType` and the `scd2Now` macro (#1885).
+  - The expectation macros copied by an earlier `bootstrap` are not updated: copy the `metadata/expectations` folder of a scratch project bootstrapped with this version. A ratio over an empty table is now NULL, and a quoted `'sl_this'` argument is replaced by the table (#1899, #1967).
+- **`transform --sync-apply` and `--sync-preview`**:
+  - They now fail, and write nothing, when the SELECT of the task cannot run (#1949), or when attributes change in an attributes list that uses Jinja or variables (#1953). The SQL editor of the UI gets the error.
+  - They read the columns on the connection of the task, from a dry run on BigQuery: the next sync may change attributes, `timestamp` becoming `datetime` for a `DATETIME` column, a repeated column getting `array: true`, a `STRUCT` column its fields (#1950).
+  - `--sync-apply` adds the descriptions inherited through column lineage to the attributes that have none (#1948).
+
 __Bug fix__:
 - **A BigQuery transform task creates its table with the partition expiration of its sink** (#1883): `sink.days` was ignored when a task running natively on BigQuery created its table, through the `create.j2` template. The table was partitioned, but its partitions never expired, whereas a load sets the expiration on the table it creates. The `CREATE TABLE` statement now carries `OPTIONS (partition_expiration_days = <days>)` when the sink of the task, possibly inherited from the `_config.sl.yml` of its folder, declares a partition and a positive `days`. A `days` of 0 or less sets no expiration, nor does a partitioning by integer range (`RANGE_BUCKET`), which BigQuery does not expire.
   - **Data**: BigQuery drops the partitions older than `days` as soon as the table is created, so a task that loads history into a new table keeps only the partitions of the last `days` days, as a load does.
