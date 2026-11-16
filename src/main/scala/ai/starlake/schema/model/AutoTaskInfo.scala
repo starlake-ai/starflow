@@ -2,19 +2,21 @@ package ai.starlake.schema.model
 
 import ai.starlake.config.Settings.ConnectionInfo
 import ai.starlake.config.{DatasetArea, Settings}
-import ai.starlake.extract.{ExtractSchema, ExtractSchemaConfig}
+import ai.starlake.extract.{ExtractBigQuerySchema, ExtractSchema, ExtractSchemaConfig}
 import ai.starlake.job.transform.AutoTask
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model.Severity.Error
-import ai.starlake.sql.{SQLTypeMappings, SQLUtils}
+import ai.starlake.sql.{PresqlTemporaryTables, SQLTypeMappings, SQLUtils}
 import ai.starlake.transpiler.JSQLSchemaDiff
 import ai.starlake.transpiler.diff.{Attribute as DiffAttribute, DBSchema}
 import ai.starlake.transpiler.schema.CaseInsensitiveLinkedHashMap
+import ai.starlake.utils.conversion.BigQueryType
 import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, Utils, YamlSerde}
 import com.fasterxml.jackson.annotation.{JsonIgnore, JsonIgnoreProperties}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.types.StructType
 
+import java.util.Locale
 import scala.jdk.CollectionConverters.*
 import scala.util.matching.Regex
 import scala.util.{Failure, Success, Try}
@@ -258,9 +260,7 @@ case class AutoTaskInfo(
     val connection = settings.appConfig
       .connection(getRunConnectionRef())
       .getOrElse(
-        throw new StarlakeNotFoundException(
-          s"Connection not found: ${settings.appConfig.connectionRef}"
-        )
+        throw new StarlakeNotFoundException(s"Connection not found: ${getRunConnectionRef()}")
       )
     connection
   }
@@ -302,12 +302,15 @@ case class AutoTaskInfo(
     * the yaml
     * @param sqlStatementAttributes
     *   List of attributes extracted from an incoming SQL statement
+    * @param sameType
+    *   whether an attribute of the task and the column of the same name in the SELECT have the same
+    *   type: by default, the same type name
     * @param settings
     * @return
     *   * List of tuples containing the attribute and its status. The status can be one of the
     *   AttributeStatus values:
     *   - ADDED: The attribute is new and not present in the existing attributes
-    *   - MODIFIED: The attribute is present but its type or comment has changed
+    *   - MODIFIED: The attribute is present but its type, mode, fields or comment have changed
     *   - UNCHANGED: The attribute is present and its type and comment are unchanged
     *   - REMOVED: The attribute is not returned by the SQL statement. The SCD2 validity columns,
     *     which the write strategy writes and the SELECT does not return, are kept UNCHANGED (#1949)
@@ -315,7 +318,8 @@ case class AutoTaskInfo(
     *   when the SQL statement returns no column
     */
   def diffSqlAttributesWithYaml(
-    sqlStatementAttributes: List[TableAttribute]
+    sqlStatementAttributes: List[TableAttribute],
+    sameType: (TableAttribute, TableAttribute) => Boolean = AutoTaskInfo.sameTypeName
   )(implicit settings: Settings): List[(TableAttribute, AttributeStatus)] = {
     // A SELECT returns at least one column: none means that its columns were not read (#1949)
     if (sqlStatementAttributes.isEmpty)
@@ -329,14 +333,11 @@ case class AutoTaskInfo(
         this.attributes.find(_.name.equalsIgnoreCase(sqlAttr.name)) match {
           case Some(existingAttr) =>
             val (updatedType, status) =
-              if (existingAttr.`type` == sqlAttr.`type`) {
-                existingAttr -> AttributeStatus.UNCHANGED
-              } else {
-                nochange = false
-                existingAttr.copy(
-                  `type` = sqlAttr.`type`,
-                  array = sqlAttr.array
-                ) -> AttributeStatus.MODIFIED
+              AutoTaskInfo.syncAttribute(existingAttr, sqlAttr, sameType) match {
+                case None => existingAttr -> AttributeStatus.UNCHANGED
+                case Some(synced) =>
+                  nochange = false
+                  synced -> AttributeStatus.MODIFIED
               }
             val (updateTypeAndComment, status2) =
               if (sqlAttr.comment.nonEmpty) {
@@ -393,6 +394,16 @@ case class AutoTaskInfo(
         s"$reference\\s+AS\\s*\\(".r.findFirstIn(select).isEmpty
       }
 
+  /** Compares the attributes of the task with the columns of its SELECT, or of `sqlStatement`, read
+    * on the connection of the task (#1950). The presql is not run, since it may write: the
+    * temporary tables that it creates from a query are read as common table expressions of the
+    * SELECT. On BigQuery, the columns come from a dry run, which is free and reads no data, with
+    * the types of extract-bq-schema, and an attribute keeps its type when it creates the same
+    * BigQuery column.
+    *
+    * @throws RuntimeException
+    *   when the columns of the SELECT cannot be read: the attributes are then left unchanged
+    */
   def diffSqlAttributesWithSQL(
     sqlStatement: Option[String] = None,
     accessToken: Option[String] = None
@@ -400,72 +411,133 @@ case class AutoTaskInfo(
     settings: Settings
   ): List[(TableAttribute, AttributeStatus)] = {
     if (parseSQL.getOrElse(true)) {
-      val connection =
-        settings.appConfig
-          .connection(settings.appConfig.connectionRef)
-          .getOrElse(
-            throw new Exception(s"Connection not found ${settings.appConfig.connectionRef}")
-          )
-          .withAccessToken(accessToken)
+      val connectionName = getRunConnectionRef()
+      val runConnection = Try(getRunConnection().withAccessToken(accessToken))
+      val bigQuery = runConnection.toOption.exists(_.isBigQuery())
+      val lexing = runConnection.toOption
+        .flatMap(connection => Try(connection.getJdbcEngineName().toString).toOption)
+        .map(PresqlTemporaryTables.Lexing.of)
+        .getOrElse(PresqlTemporaryTables.Lexing.standard)
+      val schemaHandler = settings.schemaHandler()
 
-      val selectStatement = Try(sqlStatement.getOrElse(this.getTranspiledSql()))
-      val sqlSchema =
-        selectStatement.flatMap { sql =>
-          AutoTask.executeSelectSchema(
-            domain = "__ignore__",
-            table = "__ignore__",
-            sql = sql,
-            summarizeOnly = false,
-            connection = connection,
-            accessToken = accessToken,
-            connectionName = Some(settings.appConfig.connectionRef),
-            pageSize = 1,
-            pageNumber = 1,
-            test = false,
-            parseSQL = true,
-            scheduledDate = None
-          )(settings, settings.storageHandler(), settings.schemaHandler())
-        }
+      // The SELECT, with the temporary tables of the presql that it reads
+      val selectStatement = runConnection
+        .flatMap(_ => Try(sqlStatement.getOrElse(this.getTranspiledSql())))
+        .map(PresqlTemporaryTables.withTemporaryTables(_, presql, lexing))
+      val sqlSchema: Try[List[TableAttribute]] =
+        for {
+          connection <- runConnection
+          (sql, _)   <- selectStatement
+          attributes <- selectAttributes(sql, connection, connectionName, accessToken)
+        } yield attributes
 
-      val engineName = connection.getJdbcEngineName()
       val sqlAttributes =
         sqlSchema match {
-          case Success(schema) =>
-            val sqlStatementAttributes = schema.map { case (name, typ) =>
-              val sparkType = SQLTypeMappings.getSparkType(typ, engineName.toString).getOrElse("")
-              TableAttribute(
-                name = name,
-                `type` = sparkType,
-                array = None
-              )
-            }
-            sqlStatementAttributes
+          case Success(attributes) =>
+            attributes
           case Failure(exception) =>
             // Without the columns of the SELECT, every attribute would be removed (#1949)
-            val presqlHint =
-              selectStatement.toOption.map(presqlTemporaryTablesReadBy).getOrElse(Nil) match {
-                case Nil => ""
+            val hints = selectStatement.toOption.toList.flatMap { case (sql, temporaryTables) =>
+              // The tables read as common table expressions are defined by the SELECT
+              val unread = presqlTemporaryTablesReadBy(sql).filterNot { name =>
+                temporaryTables.exists(
+                  _.bareName.equalsIgnoreCase(name.filterNot("`\"".contains(_)))
+                )
+              } match {
+                case Nil => Nil
                 case tables =>
-                  s"\nThe SELECT reads temporary tables that the presql of the task creates (${tables
-                      .mkString(", ")}), and the sync runs the SELECT without the presql, which may write:" +
-                  " pass an equivalent SELECT to transform --sync-apply --query, with a WITH clause instead of a temporary table for example."
+                  List(
+                    s"The SELECT reads temporary tables that the presql of the task creates (${tables
+                        .mkString(", ")}), which the sync cannot read as common table expressions, and the sync runs the SELECT without the presql, which may write:" +
+                    " pass an equivalent SELECT to transform --sync-apply --query, with a WITH clause instead of a temporary table for example."
+                  )
               }
+              val read = temporaryTables match {
+                case Nil => Nil
+                case tables =>
+                  tables.filter(_.readsTable(domain, table)) match {
+                    case Nil =>
+                      List(
+                        s"The sync reads the temporary tables that the presql of the task creates as common table expressions of the SELECT (${tables
+                            .map(_.name)
+                            .mkString(", ")}): if the failure comes from them, pass an equivalent SELECT to transform --sync-apply --query."
+                      )
+                    case readingTarget =>
+                      List(
+                        s"The temporary tables of the presql that the sync reads as common table expressions (${readingTarget
+                            .map(_.name)
+                            .mkString(", ")}) read the table of the task, $domain.$table:" +
+                        " if it does not exist yet, run the task once, or pass an equivalent SELECT to transform --sync-apply --query."
+                      )
+                  }
+              }
+              unread ++ read
+            }
             val cause = Utils.exceptionMessagesChainAsString(exception)
             throw new RuntimeException(
-              s"Could not get the columns of the SELECT of task ${fullName()}, its attributes are left unchanged:\n$cause$presqlHint",
+              s"Could not get the columns of the SELECT of task ${fullName()}, its attributes are left unchanged:\n$cause" +
+              hints.map("\n" + _).mkString,
               exception
             )
         }
 
-      // Extract attributes from the SQL statement
-      val sqlStatementAttributesWithStatus =
-        this.diffSqlAttributesWithYaml(sqlAttributes)
-      sqlStatementAttributesWithStatus
+      val sameType: (TableAttribute, TableAttribute) => Boolean =
+        if (bigQuery) AutoTaskInfo.sameBigQueryType(AutoTaskInfo.bigQueryTypeOf(schemaHandler))
+        else AutoTaskInfo.sameTypeName
+      this.diffSqlAttributesWithYaml(sqlAttributes, sameType)
     } else {
       logger.info(
         s"Skipping diff Sql Attributes With Yaml for task ${this.name} as parseSQL is set to false"
       )
       Nil
+    }
+  }
+
+  /** The columns of a SELECT, as attributes: on BigQuery from a dry run, with the types of
+    * extract-bq-schema, elsewhere from the SQL types of the engine
+    */
+  private def selectAttributes(
+    sql: String,
+    connection: ConnectionInfo,
+    connectionName: String,
+    accessToken: Option[String]
+  )(implicit settings: Settings): Try[List[TableAttribute]] = {
+    val schemaHandler = settings.schemaHandler()
+    if (connection.isBigQuery())
+      AutoTask
+        .bigQueryDryRunSchema(sql, connection, accessToken, Some(connectionName))(
+          settings,
+          settings.storageHandler(),
+          schemaHandler
+        )
+        .map(
+          ExtractBigQuerySchema
+            .queryAttributes(_, ExtractBigQuerySchema.projectTypeNames(schemaHandler))
+        )
+    else {
+      val engineName = connection.getJdbcEngineName()
+      AutoTask
+        .executeSelectSchema(
+          domain = "__ignore__",
+          table = "__ignore__",
+          sql = sql,
+          summarizeOnly = false,
+          connection = connection,
+          accessToken = accessToken,
+          connectionName = Some(connectionName),
+          pageSize = 1,
+          pageNumber = 1,
+          test = false,
+          parseSQL = true,
+          scheduledDate = None
+        )(settings, settings.storageHandler(), schemaHandler)
+        .map(_.map { case (name, typ) =>
+          TableAttribute(
+            name = name,
+            `type` = SQLTypeMappings.getSparkType(typ, engineName.toString).getOrElse(""),
+            array = None
+          )
+        })
     }
   }
 
@@ -486,14 +558,15 @@ case class AutoTaskInfo(
         incomingAttributes.exists(_.name.equalsIgnoreCase(existingAttr.name))
       }
 
-    // Update existing attributes with the new type and comment, or keep the existing ones if not
+    // Update existing attributes with the new type, mode, comment and fields, or keep the existing ones if not
     val addAndUpdatedAttributes = incomingAttributes.map { newAttr =>
       this.attributes.find(_.name.equalsIgnoreCase(newAttr.name)) match {
         case Some(existingAttr) =>
           existingAttr.copy(
             `type` = newAttr.`type`,
             array = newAttr.array,
-            comment = newAttr.comment
+            comment = newAttr.comment,
+            attributes = AutoTaskInfo.fieldsOf(existingAttr, newAttr)
           )
         case None => newAttr
       }
@@ -595,6 +668,124 @@ case class AutoTaskInfo(
 }
 
 object AutoTaskInfo {
+
+  /** Whether an attribute and a column have the same type: the same type name */
+  def sameTypeName(existing: TableAttribute, synced: TableAttribute): Boolean =
+    existing.`type` == synced.`type`
+
+  /** @return
+    *   the attribute with the type, mode and fields of the column of the same name in the SELECT,
+    *   or None when they are the same. The type of the attribute is kept when only its mode
+    *   changes, and the fields of a struct are synced in turn, when the SELECT gives them (#1950).
+    */
+  def syncAttribute(
+    existing: TableAttribute,
+    synced: TableAttribute,
+    sameType: (TableAttribute, TableAttribute) => Boolean
+  ): Option[TableAttribute] = {
+    val fields =
+      if (synced.`type` != "struct")
+        // A column that is not a struct has no field
+        if (existing.attributes.isEmpty) None else Some(Nil)
+      else if (synced.attributes.isEmpty)
+        // The engine does not give the fields of its struct columns
+        None
+      else {
+        val syncedFields = synced.attributes.map { field =>
+          existing.attributes.find(_.name.equalsIgnoreCase(field.name)) match {
+            case Some(existingField) =>
+              syncAttribute(existingField, field, sameType).getOrElse(existingField)
+            case None => field
+          }
+        }
+        if (syncedFields == existing.attributes) None else Some(syncedFields)
+      }
+    if (sameType(existing, synced) && fields.isEmpty) None
+    else
+      Some(
+        existing.copy(
+          `type` =
+            if (sameType(existing, synced.copy(array = existing.array))) existing.`type`
+            else synced.`type`,
+          array = synced.array,
+          attributes = fields.getOrElse(existing.attributes)
+        )
+      )
+  }
+
+  /** @return
+    *   the fields of an attribute updated by the sync: those that the sync gives, merged into the
+    *   fields of the same name as the attributes of the task are, or the fields of the attribute
+    *   when the sync gives none for a struct, and none when it is no longer a struct
+    */
+  def fieldsOf(existing: TableAttribute, updated: TableAttribute): List[TableAttribute] =
+    if (updated.attributes.nonEmpty)
+      updated.attributes.map { field =>
+        existing.attributes.find(_.name.equalsIgnoreCase(field.name)) match {
+          case Some(existingField) =>
+            existingField.copy(
+              `type` = field.`type`,
+              array = field.array,
+              comment = field.comment,
+              attributes = fieldsOf(existingField, field)
+            )
+          case None => field
+        }
+      }
+    else if (updated.`type` == "struct") existing.attributes
+    else Nil
+
+  /** @return
+    *   the BigQuery type of the column that a type creates, as a run creates it
+    *   (`TableAttribute.ddlMapping`): the BigQuery mapping of the type, or the one of a type of the
+    *   same primitive type when it has none, without its parameters, since a dry run gives none
+    */
+  def bigQueryTypeOf(schemaHandler: SchemaHandler): String => Option[String] = {
+    val cache = scala.collection.mutable.Map.empty[String, Option[String]]
+    name =>
+      cache.getOrElseUpdate(
+        name,
+        Try(
+          TableAttribute(name = "column", `type` = name)
+            .ddlMapping(isPrimaryKey = false, "bigquery", schemaHandler)
+        ).toOption.collect { case leaf: DDLLeaf => baseBigQueryType(leaf.tpe) }
+      )
+  }
+
+  /** @return
+    *   the BigQuery type of the column that a type of this list creates, from its own mapping only,
+    *   without its parameters
+    */
+  def bigQueryTypeOf(types: List[Type]): String => Option[String] =
+    name =>
+      types.find(_.name == name).flatMap(_.getDdlMappingForDB("bigquery")).map(baseBigQueryType)
+
+  private def baseBigQueryType(ddl: String): String =
+    BigQueryType
+      .parse(ddl)
+      .map(bigQueryType =>
+        bigQueryType.standardType.name() + bigQueryType.rangeElementType
+          .map("<" + _.name() + ">")
+          .getOrElse("")
+      )
+      .getOrElse(ddl.trim.toUpperCase(Locale.ROOT))
+
+  /** @return
+    *   whether an attribute and a column of a BigQuery SELECT create the same BigQuery column
+    *   (#1950): the same type, or types whose columns have the same BigQuery type, their parameters
+    *   aside, since a dry run gives none, and both repeated or not. For example, integer and long
+    *   both create an INT64, decimal and numeric a NUMERIC.
+    *
+    * @param bigQueryType
+    *   the BigQuery type of the column that a type creates
+    */
+  def sameBigQueryType(
+    bigQueryType: String => Option[String]
+  )(existing: TableAttribute, synced: TableAttribute): Boolean =
+    existing.array.getOrElse(false) == synced.array.getOrElse(false) && (
+      existing.`type` == synced.`type` ||
+      bigQueryType(existing.`type`).exists(bigQueryType(synced.`type`).contains)
+    )
 
   /** A temporary table created by a statement of the presql, its name in the first group */
   private val CreateTemporaryTable: Regex =

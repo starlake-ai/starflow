@@ -30,7 +30,7 @@ import ai.starlake.job.metrics.{
   ExpectationReport,
   JdbcExpectationAssertionHandler
 }
-import ai.starlake.job.sink.bigquery.BigQueryJobBase
+import ai.starlake.job.sink.bigquery.{BigQueryJobBase, BigQueryJobResult}
 import ai.starlake.job.strategies.TransformStrategiesBuilder
 import ai.starlake.schema.handlers.{SchemaHandler, SqlTransformations, StorageHandler}
 import ai.starlake.schema.model.*
@@ -38,6 +38,7 @@ import ai.starlake.sql.SQLUtils
 import ai.starlake.transpiler.JSQLTranspiler
 import ai.starlake.utils.Formatter.RichFormatter
 import ai.starlake.utils.*
+import com.google.cloud.bigquery.Schema
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.types.StructType
@@ -1066,7 +1067,8 @@ object AutoTask extends LazyLogging {
     parseSQL: Boolean,
     pageSize: Int,
     pageNumber: Int,
-    scheduledDate: Option[String]
+    scheduledDate: Option[String],
+    dryRun: Boolean = false
   )(implicit
     settings: Settings,
     storageHandler: StorageHandler,
@@ -1136,7 +1138,7 @@ object AutoTask extends LazyLogging {
       accessToken = accessToken,
       resultPageSize = pageSize,
       resultPageNumber = pageNumber,
-      dryRun = false,
+      dryRun = dryRun,
       scheduledDate = scheduledDate,
       syncSchema = false
     )
@@ -1189,6 +1191,52 @@ object AutoTask extends LazyLogging {
         throw e
     }
   }
+
+  /** @return
+    *   the schema of the result of a SELECT on a BigQuery connection, from a dry run, which is
+    *   free, reads no data, and gives the types that BigQuery would produce (#1950)
+    */
+  def bigQueryDryRunSchema(
+    sql: String,
+    connection: Settings.ConnectionInfo,
+    accessToken: Option[String],
+    connectionName: Option[String]
+  )(implicit
+    settings: Settings,
+    storageHandler: StorageHandler,
+    schemaHandler: SchemaHandler
+  ): Try[Schema] =
+    Try(
+      require(
+        connection.isBigQuery(),
+        s"A dry run of the SELECT needs a BigQuery connection, not ${connection.`type`}"
+      )
+    ).flatMap(_ =>
+      executeSelectOnly(
+        domain = "__ignore__",
+        table = "__ignore__",
+        sql = SQLUtils.stripComments(sql).stripSuffix(";").trim,
+        summarizeOnly = false,
+        connection = connection,
+        accessToken = accessToken,
+        connectionName = connectionName,
+        test = false,
+        parseSQL = true,
+        pageSize = 1,
+        pageNumber = 1,
+        scheduledDate = None,
+        dryRun = true
+      ).map {
+        case result: BigQueryJobResult =>
+          result
+            .dryRunSchema()
+            .getOrElse(throw new IllegalStateException("The dry run of the SELECT gave no schema"))
+        case result =>
+          throw new IllegalStateException(
+            s"The dry run of the SELECT on a BigQuery connection gave a ${result.getClass.getSimpleName}"
+          )
+      }
+    )
 
   def executeSelectSchema(
     domain: String,
