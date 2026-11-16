@@ -22,7 +22,8 @@ case class TransformConfig(
   pageSize: Int = 1000,
   pageNumber: Int = 1,
   scheduledDate: Option[String] = None,
-  reportFormat: Option[String] = None
+  reportFormat: Option[String] = None,
+  refreshInheritedDescriptions: Boolean = false
 ) extends ReportFormatConfig {
   def optionsAsString: String = options.map { case (k, v) => s"$k=$v" }.mkString(",")
   override def toString: String = {
@@ -32,6 +33,7 @@ case class TransformConfig(
        |compile=$compile
        |syncApply=$syncApply
        |syncPreview=$syncPreview
+       |refreshInheritedDescriptions=$refreshInheritedDescriptions
        |tags=$tags
        |format=$format
        |interactive=$interactive

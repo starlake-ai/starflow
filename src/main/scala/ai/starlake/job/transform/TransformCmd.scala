@@ -4,6 +4,7 @@ import ai.starlake.config.Settings
 import ai.starlake.job.Cmd
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.utils.JobResult
+import com.typesafe.scalalogging.LazyLogging
 import scopt.OParser
 
 import scala.util.Try
@@ -12,7 +13,7 @@ import scala.util.Try
   *
   * Usage: starlake transform [options]
   */
-trait TransformCmd extends Cmd[TransformConfig] {
+trait TransformCmd extends Cmd[TransformConfig] with LazyLogging {
 
   def command = "transform"
 
@@ -56,6 +57,13 @@ trait TransformCmd extends Cmd[TransformConfig] {
         .action((_, c) => c.copy(syncPreview = true))
         .optional()
         .text("Preview YAML attributes to match SQL query"),
+      builder
+        .opt[Unit]("refresh-inherited-descriptions")
+        .action((_, c) => c.copy(refreshInheritedDescriptions = true))
+        .optional()
+        .text(
+          "With --sync-apply or --sync-preview, replace the description of every column that copies a described column with the current one, even a description written in the task"
+        ),
       builder
         .opt[String]("query")
         .action((x, c) => c.copy(query = Some(x)))
@@ -141,7 +149,12 @@ trait TransformCmd extends Cmd[TransformConfig] {
         .optional()
         .action((x, c) => c.copy(scheduledDate = Some(x.replace('T', ' '))))
         .text("Scheduled date for the job, in format yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-      reportFormatOption(builder)((c, x) => c.copy(reportFormat = x))
+      reportFormatOption(builder)((c, x) => c.copy(reportFormat = x)),
+      builder.checkConfig { config =>
+        if (config.refreshInheritedDescriptions && !config.syncApply && !config.syncPreview)
+          builder.failure("--refresh-inherited-descriptions needs --sync-apply or --sync-preview")
+        else builder.success
+      }
     )
   }
 
@@ -164,7 +177,30 @@ trait TransformCmd extends Cmd[TransformConfig] {
     } else if (config.syncApply) {
       Try {
         val list = schemaHandler.syncPreviewSqlWithDb(config.name, config.query, config.accessToken)
-        schemaHandler.syncApplySqlWithYaml(config.name, list, None)
+        val result = schemaHandler.inheritDescriptions(
+          config.name,
+          list,
+          config.query,
+          config.refreshInheritedDescriptions
+        )
+        result.inherited.foreach { case (attribute, inherited) =>
+          logger.info(s"Attribute $attribute inherits the description of ${inherited.declaredBy}")
+        }
+        result.leftOut.foreach { case (attribute, inherited) =>
+          logger.warn(
+            s"Attribute $attribute does not inherit the description of ${inherited.declaredBy}, since it contains Jinja or a variable"
+          )
+        }
+        if (list.isEmpty && result.attributes.nonEmpty)
+          // Only inherited descriptions change: a task whose YAML cannot be updated keeps it
+          Try(schemaHandler.syncApplySqlWithYaml(config.name, result.attributes, None)).recover {
+            case exception: IllegalStateException =>
+              logger.warn(
+                s"The inherited descriptions of task ${config.name} are not written: ${exception.getMessage}"
+              )
+          }.get
+        else
+          schemaHandler.syncApplySqlWithYaml(config.name, result.attributes, None)
       } map { _ =>
         JobResult.empty
       }
@@ -179,10 +215,39 @@ trait TransformCmd extends Cmd[TransformConfig] {
   private def syncPreview(config: TransformConfig, schemaHandler: SchemaHandler): Try[Unit] = {
     Try {
       val list = schemaHandler.syncPreviewSqlWithDb(config.name, config.query, config.accessToken)
+      val result = schemaHandler.inheritDescriptions(
+        config.name,
+        list,
+        config.query,
+        config.refreshInheritedDescriptions
+      )
       println(s"Previewing SQL attributes for task: ${config.name}")
-      list.foreach { case (attribute, status) =>
+      result.attributes.foreach { case (attribute, status) =>
         val typ = if (attribute.resolveArray()) s"${attribute.`type`}[]" else attribute.`type`
-        println(s"\tAttribute: ${attribute.name}: $typ, Status: $status")
+        val inherited = (result.inherited ++ result.written).collectFirst {
+          case (name, inherited) if name == attribute.name =>
+            s", Description: inherited from ${inherited.declaredBy}"
+        }
+        println(s"\tAttribute: ${attribute.name}: $typ, Status: $status${inherited.getOrElse("")}")
+      }
+      if (result.attributes.isEmpty && result.written.nonEmpty)
+        println(
+          s"Inherited descriptions, already written: ${result.written
+              .map { case (name, inherited) => s"$name (${inherited.declaredBy})" }
+              .mkString(", ")}"
+        )
+      if (result.leftOut.nonEmpty)
+        println(
+          s"Inherited descriptions left out, since they contain Jinja or a variable: ${result.leftOut
+              .map { case (name, inherited) => s"$name (${inherited.declaredBy})" }
+              .mkString(", ")}"
+        )
+      if (result.undescribed.nonEmpty)
+        println(s"Attributes without a description: ${result.undescribed.mkString(", ")}")
+      result.error.foreach { error =>
+        println(
+          s"The column lineage of the task is not read, its columns inherit no description: $error"
+        )
       }
 
     }
