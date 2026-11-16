@@ -59,11 +59,14 @@ jobs:
             org.opencontainers.image.description="A declarative text based tool that enables analysts and engineers to extract, load, transform and orchestrate their data pipelines."
             org.opencontainers.image.url=https://starlake.ai
           # generate Docker tags based on the following events/attributes
+          # branch-1.7 releases come after newer lines: no `latest` nor major tag,
+          # which would point the images of the newest release to a 1.7.x one
+          flavor: |
+            latest=false
           tags: |
             type=schedule
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
 #            type=sha
         
       - name: Set up QEMU
@@ -84,7 +87,7 @@ jobs:
           context: "./distrib/docker"
           pull: true
           load: true
-          tags: ${{ steps.meta.outputs.tags }},${{ env.REGISTRY_IMAGE_LATEST }},${{ env.REGISTRY_IMAGE }}:${{ env.SL_MAJOR_MINOR_VERSION }},"${{ env.REGISTRY_IMAGE }}:${{ env.SL_MAJOR_VERSION }}",${{ env.REGISTRY_IMAGE }}:latest
+          tags: ${{ steps.meta.outputs.tags }},${{ env.REGISTRY_IMAGE_LATEST }},${{ env.REGISTRY_IMAGE }}:${{ env.SL_MAJOR_MINOR_VERSION }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
               BUILD_DATE=${{ env.BUILD_DATE }}
@@ -109,7 +112,7 @@ jobs:
           pull: true
           push: true
           provenance: mode=max
-          tags: ${{ steps.meta.outputs.tags }},${{ env.REGISTRY_IMAGE_LATEST }},${{ env.REGISTRY_IMAGE }}:${{ env.SL_MAJOR_MINOR_VERSION }},"${{ env.REGISTRY_IMAGE }}:${{ env.SL_MAJOR_VERSION }}","${{ env.REGISTRY_IMAGE }}:latest"
+          tags: ${{ steps.meta.outputs.tags }},${{ env.REGISTRY_IMAGE_LATEST }},${{ env.REGISTRY_IMAGE }}:${{ env.SL_MAJOR_MINOR_VERSION }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
               BUILD_DATE=${{ env.BUILD_DATE }}
