@@ -26,6 +26,16 @@ case class BigQueryJobResult(
       .getOrElse(Nil)
   }
 
+  /** @return
+    *   the schema of the result of a successful dry run of a query, which BigQuery gives in the
+    *   statistics of the job (#1950)
+    */
+  def dryRunSchema(): scala.Option[Schema] =
+    job
+      .flatMap(job => scala.Option(job.getStatistics[JobStatistics]()))
+      .collect { case statistics: JobStatistics.QueryStatistics => statistics }
+      .flatMap(statistics => scala.Option(statistics.getSchema))
+
   private def flatten(fieldList: List[Field], parentPath: String): List[List[(String, String)]] = {
     fieldList.flatMap { field =>
       val level = parentPath.count(_ == '/')

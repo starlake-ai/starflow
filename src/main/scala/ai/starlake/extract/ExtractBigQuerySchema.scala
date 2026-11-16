@@ -510,6 +510,27 @@ object ExtractBigQuerySchema extends LazyLogging {
   }
 
   /** @return
+    *   the attributes of the columns of the result of a query, from the schema of its dry run, as
+    *   the sync of the attributes of a task writes them (#1950): named after the built-in type of
+    *   their BigQuery type, as by extract-bq-schema, without their mode or description. An unknown
+    *   type is a string, with a warning.
+    */
+  def queryAttributes(schema: Schema, typeName: String => String): List[TableAttribute] = {
+    val notes = ListBuffer.empty[String]
+    val attributes = fieldsOf(schema.getFields)
+      .map(field => withoutModeAndDescription(attributeOf(field, "", typeName, None, notes)))
+    notes.foreach(note => logger.warn(note))
+    attributes
+  }
+
+  private def withoutModeAndDescription(attribute: TableAttribute): TableAttribute =
+    attribute.copy(
+      required = None,
+      comment = None,
+      attributes = attribute.attributes.map(withoutModeAndDescription)
+    )
+
+  /** @return
     *   the name of the project type of a built-in type: the built-in type itself, unless a project
     *   type of the same name has another primitive type. Then the first type of the project, not a
     *   built-in one, of the same primitive type and BigQuery mapping, or of the same primitive
