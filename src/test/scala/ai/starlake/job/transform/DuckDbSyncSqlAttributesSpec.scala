@@ -1,8 +1,9 @@
 package ai.starlake.job.transform
 
 import ai.starlake.TestHelper
-import ai.starlake.config.Settings
+import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.JdbcDbUtils
+import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model._
 import ai.starlake.utils.Utils
 import ai.starlake.workflow.IngestionWorkflow
@@ -12,12 +13,14 @@ import org.apache.hadoop.fs.Path
 import scala.util.Try
 
 /** `transform --sync-preview` and `--sync-apply` never remove the attributes of a task whose SELECT
-  * cannot run, nor the SCD2 validity columns, which the SELECT does not return (#1949), and write
-  * only the attributes of the task, into its YAML as written (#1953)
+  * cannot run, nor the SCD2 validity columns, which the SELECT does not return (#1949), write only
+  * the attributes of the task, into its YAML as written (#1953), and read the columns of the SELECT
+  * on the connection of the task, with the temporary tables of its presql (#1950)
   */
 class DuckDbSyncSqlAttributesSpec extends TestHelper {
 
   lazy val duckDbPath = s"$starlakeTestRoot/test_sync_sql_attributes.db"
+  lazy val otherDuckDbPath = s"$starlakeTestRoot/test_sync_sql_attributes_other.db"
 
   lazy val duckDbConfiguration: Config =
     ConfigFactory
@@ -32,14 +35,23 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
            |      "driver": "org.duckdb.DuckDBDriver"
            |    }
            |}
+           |connections.other-duckdb {
+           |    type = "jdbc"
+           |    options {
+           |      "url": "jdbc:duckdb:$otherDuckDbPath"
+           |      "driver": "org.duckdb.DuckDBDriver"
+           |    }
+           |}
            |""".stripMargin
       )
       .withFallback(super.testConfiguration)
 
   new WithSettings(duckDbConfiguration) {
 
-    private def execute(statements: String*): Unit = {
-      val options = settings.appConfig.connections("test-duckdb").options
+    private def execute(statements: String*): Unit = executeOn("test-duckdb", statements: _*)
+
+    private def executeOn(connection: String, statements: String*): Unit = {
+      val options = settings.appConfig.connections(connection).options
       JdbcDbUtils.withJDBCConnection(settings.schemaHandler().dataBranch(), options) { conn =>
         statements.foreach(conn.createStatement().execute)
       }
@@ -68,7 +80,8 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
       sql: String,
       attributes: List[TableAttribute] = declared,
       presql: List[String] = Nil,
-      writeStrategy: WriteStrategy = WriteStrategy(`type` = Some(WriteStrategyType.OVERWRITE))
+      writeStrategy: WriteStrategy = WriteStrategy(`type` = Some(WriteStrategyType.OVERWRITE)),
+      connectionRef: Option[String] = None
     ): (String, String) = {
       val taskInfo = AutoTaskInfo(
         name = "",
@@ -77,6 +90,7 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
         domain = "mydb",
         table = task,
         presql = presql,
+        connectionRef = connectionRef,
         sink = Some(JdbcSink(connectionRef = Some("test-duckdb")).toAllSinks()),
         python = None,
         writeStrategy = Some(writeStrategy),
@@ -143,13 +157,77 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
       result.failed.get.getMessage should include("Table with name previous_state does not exist")
     }
 
-    it should "fail on a SELECT that reads a temporary table of the presql, and point to --query" in {
+    it should "read the temporary tables of the presql that the SELECT reads as common table expressions" in {
       setupSource()
       val task = "with_presql"
       val before = writeTask(
         task,
+        "SELECT id, name, amount FROM previous_state WHERE amount > (SELECT MIN(amount) FROM lowest)",
+        presql = List(
+          """CREATE TEMP TABLE previous_state AS SELECT * FROM mydb.mytable;
+            |CREATE TEMP TABLE lowest AS (SELECT amount FROM previous_state)""".stripMargin
+        )
+      )
+      settings
+        .schemaHandler()
+        .syncPreviewSqlWithDb(s"mydb.$task", None, None)
+        .map { case (attribute, status) => (attribute.name, attribute.`type`, status) } shouldBe
+      List(
+        ("id", "string", AttributeStatus.UNCHANGED),
+        ("name", "string", AttributeStatus.UNCHANGED),
+        ("amount", "integer", AttributeStatus.ADDED)
+      )
+      files(task) shouldBe before
+      sync(task, apply = true).isSuccess shouldBe true
+      attributesOf(task).map(attribute => (attribute.name, attribute.comment)) shouldBe List(
+        "id"     -> None,
+        "name"   -> Some("written by hand, to keep"),
+        "amount" -> None
+      )
+      // The SQL of the task is kept
+      files(task)._2 shouldBe before._2
+      // A --query reads them too
+      sync(
+        task,
+        apply = true,
+        query = Some("SELECT id FROM previous_state")
+      ).isSuccess shouldBe true
+      attributesOf(task).map(_.name) shouldBe List("id")
+      // A failure that may come from them names them
+      val failing = "failing_cte"
+      val failingBefore = writeTask(
+        failing,
+        "SELECT id FROM previous_state",
+        presql = List("CREATE TEMP TABLE previous_state AS SELECT * FROM mydb.missing_source")
+      )
+      val message = sync(failing, apply = true).failed.get.getMessage
+      message should include("Table with name missing_source does not exist")
+      message should include(
+        "as common table expressions of the SELECT (previous_state): if the failure comes from them, pass an equivalent SELECT to transform --sync-apply --query"
+      )
+      files(failing) shouldBe failingBefore
+      // A quoted name gets the same hint, and only that one
+      writeTask(
+        "failing_quoted",
+        "SELECT id FROM prev",
+        presql = List("CREATE TEMP TABLE \"prev\" AS SELECT * FROM mydb.missing_source")
+      )
+      val quoted = sync("failing_quoted", apply = true).failed.get.getMessage
+      quoted should include("as common table expressions of the SELECT (\"prev\")")
+      quoted should not include "which the sync cannot read as common table expressions"
+    }
+
+    it should "fail on a SELECT that reads a temporary table of the presql that is not a common table expression, and point to --query" in {
+      setupSource()
+      val task = "with_presql_columns"
+      // A temporary table created with its columns, then filled
+      val before = writeTask(
+        task,
         "SELECT id, name, amount FROM previous_state",
-        presql = List("CREATE TEMP TABLE previous_state AS SELECT * FROM mydb.mytable")
+        presql = List(
+          """CREATE TEMP TABLE previous_state (id VARCHAR, name VARCHAR, amount INTEGER);
+            |INSERT INTO previous_state SELECT * FROM mydb.mytable""".stripMargin
+        )
       )
       List(false, true).foreach { apply =>
         val result = sync(task, apply)
@@ -197,6 +275,72 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
       )
       // The SQL of the task is kept
       files(task)._2 shouldBe before._2
+    }
+
+    it should "fail, and point to a first run, when a temporary table of the presql reads the table of the task, which does not exist yet" in {
+      setupSource()
+      val task = "first_sync"
+      val before = writeTask(
+        task,
+        "SELECT id, name, amount FROM mydb.mytable UNION ALL SELECT id, name, amount FROM previous_state",
+        presql = List(s"CREATE TEMP TABLE previous_state AS SELECT * FROM mydb.$task")
+      )
+      List(false, true).foreach { apply =>
+        val message = sync(task, apply).failed.get.getMessage
+        message should include(s"Table with name $task does not exist")
+        message should include(
+          s"(previous_state) read the table of the task, mydb.$task: if it does not exist yet, run the task once"
+        )
+        files(task) shouldBe before
+      }
+      // Once the table exists
+      execute(s"CREATE TABLE mydb.$task AS SELECT id, name, amount FROM mydb.mytable")
+      sync(task, apply = true).isSuccess shouldBe true
+      attributesOf(task).map(attribute => (attribute.name, attribute.`type`)) shouldBe List(
+        "id"     -> "string",
+        "name"   -> "string",
+        "amount" -> "integer"
+      )
+      files(task)._2 shouldBe before._2
+    }
+
+    it should "read the columns of the SELECT on the connection of the task" in {
+      setupSource()
+      // A table that only the other connection has
+      executeOn(
+        "other-duckdb",
+        "CREATE SCHEMA IF NOT EXISTS mydb",
+        "CREATE OR REPLACE TABLE mydb.elsewhere(id INTEGER, label VARCHAR)"
+      )
+      val sql = "SELECT id, label FROM mydb.elsewhere"
+      val onDefault = writeTask("on_default", sql)
+      sync("on_default", apply = true).failed.get.getMessage should include(
+        "Table with name elsewhere does not exist"
+      )
+      files("on_default") shouldBe onDefault
+      // A connection that the project does not declare
+      val nowhere = writeTask("on_nowhere", sql, connectionRef = Some("nowhere"))
+      val missing = sync("on_nowhere", apply = true).failed.get.getMessage
+      missing should include("Could not get the columns of the SELECT of task mydb.on_nowhere")
+      missing should include("Connection not found: nowhere")
+      files("on_nowhere") shouldBe nowhere
+      // A dry run needs a BigQuery connection
+      AutoTask
+        .bigQueryDryRunSchema(
+          sql,
+          settings.appConfig.connections("other-duckdb"),
+          None,
+          Some("other-duckdb")
+        )(settings, storageHandler, settings.schemaHandler())
+        .failed
+        .get
+        .getMessage should include("A dry run of the SELECT needs a BigQuery connection")
+      writeTask("on_other", sql, connectionRef = Some("other-duckdb"))
+      sync("on_other", apply = true).isSuccess shouldBe true
+      attributesOf("on_other").map(attribute => (attribute.name, attribute.`type`)) shouldBe List(
+        "id"    -> "integer",
+        "label" -> "string"
+      )
     }
 
     it should "keep the SCD2 validity columns that the SELECT does not return, with their type and description" in {
@@ -259,6 +403,84 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
         synced.diffSqlAttributesWithYaml(Nil)
       }
       error.getMessage should include(s"The SELECT of task mydb.$task returned no column")
+    }
+
+    it should "compare the types of the attributes as BigQuery columns on BigQuery, mode and fields included" in {
+      val task = "bigquery_types"
+      writeTask(
+        task,
+        "SELECT 1",
+        attributes = List(
+          TableAttribute(name = "id", `type` = "integer", comment = Some("the key")),
+          TableAttribute(name = "updated_at", `type` = "timestamp"),
+          TableAttribute(name = "tags"),
+          TableAttribute(name = "address", comment = Some("where"))
+        )
+      )
+      val taskInfo = settings.schemaHandler().taskByFullName(s"mydb.$task").get
+      val city = TableAttribute(name = "city", `type` = "string")
+      val synced = taskInfo
+        .diffSqlAttributesWithYaml(
+          List(
+            TableAttribute(name = "id", `type` = "long"),
+            TableAttribute(name = "updated_at", `type` = "datetime"),
+            TableAttribute(name = "tags", `type` = "string", array = Some(true)),
+            TableAttribute(name = "address", `type` = "struct", attributes = List(city))
+          ),
+          // The types of the test project make datetime a TIMESTAMP
+          AutoTaskInfo.sameBigQueryType(AutoTaskInfo.bigQueryTypeOf(SchemaHandler.builtInTypes))
+        )
+      synced shouldBe List(
+        // Both INT64
+        TableAttribute(name = "id", `type` = "integer", comment = Some("the key")) ->
+        AttributeStatus.UNCHANGED,
+        TableAttribute(name = "updated_at", `type` = "datetime") -> AttributeStatus.MODIFIED,
+        TableAttribute(name = "tags", `type` = "string", array = Some(true)) ->
+        AttributeStatus.MODIFIED,
+        TableAttribute(
+          name = "address",
+          `type` = "struct",
+          comment = Some("where"),
+          attributes = List(city)
+        ) -> AttributeStatus.MODIFIED
+      )
+      // --sync-apply writes the fields of the struct
+      settings.schemaHandler().syncApplySqlWithYaml(taskInfo, synced, None)
+      attributesOf(task).map(attribute =>
+        (attribute.name, attribute.`type`, attribute.array, attribute.attributes)
+      ) shouldBe List(
+        ("id", "integer", None, Nil),
+        ("updated_at", "datetime", None, Nil),
+        ("tags", "string", Some(true), Nil),
+        ("address", "struct", None, List(city))
+      )
+    }
+
+    it should "compare the BigQuery columns of the types as a run creates them, from a type of the same primitive type for a type without a BigQuery mapping" in {
+      val typesPath = new Path(DatasetArea.types, "types.sl.yml")
+      val original =
+        if (storageHandler.exists(typesPath)) Some(storageHandler.read(typesPath)) else None
+      try {
+        storageHandler.write(
+          original.getOrElse("version: 1\ntypes:\n").stripLineEnd +
+          "\n  - name: \"code\"\n    primitiveType: \"string\"\n    pattern: \".+\"\n",
+          typesPath
+        )
+        val bigQueryType = AutoTaskInfo.bigQueryTypeOf(settings.schemaHandler(reload = true))
+        bigQueryType("code") shouldBe Some("STRING")
+        bigQueryType("integer") shouldBe Some("INT64")
+        bigQueryType("unknown") shouldBe None
+        AutoTaskInfo.sameBigQueryType(bigQueryType)(
+          TableAttribute(name = "c", `type` = "code"),
+          TableAttribute(name = "c", `type` = "string")
+        ) shouldBe true
+      } finally {
+        original match {
+          case Some(content) => storageHandler.write(content, typesPath)
+          case None          => storageHandler.delete(typesPath)
+        }
+        settings.schemaHandler(reload = true)
+      }
     }
 
     it should "never write a task without the attributes that it declares" in {
@@ -510,13 +732,32 @@ class DuckDbSyncSqlAttributesSpec extends TestHelper {
       jinjaFiles(task) shouldBe (yaml + addedMonthStart, sql)
     }
 
+    it should "sync the attributes of a task whose SELECT reads a temporary table of its presql" in {
+      setupSource()
+      val task = "run_with_cte"
+      val before = writeTask(
+        task,
+        "SELECT id, name, amount FROM previous_state",
+        presql = List("CREATE TEMP TABLE previous_state AS SELECT * FROM mydb.mytable")
+      )
+      new IngestionWorkflow(storageHandler, settings.schemaHandler())
+        .autoJob(TransformConfig(name = s"mydb.$task"))
+        .isSuccess shouldBe true
+      attributesOf(task).map(_.name) shouldBe List("id", "name", "amount")
+      files(task)._2 shouldBe before._2
+    }
+
     it should "run with the declared attributes, and leave the YAML untouched, when the sync fails" in {
       setupSource()
       val task = "run_with_presql"
+      // A temporary table of the presql that the sync cannot read
       val before = writeTask(
         task,
         "SELECT id, name FROM previous_state",
-        presql = List("CREATE TEMP TABLE previous_state AS SELECT * FROM mydb.mytable")
+        presql = List(
+          "CREATE TEMP TABLE previous_state (id VARCHAR, name VARCHAR, amount INTEGER)",
+          "INSERT INTO previous_state SELECT * FROM mydb.mytable"
+        )
       )
       new IngestionWorkflow(storageHandler, settings.schemaHandler())
         .autoJob(TransformConfig(name = s"mydb.$task"))
