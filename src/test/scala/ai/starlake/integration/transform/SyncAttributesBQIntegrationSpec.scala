@@ -42,6 +42,8 @@ class SyncAttributesBQIntegrationSpec extends IntegrationTestBase {
              |        writeMethod: "direct"
              |""".stripMargin
           )
+        // A project without load domains still has their directory, which the SQL rewriting lists
+        (metadata / "load").createDirectories()
         val folder = metadata / "transform" / "sync_it"
         (folder / "sync_types.sl.yml")
           .createIfNotExists(createParents = true)
