@@ -12,6 +12,11 @@ import scala.util.matching.Regex
   */
 object TaskYamlAttributes {
 
+  /** Whether a text holds what the loading of a task renders: Jinja, and the `${var}` and `{{ var
+    * }}` variables. The update of the attributes refuses them.
+    */
+  def isRendered(text: String): Boolean = Seq("{{", "{%", "{#", "${").exists(text.contains)
+
   private final case class Line(text: String) {
     val content: String = text.stripSuffix("\r")
     val trimmed: String = content.trim
@@ -25,7 +30,7 @@ object TaskYamlAttributes {
     def isItem: Boolean = trimmed == "-" || trimmed.startsWith("- ")
 
     /** What the loading of the task renders: Jinja, and the `${var}` and `{{ var }}` variables */
-    def isRendered: Boolean = Seq("{{", "{%", "{#", "${").exists(content.contains)
+    def isRendered: Boolean = TaskYamlAttributes.isRendered(content)
 
     /** The value written after `key:` on this line, without its comment, when the line declares
       * `key`

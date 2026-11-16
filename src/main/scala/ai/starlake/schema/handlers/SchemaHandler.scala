@@ -44,6 +44,7 @@ import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.{ExtractSchema, JdbcDbUtils}
 import ai.starlake.job.ingest.{AuditLog, RejectedRecord}
 import ai.starlake.job.metrics.ExpectationReport
+import ai.starlake.lineage.InheritedDescriptions
 import ai.starlake.schema.model.*
 import ai.starlake.schema.model.Severity.*
 import ai.starlake.sql.SQLUtils
@@ -2579,6 +2580,34 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         logger.error("Failed to get task", exception)
         throw exception
     }
+  }
+
+  /** Puts into the attributes of a sync the descriptions that the columns of the task inherit
+    * through their column lineage (#1948): for `transform --sync-preview` and `--sync-apply`, not
+    * for the sync of a run. A column whose lineage cannot be read inherits nothing.
+    * @param list
+    *   the attributes of the sync and their status, Nil when nothing changes
+    * @param query
+    *   the SELECT read instead of the one of the task
+    * @param refresh
+    *   whether an inherited description replaces the one that an attribute has
+    */
+  def inheritDescriptions(
+    taskFullName: String,
+    list: List[(TableAttribute, AttributeStatus)],
+    query: Option[String],
+    refresh: Boolean
+  ): InheritedDescriptions.Result = {
+    val task = taskByFullName(taskFullName).get
+    val inherited = new InheritedDescriptions(this, refresh).inheritedFor(task, query)
+    inherited.failed.foreach { exception =>
+      logger.warn(
+        s"The column lineage of task $taskFullName is not read, its columns inherit no description: ${exception.getMessage}"
+      )
+    }
+    InheritedDescriptions
+      .merge(task.attributes, list, inherited.getOrElse(Map.empty), refresh)
+      .copy(error = inherited.failed.toOption.map(Utils.exceptionMessagesChainAsString))
   }
 
   def findTableFromFilename(domainName: String, filename: String): Option[SchemaInfo] = {
