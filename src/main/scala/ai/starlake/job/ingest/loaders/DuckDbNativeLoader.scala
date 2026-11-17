@@ -73,7 +73,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
     */
   private val spillFiles = ListBuffer[java.nio.file.Path]()
 
-  /** The rows of each Parquet file that the first step rejects, in the order of the files (#1952) */
+  /** The rows of each Parquet file that the first step rejects, in the order of the files (#1952)
+    */
   private val parquetRejects = ListBuffer[RejectedRows]()
 
   def run(): Try[List[IngestionCounters]] = {

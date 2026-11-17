@@ -1,6 +1,6 @@
 package ai.starlake.lineage
 
-import net.sf.jsqlparser.expression.{CastExpression, Expression}
+import net.sf.jsqlparser.expression.{CastExpression, ColumnsTransformer, Expression}
 import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList
 import net.sf.jsqlparser.parser.{CCJSqlParser, CCJSqlParserUtil}
 import net.sf.jsqlparser.schema.{Column, Table}
@@ -334,22 +334,49 @@ object SelectColumnOrigins {
     /** A column, not an element of an array or a map */
     private def isColumn(column: Column): Boolean = column.getArrayConstructor == null
 
-    /** The columns of `*` or `t.*`, without its EXCEPT columns, and computed for its REPLACE ones
+    /** The columns of `*` or `t.*`, without its EXCEPT (or EXCLUDE) columns, computed for its
+      * REPLACE ones, and under their new name for its RENAME ones. An APPLY computes them all, and
+      * an EXCEPT pattern leaves them unknown.
       */
     private def expand(sources: List[Source], all: AllColumns): (Columns, Boolean) = {
-      val except = Option(all.getExceptColumns).map(_.asScala.toList).getOrElse(Nil).map { c =>
-        lower(c.getColumnName)
-      }
-      val replaced =
-        Option(all.getReplaceExpressions).map(_.asScala.toList).getOrElse(Nil).flatMap { item =>
-          Option(item.getAlias).map(_.getName).map(lower)
+      import ColumnsTransformer.ColumnsTransformerType
+      val transformers = Option(all.getTransformers).map(_.asScala.toList).getOrElse(Nil)
+      def ofType(types: ColumnsTransformerType*) =
+        transformers.filter(t => types.contains(t.getType))
+      val excepts = ofType(ColumnsTransformerType.EXCEPT, ColumnsTransformerType.EXCLUDE)
+      val except = excepts.flatMap { t =>
+        Option(t.getExceptColumns).map(_.asScala.toList).getOrElse(Nil).map { c =>
+          lower(c.getColumnName)
         }
+      }
+      def aliased(
+        t: ColumnsTransformer,
+        items: ColumnsTransformer => java.util.List[SelectItem[_]]
+      ) =
+        Option(items(t)).map(_.asScala.toList).getOrElse(Nil)
+      val replaced = ofType(ColumnsTransformerType.REPLACE).flatMap { t =>
+        aliased(t, _.getReplaceItems).flatMap(item =>
+          Option(item.getAlias).map(_.getName).map(lower)
+        )
+      }
+      val renamed: Map[String, String] = ofType(ColumnsTransformerType.RENAME).flatMap { t =>
+        aliased(t, _.getRenameItems).flatMap { item =>
+          (item.getExpression, Option(item.getAlias)) match {
+            case (column: Column, Some(alias)) =>
+              Some(lower(column.getColumnName) -> lower(alias.getName))
+            case _ => None
+          }
+        }
+      }.toMap
+      val applied = ofType(ColumnsTransformerType.APPLY).nonEmpty
       val columns = sources.flatMap(_.columns.getOrElse(Nil)).filterNot { case (name, _) =>
         except.contains(name)
       } map { case (name, origin) =>
-        name -> (if (replaced.contains(name)) Computed else origin)
+        renamed.getOrElse(name, name) ->
+        (if (applied || replaced.contains(name)) Computed else origin)
       }
-      (columns, sources.nonEmpty && sources.forall(_.complete))
+      val knownColumns = excepts.forall(_.getExceptPattern == null)
+      (columns, knownColumns && sources.nonEmpty && sources.forall(_.complete))
     }
 
     private def withoutParentheses(expression: Expression): Expression =

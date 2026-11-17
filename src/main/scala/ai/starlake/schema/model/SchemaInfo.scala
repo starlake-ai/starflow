@@ -743,7 +743,13 @@ case class SchemaInfo(
     scripts: Map[String, String] = Map.empty
   ): String = {
     val (allAttributes, allFinalAttributes) =
-      secondStepColumns(jdbcEngine, ddlTypesByAttribute, safeCastFunction, typesByAttribute, scripts)
+      secondStepColumns(
+        jdbcEngine,
+        ddlTypesByAttribute,
+        safeCastFunction,
+        typesByAttribute,
+        scripts
+      )
     val sourceTableFilterSQL = this.filter match {
       case Some(filter) => s"WHERE $filter"
       case None         => ""
@@ -771,7 +777,13 @@ case class SchemaInfo(
     scripts: Map[String, String] = Map.empty,
     safeCastFunction: String = "SAFE_CAST"
   ): List[String] =
-    secondStepColumns(jdbcEngine, ddlTypesByAttribute, safeCastFunction, typesByAttribute, scripts)._1
+    secondStepColumns(
+      jdbcEngine,
+      ddlTypesByAttribute,
+      safeCastFunction,
+      typesByAttribute,
+      scripts
+    )._1
 
   /** @param scripts
     *   the SQL that computes a scripted attribute instead of its script, by attribute name: the

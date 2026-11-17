@@ -274,8 +274,8 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
   lazy val queryEngine: Option[Settings.JdbcEngine] =
     settings.appConfig.jdbcEngines.get(engineName.toString)
 
-  /** The cast function of the sink engine, NULL on failure: BigQuery calls it SAFE_CAST, DuckDB
-    * and Snowflake TRY_CAST
+  /** The cast function of the sink engine, NULL on failure: BigQuery calls it SAFE_CAST, DuckDB and
+    * Snowflake TRY_CAST
     */
   lazy val safeCastFunction: String = engineName.toString.toLowerCase() match {
     case "duckdb" | "snowflake" => "TRY_CAST"
