@@ -425,8 +425,13 @@ class DuckDbSyncInheritedDescriptionsSpec extends TestHelper {
 
     it should "keep the sync, without inherited descriptions, when the engine runs a SELECT that cannot be parsed" in {
       setupOrders()
-      // The FROM-first syntax of DuckDB
-      writeTask("dims", "from_first", "FROM sales.orders SELECT id, amount", Nil)
+      // The starts_with operator of DuckDB. jsqlparser 5.4 parses its FROM-first syntax
+      writeTask(
+        "dims",
+        "from_first",
+        "SELECT id, amount FROM sales.orders WHERE CAST(id AS VARCHAR) ^@ ''",
+        Nil
+      )
       settings
         .schemaHandler()
         .inheritDescriptions("dims.from_first", Nil, None, refresh = false)

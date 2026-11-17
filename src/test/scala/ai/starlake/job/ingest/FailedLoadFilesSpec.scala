@@ -258,8 +258,10 @@ class FailedLoadFilesSpec extends TestHelper {
     }
   }
 
-  // Files load one by one, in their order
-  new Project("grouped = false") {
+  // Files load one by one, in their order. The native DuckDB loader rejects the lines that do not
+  // convert and loads the others: under rejectAllOnError, a rejected line fails the load before it
+  // writes its rows
+  new Project("grouped = false\nrejectAllOnError = true") {
     "A failed load of a table that is not appended to" should
     "give back its later files without loading them, to keep their order" in {
       writeTable("ordered", "test-duckdb", strategy = WriteStrategyType.OVERWRITE)

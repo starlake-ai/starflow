@@ -806,9 +806,8 @@ class DuckDbNativeRejectSpec extends TestHelper {
         )
 
         // and the audit.audit rows of the very same load. The LOAD row is the one the rejected
-        // rows have to join, and it carries the declared name. The two step path also runs its
-        // second step through an AutoTask, which logs its own TRANSFORM row against the table it
-        // actually writes into, so that one carries the renamed name and is expected to.
+        // rows have to join, and it carries the declared name. The second step of the two step
+        // path writes no TRANSFORM row of its own (#1838).
         val auditNames = queryAudit(
           s"SELECT domain, schema, step FROM audit.audit WHERE jobid = '$jobid' ORDER BY step"
         ) { rs =>
@@ -817,10 +816,7 @@ class DuckDbNativeRejectSpec extends TestHelper {
             buf += ((rs.getString("domain"), rs.getString("schema"), rs.getString("step")))
           buf.toList
         }
-        auditNames shouldBe List(
-          ("dsvduckrename", "account", "LOAD"),
-          ("dsvduckrename", "account_renamed", "TRANSFORM")
-        )
+        auditNames shouldBe List(("dsvduckrename", "account", "LOAD"))
         rejectedNames.distinct shouldBe
         auditNames.filter(_._3 == "LOAD").map { case (d, s, _) => (d, s) }
 
