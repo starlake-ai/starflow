@@ -113,11 +113,24 @@ object Settings extends LazyLogging {
     active: Boolean
   ) // sunk to audit
 
+  /** @param beforeCommit
+    *   true to run the expectations declared `failOnError` of a task inside the transaction of its
+    *   write, before its commit, where the engine writes in one: a failure rolls the write back
+    *   (#1976). Applies with `active` and `failOnError` only.
+    */
   final case class ExpectationsConfig(
     path: String,
     active: Boolean,
-    failOnError: Boolean
-  ) // sunk to expectations
+    failOnError: Boolean,
+    beforeCommit: Boolean = false
+  ) { // sunk to expectations
+
+    /** @return
+      *   true when the expectations declared `failOnError` of a task run before the commit of its
+      *   write
+      */
+    def checkedBeforeCommit: Boolean = active && failOnError && beforeCommit
+  }
 
   final case class Audit(
     path: String,

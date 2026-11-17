@@ -120,7 +120,8 @@ class ExpectationJob(
   schemaHandler: SchemaHandler,
   sqlRunner: ExpectationAssertionHandler,
   interactive: Boolean,
-  transpileSql: String => String = identity
+  transpileSql: String => String = identity,
+  variables: Map[String, Any] = Map.empty
 )(implicit val settings: Settings)
     extends SparkJob {
 
@@ -145,106 +146,106 @@ class ExpectationJob(
 
   override def run(): Try[JobResult] = {
     val expectationReports: List[ExpectationReport] = runExpectations()
+    sinkAndCheck(expectationReports, this.failOnError())
+  }
 
+  /** Sinks the reports of expectations, and fails under `expectations.failOnError` when one of them
+    * failed and declared `failOnError`
+    *
+    * @param failed
+    *   true when an expectation declared `failOnError` failed
+    */
+  def sinkAndCheck(expectationReports: List[ExpectationReport], failed: Boolean): Try[JobResult] = {
     val result = sinkExpectationReports(expectationReports)
 
     val failedCount = expectationReports.count(!_.success)
-    if (settings.appConfig.expectations.failOnError && this.failOnError()) {
+    if (settings.appConfig.expectations.failOnError && failed) {
       Failure(new Exception(s"$failedCount Expectations failed"))
     } else {
       result
     }
   }
 
-  /** The variables of the macros: the active environment, and `sl_engine`, the engine that runs the
-    * expectation queries
+  /** The variables of the macros: the active environment, `sl_engine`, the engine that runs the
+    * expectation queries, and the variables of the job, such as the counters of a load
     */
   private def macroVars(): Map[String, Any] =
-    schemaHandler.activeEnvVars() ++ sqlRunner.engineName.map("sl_engine" -> _)
+    schemaHandler.activeEnvVars() ++ sqlRunner.engineName.map("sl_engine" -> _) ++ variables
+
+  private lazy val fullTableName = database match {
+    case Some(db) => s"$db.$domainName.$schemaName"
+    case None     => s"$domainName.$schemaName"
+  }
+
+  /** @return
+    *   the query of an expectation, on the table of the job, or the failure to render it
+    */
+  private lazy val macros = SQLUtils.stripComments(schemaHandler.allMacros)
+
+  def renderQuery(expectation: ExpectationItem): Try[String] = Try {
+    val expectationWithMacroDefinitions =
+      List(macros, ExpectationJob.callOnTable(expectation.queryCall(), fullTableName))
+        .mkString("\n")
+    val sql =
+      Utils.parseJinja(
+        expectationWithMacroDefinitions,
+        macroVars()
+      )
+    transpileSql(
+      if (sql.contains("sl_this")) {
+        sql.replaceAll("(?i)sl_this", fullTableName)
+      } else
+        sql
+    )
+  }
+
+  /** @param sql
+    *   the query of the expectation, if it could be rendered
+    * @param result
+    *   the value that its query returned, or the failure to render or run it
+    * @return
+    *   the report of an expectation, which succeeds when its query returned 0
+    */
+  def report(
+    expectation: ExpectationItem,
+    sql: Option[String],
+    result: Try[Int]
+  ): ExpectationReport = {
+    val success = result.toOption.contains(0)
+    if (!success && expectation.failOnError) _failOnError = true
+    ExpectationReport(
+      applicationId(),
+      database,
+      domainName,
+      schemaName,
+      Timestamp.from(Instant.now()),
+      expectation.queryCall(),
+      expectation.expect,
+      // A query that cannot be rendered has no SQL
+      result match {
+        case Failure(_: IllegalArgumentException) => None
+        case _                                    => sql
+      },
+      result.toOption.map(_.toLong),
+      result.failed.toOption.map(Utils.exceptionAsString),
+      success = success
+    )
+  }
 
   def runExpectations(): List[ExpectationReport] = {
-    val fullTableName = database match {
-      case Some(db) => s"$db.$domainName.$schemaName"
-      case None     => s"$domainName.$schemaName"
-    }
-    val macros = SQLUtils.stripComments(schemaHandler.allMacros)
-    val expectationReports = expectations.map { expectation =>
-      val queryCall = expectation.queryCall()
+    expectations.map { expectation =>
       // An expectation that cannot be rendered is reported as one whose query cannot run
-      val renderedSql: Try[String] = Try {
-        val expectationWithMacroDefinitions =
-          List(macros, ExpectationJob.callOnTable(queryCall, fullTableName)).mkString("\n")
-        val sql =
-          Utils.parseJinja(
-            expectationWithMacroDefinitions,
-            macroVars()
+      val renderedSql: Try[String] = renderQuery(expectation)
+      val result = renderedSql.flatMap { sqlWithSlThis =>
+        Try {
+          logger.info(
+            s"Applying expectation: ${expectation.expect} with request $sqlWithSlThis"
           )
-        transpileSql(
-          if (sql.contains("sl_this")) {
-            sql.replaceAll("(?i)sl_this", fullTableName)
-          } else
-            sql
-        )
+          sqlRunner.handle(sqlWithSlThis)
+        }
       }
-      Try {
-        val sqlWithSlThis = renderedSql.get
-        logger.info(
-          s"Applying expectation: ${expectation.expect} with request $sqlWithSlThis"
-        )
-        val expectationResult = sqlRunner.handle(sqlWithSlThis)
-        val success = expectationResult == 0
-        if (!success && expectation.failOnError) _failOnError = true
-        ExpectationReport(
-          applicationId(),
-          database,
-          domainName,
-          schemaName,
-          Timestamp.from(Instant.now()),
-          queryCall,
-          expectation.expect,
-          Some(sqlWithSlThis),
-          Some(expectationResult),
-          None,
-          success = success
-        )
-      } match {
-        case Failure(e: IllegalArgumentException) =>
-          if (expectation.failOnError)
-            _failOnError = true
-          ExpectationReport(
-            applicationId(),
-            database,
-            domainName,
-            schemaName,
-            Timestamp.from(Instant.now()),
-            queryCall,
-            expectation.expect,
-            None,
-            None,
-            Some(Utils.exceptionAsString(e)),
-            success = false
-          )
-        case Failure(e) =>
-          if (expectation.failOnError)
-            _failOnError = true
-          ExpectationReport(
-            applicationId(),
-            database,
-            domainName,
-            schemaName,
-            Timestamp.from(Instant.now()),
-            queryCall,
-            expectation.expect,
-            renderedSql.toOption,
-            None,
-            Some(Utils.exceptionAsString(e)),
-            success = false
-          )
-        // throw new Exception(s"Error while trying to execute $sql", e)
-        case Success(value) => value
-      }
+      report(expectation, renderedSql.toOption, result)
     }
-    expectationReports
   }
 
   private def sinkExpectationReports(
@@ -359,7 +360,8 @@ object ExpectationJob {
     schemaHandler: SchemaHandler,
     sqlRunner: ExpectationAssertionHandler,
     interactive: Boolean,
-    transpileSql: String => String = identity
+    transpileSql: String => String = identity,
+    variables: Map[String, Any] = Map.empty
   )(implicit settings: Settings): ExpectationJob = {
     new ExpectationJob(
       appId,
@@ -371,7 +373,8 @@ object ExpectationJob {
       schemaHandler,
       sqlRunner,
       interactive,
-      transpileSql
+      transpileSql,
+      variables
     )
   }
   def buildSQLStatements()(implicit settings: Settings): Option[TaskSQLStatements] = {

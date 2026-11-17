@@ -280,8 +280,9 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
     }.toMap
 
   /** @param expectations
-    *   the expectations of the task: a task that the loader runs has none, as `IngestionJob` runs
-    *   them once the load is audited; the generated statements keep them
+    *   the expectations of the task: a task that the loader runs has only those that it checks
+    *   before its commit (#1976), as `IngestionJob` runs the others once the load is audited; the
+    *   generated statements keep them all
     * @param castTypes
     *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
     * @param scripts
