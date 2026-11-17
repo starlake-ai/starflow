@@ -2,12 +2,18 @@ package ai.starlake.job.transform
 
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.{ExtractSchemaCmd, ExtractSchemaConfig, JdbcDbUtils}
-import ai.starlake.job.metrics.{ExpectationAssertionHandler, JdbcExpectationAssertionHandler}
+import ai.starlake.job.metrics.{
+  ExpectationAssertionHandler,
+  ExpectationReport,
+  JdbcExpectationAssertionHandler,
+  SQLConnectionExpectationAssertionHandler
+}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.{
   AccessControlEntry,
   AutoTaskInfo,
   Engine,
+  ExpectationItem,
   TableSync,
   WriteStrategy,
   WriteStrategyType
@@ -240,7 +246,8 @@ class JdbcAutoTask(
               jdbcSinkEngine.preActions.getOrElse(""),
               Map("schema" -> taskDesc.domain)
             )
-          df match {
+          // The expectations that the write checked before its commit, with their reports
+          val checkedBeforeCommit: List[(ExpectationItem, ExpectationReport)] = df match {
             case Some(loadedDF) =>
               val tblExists = this.tableExists
               JdbcDbUtils.withJDBCConnection(
@@ -311,9 +318,11 @@ class JdbcAutoTask(
                   .options(sinkConnection.options)
                   .save()
               }
+              // The rows are written outside the transaction: the expectations run after them
+              Nil
 
             case None =>
-              JdbcDbUtils.withJDBCConnection(
+              val written = JdbcDbUtils.withJDBCConnection(
                 this.schemaHandler.dataBranch(),
                 sinkOptions,
                 sqlConnection
@@ -333,11 +342,39 @@ class JdbcAutoTask(
                 } match {
                   case Success(_) =>
                     runSqls(conn, postSql, "Post")
-                    conn.commit()
+                    // In the transaction of the write, they read the new content of the table: a
+                    // failure rolls the write back (#1976)
+                    val checked = checkBeforeCommit(conn)
+                    if (checked.forall { case (_, report) => report.success }) {
+                      conn.commit()
+                      Right(checked)
+                    } else {
+                      val rollback = Try(conn.rollback())
+                      val outcome =
+                        if (rollback.isFailure) "The rollback failed: the write may be committed."
+                        else if (rollsBackEntirely) {
+                          markTargetNotWritten()
+                          "The write is rolled back."
+                        } else
+                          "The write is rolled back, except the statements that committed on their own."
+                      Left(
+                        (
+                          checked.map { case (_, report) => report },
+                          outcome,
+                          rollback.failed.toOption
+                        )
+                      )
+                    }
                   case Failure(e) =>
                     JdbcDbUtils.rollbackQuietly(conn)
                     throw enrichWithSchemaSyncHint(jdbcTargetColumns(conn), e)
                 }
+              }
+              // Their reports are written once the connection of the write is released
+              written match {
+                case Right(checked) => checked
+                case Left((reports, outcome, rollbackFailure)) =>
+                  throw failedBeforeCommit(reports, outcome, rollbackFailure)
               }
           }
 
@@ -357,7 +394,7 @@ class JdbcAutoTask(
             }
           }
 
-          checkExpectations()
+          checkExpectations(checkedBeforeCommit)
           if (settings.appConfig.autoExportSchema) {
             val isTableInAuditDomain =
               taskDesc.domain == settings.appConfig.audit.getDomain()
@@ -390,6 +427,52 @@ class JdbcAutoTask(
     }
     res
   }
+
+  /** True when a rollback undoes the whole write: on DuckDB, whose presql statements run before the
+    * transaction, when the task has none, and on PostgreSQL, whose DDL statements are
+    * transactional. Elsewhere a statement may commit on its own, as a DDL statement on Snowflake or
+    * a TRUNCATE on MySQL.
+    */
+  private def rollsBackEntirely: Boolean =
+    sinkConnection.isDuckDb() && preSql.isEmpty ||
+    sinkConnection.getJdbcEngineName().toString == "postgresql"
+
+  /** Runs the expectations checked before the commit (#1976) on the connection of the write, in its
+    * transaction. A query that fails aborts the transaction on some engines, DuckDB and PostgreSQL
+    * among them: the next expectations do not run.
+    *
+    * @return
+    *   the expectations with their reports
+    */
+  private def checkBeforeCommit(conn: Connection): List[(ExpectationItem, ExpectationReport)] =
+    if (expectationsBeforeCommit.isEmpty) Nil
+    else {
+      markCheckedBeforeCommit(expectationsBeforeCommit)
+      val handler = new SQLConnectionExpectationAssertionHandler(conn)
+      val job = expectationJob(expectationsBeforeCommit, handler, interactive = false)
+      var failedQuery: Option[String] = None
+      expectationsBeforeCommit.map { expectation =>
+        val sql = job.renderQuery(expectation)
+        val result = failedQuery match {
+          case Some(failed) =>
+            Failure(
+              new Exception(
+                s"Not run: the query of the expectation $failed failed in the transaction of the write"
+              )
+            )
+          case None =>
+            sql.flatMap { query =>
+              logger.info(
+                s"Applying expectation before the commit: ${expectation.expect} with request $query"
+              )
+              val result = Try(handler.handle(query))
+              if (result.isFailure) failedQuery = Some(expectation.expect)
+              result
+            }
+        }
+        expectation -> job.report(expectation, sql.toOption, result)
+      }
+    }
 
   /** On a first run the target table is created by the main SQL statement, but presql statements
     * such as "DELETE FROM <target> ..." legitimately reference it (idempotency / partition-refresh

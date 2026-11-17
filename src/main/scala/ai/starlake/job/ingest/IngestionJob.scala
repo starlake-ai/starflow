@@ -203,13 +203,64 @@ trait IngestionJob
   /** Called by the loaders once their write to the table succeeded */
   private[ingest] def markRowsWritten(): Unit = loadedRows = true
 
-  /** Runs a task that writes the table of the load, and keeps whether it wrote it, failed or not */
+  /** Runs a task that writes the table of the load, and keeps whether it wrote it, failed or not,
+    * and the expectations that it checked before its commit
+    */
   private[ingest] def writingWith[T](task: AutoTask)(run: => T): T =
     try run
-    finally if (task.targetWritten) markRowsWritten()
+    finally {
+      if (task.targetWritten) markRowsWritten()
+      expectationsCheckedByWrite =
+        expectationsCheckedByWrite ++ task.expectationsCheckedBeforeCommit
+    }
+
+  /** The expectations declared `failOnError` of the table, which the write of a native load in two
+    * steps checks before its commit, under `expectations.beforeCommit` (#1976)
+    */
+  private[ingest] lazy val expectationsBeforeCommit: List[ExpectationItem] =
+    if (settings.appConfig.expectations.checkedBeforeCommit)
+      schema.expectations.filter(_.failOnError)
+    else Nil
+
+  /** The expectations that the write of the load checked before its commit */
+  @volatile private var expectationsCheckedByWrite: List[ExpectationItem] = Nil
+
+  /** The counters of the load, as its loader counted them before its write */
+  @volatile private var countersBeforeWrite: Option[IngestionCounters] = None
+
+  /** Gives the task of the second step of a native load, which has the expectations to check before
+    * its commit, the counters of the load: the expectations that it cannot check are left to the
+    * load, which runs them once audited (#1976)
+    *
+    * @param counters
+    *   the counters of the load, if the loader counts its rows
+    */
+  private[ingest] def handOverExpectations(
+    task: AutoTask,
+    counters: Option[IngestionCounters]
+  ): Unit =
+    task
+      .withExpectationVariables(IngestionJob.expectationVariables(counters))
+      .leavingUncheckedExpectations()
+
+  /** Called by a loader that counts the rows of the load before its write, otherwise than its audit
+    * row: the expectations that run once the load is audited get the same counters as those checked
+    * before the commit
+    */
+  private[ingest] def countedBeforeWrite(counters: IngestionCounters): Unit =
+    countersBeforeWrite = Some(counters)
+
+  /** @return
+    *   the expectations of the table that run once the load is audited: those that its write did
+    *   not check before its commit
+    */
+  protected def expectationsAfterAudit: List[ExpectationItem] =
+    schema.expectations.diff(expectationsCheckedByWrite)
 
   def run(): Try[JobResult] = {
     loadedRows = false
+    expectationsCheckedByWrite = Nil
+    countersBeforeWrite = None
     // A failure to select the loader is logged in the audit, as a failure to load
     val jobResult = Try(selectLoader()).flatMap {
       case "bigquery" => new BigQueryNativeLoader(this, accessToken).run()
@@ -242,7 +293,14 @@ trait IngestionJob
               throw new DisallowRejectRecordException()
             }
         }
-        runExpectations() match {
+        runExpectations(
+          IngestionJob.expectationVariables(
+            // The counters that the expectations checked before the commit read
+            countersBeforeWrite.orElse(
+              IngestionCounters.aggregate(validCounterResults, applicationId())
+            )
+          )
+        ) match {
           case Failure(exception) if settings.appConfig.expectations.failOnError =>
             throw exception
           case _ =>
@@ -331,6 +389,22 @@ trait IngestionJob
 }
 
 object IngestionJob extends LazyLogging {
+
+  /** @param counters
+    *   the counters of a load, if it counts its rows
+    * @return
+    *   the variables of the macros of the expectations of the load (#1976): the number of its input
+    *   rows, of the rows that it accepts and of those that it rejects, -1 when it does not count
+    *   them
+    */
+  def expectationVariables(counters: Option[IngestionCounters]): Map[String, Any] = {
+    val counted = counters.filterNot(_.ignore)
+    Map(
+      "sl_input_count"    -> counted.map(_.inputCount).getOrElse(-1L),
+      "sl_accepted_count" -> counted.map(_.acceptedCount).getOrElse(-1L),
+      "sl_rejected_count" -> counted.map(_.rejectedCount).getOrElse(-1L)
+    )
+  }
 
   /** @return
     *   the name of new replay files of the table, without extension: unique, so that two loads of

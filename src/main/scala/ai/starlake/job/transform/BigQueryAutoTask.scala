@@ -8,7 +8,12 @@ import ai.starlake.extract.{
   ExtractSchemaConfig,
   TablesExtractConfig
 }
-import ai.starlake.job.metrics.{BigQueryExpectationAssertionHandler, ExpectationAssertionHandler}
+import ai.starlake.job.metrics.{
+  BigQueryExpectationAssertionHandler,
+  ExpectationAssertionHandler,
+  ExpectationReport,
+  ExpectationsFailedBeforeCommitException
+}
 import ai.starlake.job.sink.bigquery.*
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
@@ -335,13 +340,21 @@ class BigQueryAutoTask(
   ): Try[JobResult] = {
 
     // Builds the main SQL statement, handling both native and Spark modes
-    def mainSql(tableExistsForcedValue: Option[Boolean] = None): String = {
+    def mainSql(
+      tableExistsForcedValue: Option[Boolean] = None,
+      templateVariables: Map[String, Any] = Map.empty
+    ): String = {
       val targetSQL =
         if (loadedDF.isEmpty) {
           // We are in native mode (no Spark Dataframe)
           // We build the query
           // This will not return  alter table to add/remove columns if needed + the main sql transpiled to insert/update/create/merge
-          buildAllSQLQueriesMerged(None, tableExistsForcedValue, forceNative = true)
+          buildAllSQLQueriesMerged(
+            None,
+            tableExistsForcedValue,
+            forceNative = true,
+            templateVariables
+          )
         } else {
           // We are in Spark mode, we just need to substitute the variables in the main SQL
           // We do not rewrite it with insert/update/create/merge as we will use the spark dataframe write capabilities
@@ -364,6 +377,9 @@ class BigQueryAutoTask(
     if (truncate) {
       // nothing to do, config is created with write_truncate in that case
     }
+
+    // The expectations that the script checked before its commit, with their reports (#1976)
+    var checkedBeforeCommit: List[(ExpectationItem, ExpectationReport)] = Nil
 
     val jobResult: Try[JobResult] =
       interactive match {
@@ -538,20 +554,65 @@ class BigQueryAutoTask(
                     // it plans collides with the presql's CREATE (#1803). Plan against the table the
                     // presql is about to create instead.
                     val tableExistsForcedValue = if (presqlCreatesTarget) Some(true) else None
-                    val allSql = BigQueryAutoTask.nativeScript(
-                      preSql,
-                      mainSql(tableExistsForcedValue),
-                      postSql
-                    )
-                    val finalSql = prepareBranchContext(taskDesc.getSql()) match {
-                      case Some(ctx) =>
-                        logger.info(
-                          s"Branch: rewriting native SQL with ${ctx.tableMappings.size} table mappings"
+                    val beforeCommit = scriptExpectations()
+                    beforeCommit.flatMap(_.renderFailures) match {
+                      case Some(reports) =>
+                        // Checked before anything is written
+                        Failure(failedBeforeCommit(reports, "Nothing is written."))
+                      case None =>
+                        val targetExists =
+                          beforeCommit.map(_ => tableExistsForcedValue.getOrElse(tableExists))
+                        val main = mainSql(
+                          targetExists.orElse(tableExistsForcedValue),
+                          beforeCommit
+                            .map(BigQueryAutoTask.ExpectationsCheckVariable -> _.check)
+                            .toMap
                         )
-                        BigQueryBranchHandler.rewriteSql(allSql, ctx.tableMappings)
-                      case None => allSql
+                        val checked = for {
+                          expectations <- beforeCommit
+                          exists       <- targetExists
+                          script       <- withExpectationsCheck(main, expectations.check, exists)
+                        } yield {
+                          markCheckedBeforeCommit(expectations.expectations)
+                          expectations -> script
+                        }
+                        val allSql = BigQueryAutoTask.nativeScript(
+                          preSql,
+                          checked.map { case (_, script) => script }.getOrElse(main),
+                          postSql
+                        )
+                        val finalSql = prepareBranchContext(taskDesc.getSql()) match {
+                          case Some(ctx) =>
+                            logger.info(
+                              s"Branch: rewriting native SQL with ${ctx.tableMappings.size} table mappings"
+                            )
+                            BigQueryBranchHandler.rewriteSql(allSql, ctx.tableMappings)
+                          case None => allSql
+                        }
+                        (saveNative(config, finalSql), checked) match {
+                          case (Success(result), Some((expectations, _))) =>
+                            checkedBeforeCommit = expectations.passed
+                            Success(result)
+                          case (Failure(error), Some((expectations, _))) =>
+                            expectations.failed(error) match {
+                              case Some(reports) =>
+                                val undone = !BigQueryAutoTask.writeNotUndone(error)
+                                // The presql statements of the script are not rolled back
+                                if (undone && preSql.isEmpty) markTargetNotWritten()
+                                val outcome =
+                                  (undone, targetExists.contains(false)) match {
+                                    case (true, true)  => "The table that it created is dropped."
+                                    case (true, false) => "The write is rolled back."
+                                    case (false, true) =>
+                                      "The table that it created could not be dropped."
+                                    case (false, false) => "The write could not be rolled back."
+                                  }
+                                Failure(failedBeforeCommit(reports, outcome, Some(error)))
+                              case None => Failure(error)
+                            }
+                          case (result, None) => result
+                        }
                     }
-                    saveNative(config, finalSql)
                 }
             }
 
@@ -563,7 +624,7 @@ class BigQueryAutoTask(
           // We execute assertions only on success
           val checkedResult = jobResult.map { result =>
             // A dry run has written nothing
-            if (!dryRun) checkExpectations()
+            if (!dryRun) checkExpectations(checkedBeforeCommit)
             result
           }
           checkedResult match {
@@ -611,9 +672,11 @@ class BigQueryAutoTask(
             case Failure(err) =>
               val end = Timestamp.from(Instant.now())
               // After a successful write, a failure comes from an expectation, not from the schema
-              val enriched =
-                if (jobResult.isSuccess) err
-                else enrichWithSchemaSyncHint(bqTargetColumns(), err)
+              val enriched = err match {
+                case _ if jobResult.isSuccess                   => err
+                case _: ExpectationsFailedBeforeCommitException => err
+                case _ => enrichWithSchemaSyncHint(bqTargetColumns(), err)
+              }
               logAuditFailure(start, end, enriched, test)
               Failure(enriched)
           }
@@ -678,6 +741,95 @@ class BigQueryAutoTask(
         taskDesc.taskTimeoutMs
       )
     )
+
+  /** @return
+    *   the expectations that the script of the task checks before its commit (#1976), if any: none
+    *   on a dry run, which writes nothing, nor for a view or a task whose SQL is not parsed, whose
+    *   statements cannot run in a transaction. Their expectations run after the write.
+    */
+  private def scriptExpectations(): Option[ScriptExpectations] =
+    if (dryRun || expectationsBeforeCommit.isEmpty) None
+    else if (
+      resolveMaterializedView() != Materialization.TABLE || !taskDesc.parseSQL.getOrElse(true)
+    ) {
+      warnNotCheckedBeforeCommit("A view, or a task whose SQL is not parsed")
+      None
+    } else Some(new ScriptExpectations(expectationsBeforeCommit))
+
+  private def warnNotCheckedBeforeCommit(reason: String): Unit =
+    logger.warn(
+      s"The write of $fullTableName cannot check its expectations before its commit: they run after it. $reason"
+    )
+
+  /** The expectations that the script of the task checks before its commit (#1976), with their
+    * queries
+    */
+  private class ScriptExpectations(val expectations: List[ExpectationItem]) {
+    private val job =
+      expectationJob(expectations, expectationAssertionHandler, interactive = false)
+
+    private val queries: List[Try[String]] = expectations.map(job.renderQuery)
+
+    /** The reports of the expectations whose query cannot be rendered, if any */
+    def renderFailures: Option[List[ExpectationReport]] =
+      if (queries.forall(_.isSuccess)) None
+      else
+        Some(expectations.zip(queries).collect { case (expectation, Failure(error)) =>
+          job.report(expectation, None, Failure(error))
+        })
+
+    lazy val check: String = BigQueryAutoTask.expectationsCheck(queries.map(_.get))
+
+    /** The reports of the expectations, once the script committed: they all returned 0 */
+    def passed: List[(ExpectationItem, ExpectationReport)] =
+      expectations.zip(queries).map { case (expectation, query) =>
+        expectation -> job.report(expectation, query.toOption, Success(0))
+      }
+
+    /** @return
+      *   the reports of the expectations, from the error that the script raised when one of them
+      *   failed, or None when the error does not come from them
+      */
+    def failed(error: Throwable): Option[List[ExpectationReport]] =
+      BigQueryAutoTask.expectationResults(error).map { values =>
+        if (values.size == expectations.size)
+          expectations.zip(queries).zip(values).map { case ((expectation, query), value) =>
+            val result =
+              if (value.startsWith(BigQueryAutoTask.ExpectationQueryError))
+                Failure(new Exception(value.stripPrefix(BigQueryAutoTask.ExpectationQueryError)))
+              else
+                // As the values that BigQueryExpectationAssertionHandler reads
+                Success(
+                  Try(ExpectationAssertionHandler.result(new java.math.BigDecimal(value)))
+                    .getOrElse(Integer.MIN_VALUE)
+                )
+            job.report(expectation, query.toOption, result)
+          }
+        else
+          expectations.zip(queries).map { case (expectation, query) =>
+            job.report(expectation, query.toOption, Failure(error))
+          }
+      }
+  }
+
+  /** @return
+    *   the script of the write with the check of the expectations before its commit, or None when
+    *   the write cannot check them: a template that runs a transaction without the check. The
+    *   expectations then run after the write.
+    */
+  private def withExpectationsCheck(
+    mainSql: String,
+    check: String,
+    targetExists: Boolean
+  ): Option[String] = {
+    val script =
+      BigQueryAutoTask.withExpectationsCheck(mainSql, check, fullTableName, !targetExists)
+    if (script.isEmpty)
+      warnNotCheckedBeforeCommit(
+        s"Its write-strategy template runs a transaction without rendering the ${BigQueryAutoTask.ExpectationsCheckVariable} variable before its COMMIT TRANSACTION"
+      )
+    script
+  }
 
   private def sqlSubst(): String = {
     val sql = taskDesc.getSql()
@@ -1094,4 +1246,202 @@ object BigQueryAutoTask {
     */
   def nativeScript(preSql: List[String], mainSql: String, postSql: List[String]): String =
     preSql.map(_ + ";\n").mkString + mainSql + ";\n" + postSql.mkString(";\n")
+
+  /** The beginning of the message of the error that the script of a task raises when an expectation
+    * that it checks before its commit fails (#1976)
+    */
+  val ExpectationsFailedBeforeCommit = "Starlake expectations failed before the commit: "
+
+  /** The beginning of the message of the error that the script of a task raises when it cannot undo
+    * its write after an expectation failed: its rollback or the drop of the table that it created
+    * failed. The message of the error of the expectations follows.
+    */
+  val WriteNotUndone = "Starlake could not undo the write: "
+
+  /** The value that the block of [[expectationsCheck]] keeps for a query that fails, followed by
+    * the beginning of its error
+    */
+  val ExpectationQueryError = "ERROR: "
+
+  /** The variable of the write-strategy templates that holds the check of the expectations: the
+    * templates that write in a transaction render it before their `COMMIT TRANSACTION` (#1976)
+    */
+  val ExpectationsCheckVariable = "expectationsBeforeCommit"
+
+  private val BeginTransaction = "(?i)\\bBEGIN\\s+TRANSACTION\\b".r
+
+  /** @param queries
+    *   the queries of the expectations, each returning one value, which is 0 when it passes
+    * @return
+    *   a block of a BigQuery script that runs the queries and raises an error when one of them does
+    *   not return 0: its message holds the values that they returned, in their order, as a JSON
+    *   array of strings (see [[expectationResults]]). A query that fails gets the beginning of its
+    *   error as its value, after [[ExpectationQueryError]]: BigQuery keeps the transaction open,
+    *   which the error then rolls back.
+    */
+  def expectationsCheck(queries: List[String]): String = {
+    val values = queries.map { query =>
+      List(
+        "BEGIN",
+        "  SET sl_expectation_results = ARRAY_CONCAT(sl_expectation_results, [IFNULL(CAST((",
+        // On lines of their own: a query may end with a line comment
+        withoutTerminator(query),
+        "  ) AS STRING), 'NULL')]);",
+        "EXCEPTION WHEN ERROR THEN",
+        s"  SET sl_expectation_results = ARRAY_CONCAT(sl_expectation_results, [CONCAT('$ExpectationQueryError', SUBSTR(@@error.message, 1, 200))]);",
+        "END;"
+      ).mkString("\n")
+    }
+    (List(
+      "-- The expectations declared failOnError, on the new content of the table (#1976)",
+      "BEGIN",
+      "DECLARE sl_expectation_results ARRAY<STRING> DEFAULT [];"
+    ) ++ values ++ List(
+      "IF EXISTS (",
+      "  SELECT 1 FROM UNNEST(sl_expectation_results) AS sl_result",
+      "  WHERE IFNULL(SAFE_CAST(sl_result AS BIGNUMERIC) != 0, TRUE)",
+      ") THEN",
+      s"  RAISE USING MESSAGE = CONCAT('$ExpectationsFailedBeforeCommit', TO_JSON_STRING(sl_expectation_results));",
+      "END IF;",
+      "END;"
+    )).mkString("\n")
+  }
+
+  /** The last terminator of a query, with the spaces and the line comment that follow it */
+  private val Terminator = "(?s)^(.*);[ \\t]*(--[^\\n]*)?\\s*$".r
+
+  private def withoutTerminator(sql: String): String =
+    sql.trim match {
+      case Terminator(query, _) => withoutTerminator(query)
+      case query                => query
+    }
+
+  /** @param mainSql
+    *   the statements of the write strategy of a task
+    * @param check
+    *   the block of [[expectationsCheck]], which the transactional templates render before their
+    *   commit
+    * @param tableFullName
+    *   the table of the task
+    * @param createsTable
+    *   true when the statements create the table, which does not exist
+    * @return
+    *   the statements that check the expectations before the commit of their write:
+    *   - those of a template that renders the check, in its transaction;
+    *   - those of a template without a transaction, run in one, which the check ends before its
+    *     commit: a failure rolls it back;
+    *   - those that create the table, which cannot run in a transaction: the check follows them,
+    *     and its failure drops the table, absent before the run.
+    *
+    * A rollback or a drop that fails raises the error of the check after [[WriteNotUndone]]. None
+    * for the statements of a template that runs a transaction without rendering the check, such as
+    * an older project template.
+    */
+  def withExpectationsCheck(
+    mainSql: String,
+    check: String,
+    tableFullName: String,
+    createsTable: Boolean
+  ): Option[String] =
+    if (mainSql.contains(ExpectationsFailedBeforeCommit)) Some(mainSql)
+    else if (BeginTransaction.findFirstIn(mainSql).nonEmpty) None
+    else if (createsTable)
+      Some(
+        List(
+          // The terminator on a line of its own, after statements that may end with a comment
+          mainSql,
+          ";",
+          "BEGIN",
+          "DECLARE sl_error STRING;",
+          check,
+          "EXCEPTION WHEN ERROR THEN",
+          "  SET sl_error = @@error.message;",
+          "  -- The table did not exist before the run",
+          "  BEGIN",
+          s"    DROP TABLE IF EXISTS $tableFullName;",
+          "  EXCEPTION WHEN ERROR THEN",
+          s"    RAISE USING MESSAGE = CONCAT('$WriteNotUndone', sl_error);",
+          "  END;",
+          "  -- The error of the check, as it was raised",
+          "  RAISE;",
+          "END"
+        ).mkString("\n")
+      )
+    else
+      Some(
+        List(
+          "BEGIN",
+          "DECLARE sl_rollback_failed BOOL DEFAULT FALSE;",
+          "DECLARE sl_error STRING;",
+          "BEGIN",
+          "BEGIN TRANSACTION;",
+          // A block of its own: the statements may start with a DECLARE
+          "BEGIN",
+          mainSql,
+          ";",
+          "END;",
+          check,
+          "COMMIT TRANSACTION;",
+          "EXCEPTION WHEN ERROR THEN",
+          "  SET sl_error = @@error.message;",
+          "  -- The transaction may be over already, after a failed COMMIT for example",
+          "  BEGIN",
+          "    ROLLBACK TRANSACTION;",
+          "  EXCEPTION WHEN ERROR THEN",
+          "    SET sl_rollback_failed = TRUE;",
+          "  END;",
+          "  IF sl_rollback_failed THEN",
+          s"    RAISE USING MESSAGE = CONCAT('$WriteNotUndone', sl_error);",
+          "  END IF;",
+          "  -- The error of the run, as it was raised",
+          "  RAISE;",
+          "END;",
+          "END"
+        ).mkString("\n")
+      )
+
+  /** @return
+    *   the values that the queries of expectations returned, in their order, from the error that
+    *   the block of [[expectationsCheck]] raised, or None when the error does not come from it or
+    *   when its values cannot be read
+    */
+  def expectationResults(error: Throwable): Option[List[String]] =
+    messages(error).iterator
+      .flatMap { message =>
+        // The marker is followed by the values, unless the message quotes the script
+        Iterator
+          .iterate(message.indexOf(ExpectationsFailedBeforeCommit))(index =>
+            message.indexOf(ExpectationsFailedBeforeCommit, index + 1)
+          )
+          .takeWhile(_ >= 0)
+          .map(index => message.substring(index + ExpectationsFailedBeforeCommit.length))
+      }
+      // The message may be quoted in the JSON of an error
+      .flatMap(values => readStrings(values).orElse(readStrings(values.replace("\\\"", "\""))))
+      .nextOption()
+
+  /** @return
+    *   true when the error says that the script could not undo its write
+    */
+  def writeNotUndone(error: Throwable): Boolean = messages(error).exists(_.contains(WriteNotUndone))
+
+  private def messages(error: Throwable): List[String] =
+    Iterator
+      .iterate(error)(_.getCause)
+      .takeWhile(_ != null)
+      .flatMap(exception => Option(exception.getMessage))
+      .toList
+
+  /** @return
+    *   the JSON array of strings at the beginning of a text, followed by anything
+    */
+  private def readStrings(text: String): Option[List[String]] =
+    Try {
+      val parser = new com.fasterxml.jackson.databind.ObjectMapper().getFactory.createParser(text)
+      try {
+        val node = parser.readValueAsTree[com.fasterxml.jackson.databind.JsonNode]()
+        require(node != null && node.isArray)
+        node.elements().asScala.map(_.asText()).toList
+      } finally parser.close()
+    }.toOption
 }

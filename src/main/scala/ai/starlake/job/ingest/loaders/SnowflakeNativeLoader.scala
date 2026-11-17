@@ -25,7 +25,9 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
   def run(): Try[List[IngestionCounters]] = {
     Try {
       val sinkConnection = mergedMetadata.getSinkConnection()
-      val twoSteps = requireTwoSteps(effectiveSchema)
+      // The second step checks the expectations before its commit (#1976)
+      val twoSteps =
+        requireTwoSteps(effectiveSchema) || ingestionJob.expectationsBeforeCommit.nonEmpty
       JdbcDbUtils
         .withJDBCConnection(
           this.schemaHandler.dataBranch(),
@@ -83,7 +85,9 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 postsql = starlakeSchema.postsql,
                 sink = mergedMetadata.sink,
                 rls = starlakeSchema.rls,
-                expectations = Nil, // IngestionJob runs them, once the load is audited
+                // Those that the second step checks before its commit (#1976): IngestionJob runs
+                // the others, once the load is audited
+                expectations = ingestionJob.expectationsBeforeCommit,
                 acl = starlakeSchema.acl,
                 comment = starlakeSchema.comment,
                 tags = starlakeSchema.tags,
@@ -112,6 +116,8 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 syncSchema = false
               )(settings, storageHandler, schemaHandler)
               val job = TransformContext.createJdbcTask(context, Some(conn))
+              // The native Snowflake loader counts no row, as in the audit
+              if (taskDesc.expectations.nonEmpty) ingestionJob.handOverExpectations(job, None)
 
               job.updateJdbcTableSchema(
                 starlakeSchema.sparkSchemaWithoutIgnore(

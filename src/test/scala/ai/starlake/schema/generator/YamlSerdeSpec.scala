@@ -1288,10 +1288,11 @@ object YamlConfigGenerators {
 
   implicit val expectations: Arbitrary[ExpectationsConfig] = Arbitrary {
     for {
-      path        <- arbitrary[String]
-      active      <- arbitrary[Boolean]
-      failOnError <- arbitrary[Boolean]
-    } yield ExpectationsConfig(path, active, failOnError)
+      path         <- arbitrary[String]
+      active       <- arbitrary[Boolean]
+      failOnError  <- arbitrary[Boolean]
+      beforeCommit <- arbitrary[Boolean]
+    } yield ExpectationsConfig(path, active, failOnError, beforeCommit)
   }
 
   implicit val kafkaTopicConfig: Arbitrary[KafkaTopicConfig] = Arbitrary {

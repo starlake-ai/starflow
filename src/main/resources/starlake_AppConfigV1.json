@@ -242,7 +242,11 @@
           "type": "boolean"
         },
         "failOnError": {
-          "description": "Should a load or a transform fail when one of its expectations fails? Expectations run after the write, so the rows stay in the table. An expectation with failOnError false never fails them. Default is false",
+          "description": "Should a load or a transform fail when one of its expectations fails? Expectations run after the write, so the rows stay in the table, unless beforeCommit is true. An expectation with failOnError false never fails them. Default is false",
+          "type": "boolean"
+        },
+        "beforeCommit": {
+          "description": "Should the expectations declared failOnError of a load or a transform run inside the transaction of its write, before its commit? A failure then rolls the write back: the table keeps its previous content, and a load whose write is rolled back entirely gives its files back to the stage area. Applies when active and failOnError are true, to the transforms that run their write strategy on BigQuery or through JDBC, and to the native loads, which then load in two steps; Spark writes, BigQuery views and native DuckDB loads in one step still run them after the write. Default is false",
           "type": "boolean"
         }
       }

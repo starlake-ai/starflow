@@ -252,7 +252,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           log = false
         )
       )
-      if (twoSteps || typed.nonEmpty) {
+      // The second step checks the expectations before its commit (#1976)
+      if (twoSteps || typed.nonEmpty || ingestionJob.expectationsBeforeCommit.nonEmpty) {
         val (loadResults, tempTableIds, tableInfos) =
           ParUtils
             .runInParallel(path.map(_.toString).zipWithIndex, Some(settings.appConfig.maxParTask)) {
@@ -564,6 +565,9 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   )
                 }
           }
+          counted <- Try(
+            BigQueryNativeLoader.withRejectedRows(loadFileResult, rejectedByFile, filteredByFile)
+          )
           _ <- targetBigqueryJob.cliConfig.outputTableId
             .map { _ =>
               applyBigQuerySecondStepSQL(
@@ -573,15 +577,20 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                 incomingSchema,
                 castTypes,
                 checks.filter(_.checks.nonEmpty).map(_.condition),
-                typed
+                typed,
+                // The counters of the audit row, which the expectations checked before the commit
+                // of the second step read (#1976)
+                IngestionCounters(
+                  inputCount = counted.map(_.totalRows).sum,
+                  acceptedCount = counted.map(_.totalAcceptedRows).sum,
+                  rejectedCount = counted.map(_.totalRejectedRows).sum,
+                  paths = counted.flatMap(_.paths),
+                  jobid = ingestionJob.applicationId()
+                )
               )
             }
             .getOrElse(throw new IllegalStateException("Should never happen"))
-        } yield BigQueryNativeLoader.withRejectedRows(
-          loadFileResult,
-          rejectedByFile,
-          filteredByFile
-        )
+        } yield counted
         result
       case res @ Failure(_) =>
         res
@@ -1426,6 +1435,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     *   the condition of the rows of the first step that the second step loads, if they are checked
     * @param typed
     *   the attributes of a DSV file that the first step reads as strings, if any
+    * @param counters
+    *   the counters of the load, for the expectations that the second step checks before its commit
     */
   private def applyBigQuerySecondStepSQL(
     targetJob: BigQueryNativeJob,
@@ -1434,7 +1445,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     incomingSchema: bigquery.Schema,
     castTypes: Map[String, String],
     condition: Option[String],
-    typed: Option[BigQueryNativeLoader.TypedColumns]
+    typed: Option[BigQueryNativeLoader.TypedColumns],
+    counters: IngestionCounters
   ): Try[JobResult] = {
     // The values that the first step of a Parquet load reads as strings
     val conversions =
@@ -1450,11 +1462,15 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           case None        => BigQueryNativeLoader.withConversions(table, conversions, condition)
         }
       ),
-      expectations = Nil,
+      // Those that the second step checks before its commit (#1976): IngestionJob runs the others,
+      // once the load is audited
+      expectations = ingestionJob.expectationsBeforeCommit,
       castTypes = castTypes,
       scripts = safeScripts
     )
     val bqTask = task.asInstanceOf[BigQueryAutoTask]
+    if (task.taskDesc.expectations.nonEmpty)
+      ingestionJob.handOverExpectations(bqTask, Some(counters))
     bqTask.updateBigQueryTableSchemaWith(
       incomingSchema = Some(incomingSchema),
       createIfAbsent = true

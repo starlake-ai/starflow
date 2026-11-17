@@ -22,6 +22,12 @@ WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM ({{ selectStateme
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }};
 
+{#- The expectations declared failOnError, under expectations.beforeCommit: they read the new
+    content of the table, and a failure rolls it back (#1976) #}
+{% if expectationsBeforeCommit is defined %}
+{{ expectationsBeforeCommit }}
+{% endif %}
+
 COMMIT TRANSACTION;
 {% else %}
 {# The SELECT is evaluated once, before the DELETE: it may read the partitions it replaces. It is
@@ -37,6 +43,12 @@ DELETE FROM {{ tableFullName }}
 WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM SL_INCOMING WHERE {{ partition }} IS NULL);
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
+
+{#- The expectations declared failOnError, under expectations.beforeCommit: they read the new
+    content of the table, and a failure rolls it back (#1976) #}
+{% if expectationsBeforeCommit is defined %}
+{{ expectationsBeforeCommit }}
+{% endif %}
 
 COMMIT TRANSACTION;
 

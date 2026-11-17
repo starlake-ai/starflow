@@ -171,6 +171,7 @@ This document lists all environment variables that can be used to configure Star
 | `SL_EXPECTATIONS_ACTIVE` | Enable expectations | `true` |
 | `SL_EXPECTATIONS_PATH` | Expectations path | `${datasets}/expectations/{{domain}}` |
 | `SL_EXPECTATIONS_FAIL_ON_ERROR` | Fail a load or a transform when one of its expectations fails, unless that expectation sets `failOnError: false` | `false` |
+| `SL_EXPECTATIONS_BEFORE_COMMIT` | Run the expectations declared `failOnError` of a load or a transform inside the transaction of its write, before its commit, so that a failure rolls the write back. Needs `SL_EXPECTATIONS_FAIL_ON_ERROR` | `false` |
 
 ## Spark Configuration
 

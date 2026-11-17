@@ -189,7 +189,8 @@ class BigQueryExportTask(
   override def buildAllSQLQueries(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean],
-    forceNative: Boolean
+    forceNative: Boolean,
+    templateVariables: Map[String, Any]
   ): (Option[String], String) = {
     unsupported(name, strategy, fsSink).foreach(message =>
       throw new IllegalArgumentException(message)
