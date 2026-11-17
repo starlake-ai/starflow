@@ -31,11 +31,14 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
   private val taskFolder = "commit_it"
   private val domainName = "commit_loads"
 
-  private def configuration: Config =
+  /** @param dataConnection
+    *   the connection of the tables, the audit staying on DuckDB
+    */
+  private def configuration(dataConnection: String = "test-duckdb"): Config =
     ConfigFactory
       .parseString(
         s"""
-           |connectionRef: "test-duckdb"
+           |connectionRef: "$dataConnection"
            |expectations.failOnError = true
            |expectations.beforeCommit = true
            |audit.sink.connectionRef = "test-duckdb"
@@ -46,14 +49,27 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
            |      "driver": "org.duckdb.DuckDBDriver"
            |    }
            |}
+           |connections.test-h2 {
+           |    type = "jdbc"
+           |    options {
+           |      "url": "jdbc:h2:file:$starlakeTestRoot/before_commit_1976_h2;DATABASE_TO_LOWER=TRUE"
+           |      "driver": "org.h2.Driver"
+           |      "user": "sa"
+           |      "password": ""
+           |    }
+           |}
            |""".stripMargin
       )
       .withFallback(super.testConfiguration)
 
   private def rows(ids: Int*): String = ids.map(id => s"SELECT $id AS id").mkString(" UNION ALL ")
 
-  new WithSettings(configuration) {
-    private def writeMacros(): Unit =
+  /** @param folder
+    *   the folder of the transforms, which names their schema
+    */
+  private class Fixture(dataConnection: String = "test-duckdb", val folder: String = taskFolder)
+      extends WithSettings(configuration(dataConnection)) {
+    def writeMacros(): Unit =
       storageHandler.write(
         """{% macro at_least_rows(n) %}SELECT CASE WHEN COUNT(*) >= {{ n }} THEN 0 ELSE 1 END FROM sl_this{% endmacro %}
           |{% macro without_id(id) %}SELECT COUNT(*) FROM sl_this WHERE id = {{ id }}{% endmacro %}
@@ -65,10 +81,10 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
         new Path(DatasetArea.expectations, "before_commit.j2")
       )
 
-    private def workflow(): IngestionWorkflow =
+    def workflow(): IngestionWorkflow =
       new IngestionWorkflow(storageHandler, settings.schemaHandler(reload = true))
 
-    private def expectationsYaml(expectations: List[ExpectationItem], indent: String): String =
+    def expectationsYaml(expectations: List[ExpectationItem], indent: String): String =
       expectations
         .map(e => s"""$indent- expect: "${e.expect}"
                      |$indent  failOnError: ${e.failOnError}""".stripMargin)
@@ -78,22 +94,28 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       task: String,
       strategy: WriteStrategyType,
       expectations: List[ExpectationItem],
-      sql: String
+      sql: String,
+      presql: List[String] = Nil,
+      postsql: List[String] = Nil
     ): Try[String] = {
       writeMacros()
-      val folder = s"$starlakeMetadataPath/transform/$taskFolder"
+      val directory = s"$starlakeMetadataPath/transform/$folder"
+      def statementsYaml(key: String, statements: List[String]): String =
+        if (statements.isEmpty) ""
+        else statements.map(statement => s"""    - "$statement"\n""").mkString(s"  $key:\n", "", "")
+      val sqlYaml = statementsYaml("presql", presql) + statementsYaml("postsql", postsql)
       storageHandler.write(
         s"""version: 1
            |task:
-           |  writeStrategy:
+           |$sqlYaml  writeStrategy:
            |    type: "${strategy.value}"
            |  expectations:
            |${expectationsYaml(expectations, "    ")}
            |""".stripMargin,
-        new Path(s"$folder/$task.sl.yml")
+        new Path(s"$directory/$task.sl.yml")
       )
-      storageHandler.write(sql, new Path(s"$folder/$task.sql"))
-      workflow().autoJob(TransformConfig(name = s"$taskFolder.$task"))
+      storageHandler.write(sql, new Path(s"$directory/$task.sql"))
+      workflow().autoJob(TransformConfig(name = s"$folder.$task"))
     }
 
     def writeTable(
@@ -118,7 +140,7 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
                 withHeader = Some(true),
                 separator = Some(";"),
                 loader = Some("native"),
-                sink = Some(AllSinks(connectionRef = Some("test-duckdb"))),
+                sink = Some(AllSinks(connectionRef = Some(dataConnection))),
                 writeStrategy = Some(WriteStrategy(`type` = Some(strategy)))
               )
             ),
@@ -167,19 +189,35 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
         .filter(_.startsWith(s"$table-"))
         .sorted
 
-    private def query(sql: String): List[Map[String, String]] =
+    /** Queries the audit, on DuckDB */
+    def query(sql: String): List[Map[String, String]] = queryOn("test-duckdb", sql)
+
+    def queryOn(connectionRef: String, sql: String): List[Map[String, String]] =
       JdbcDbUtils.withJDBCConnection(
         settings.schemaHandler().dataBranch(),
-        settings.appConfig.connections("test-duckdb").options
+        settings.appConfig.connections(connectionRef).options
       ) { connection =>
         JdbcDbUtils.executeQueryAsMap(sql, connection).toList.map(_.toMap)
       }
 
+    /** Runs a statement on the connection of the tables */
+    def execute(sql: String): Unit =
+      JdbcDbUtils.withJDBCConnection(
+        settings.schemaHandler().dataBranch(),
+        settings.appConfig.connections(dataConnection).options
+      ) { connection =>
+        connection.setAutoCommit(true)
+        val statement = connection.createStatement()
+        try statement.execute(sql)
+        finally statement.close()
+      }
+
     def ids(table: String): List[Long] =
-      query(s"SELECT id AS id FROM $table ORDER BY id").map(_("id").toLong)
+      queryOn(dataConnection, s"SELECT id AS id FROM $table ORDER BY id").map(_("id").toLong)
 
     def tableExists(schema: String, table: String): Boolean =
-      query(
+      queryOn(
+        dataConnection,
         s"""SELECT COUNT(*) AS total FROM information_schema.tables
            |WHERE table_schema = '$schema' AND table_name = '$table'""".stripMargin
       ).head("total").toInt > 0
@@ -201,7 +239,9 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
         s"""SELECT CAST(success AS VARCHAR) AS result FROM audit.audit
            |WHERE domain = '$domain' AND "schema" = '$table' AND step = '$step'""".stripMargin
       ).map(_("result")).sorted
+  }
 
+  new Fixture() {
     "A JDBC transform in OVERWRITE" should
     "keep its previous rows when an expectation checked before the commit fails" in {
       val expectations = List(ExpectationItem("at_least_rows(2)"))
@@ -281,6 +321,44 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       ).isFailure shouldBe true
       ids(s"$taskFolder.unrendered") shouldBe List(1L, 2L)
       expectationResults(taskFolder, "unrendered") shouldBe List("false", "true")
+    }
+
+    "A JDBC transform with presql on DuckDB" should
+    "say that its presql statements stay committed when an expectation checked before the commit fails" in {
+      val expectations = List(ExpectationItem("at_least_rows(2)"))
+      val presql = List(s"DELETE FROM $taskFolder.with_presql WHERE id = 2")
+      transform(
+        "with_presql",
+        WriteStrategyType.OVERWRITE,
+        expectations,
+        rows(1, 2, 3),
+        presql
+      ).isSuccess shouldBe true
+      val result =
+        transform("with_presql", WriteStrategyType.OVERWRITE, expectations, rows(9), presql)
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should include(
+        "at_least_rows(2). The write is rolled back. Its presql statements stay committed."
+      )
+      // DuckDB runs the presql statements before the transaction
+      ids(s"$taskFolder.with_presql") shouldBe List(1L, 3L)
+    }
+
+    "The first run of a JDBC transform with presql" should
+    "drop the table created for its presql when an expectation checked before the commit fails" in {
+      val result = transform(
+        "created_for_presql",
+        WriteStrategyType.OVERWRITE,
+        List(ExpectationItem("at_least_rows(2)")),
+        rows(9),
+        List(s"DELETE FROM $taskFolder.created_for_presql WHERE id = 9")
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should include(
+        "at_least_rows(2). The table that this run created is dropped."
+      )
+      tableExists(taskFolder, "created_for_presql") shouldBe false
+      expectationResults(taskFolder, "created_for_presql") shouldBe List("false")
     }
 
     "A native load in OVERWRITE" should
@@ -368,6 +446,198 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       load("rejected").isFailure shouldBe true
       ids(s"$domainName.rejected") shouldBe List(1L, 2L)
       expectationResults(domainName, "rejected") shouldBe List("false", "true")
+    }
+  }
+
+  // H2 commits TRUNCATE and the DDL statements on their own, as MySQL does
+  new Fixture("test-h2") {
+    "A JDBC transform in APPEND on H2" should
+    "append no row when an expectation checked before the commit fails" in {
+      val expectations = List(ExpectationItem("without_id(9)"))
+      transform(
+        "h2_appended",
+        WriteStrategyType.APPEND,
+        expectations,
+        rows(1, 2)
+      ).isSuccess shouldBe true
+      val result = transform("h2_appended", WriteStrategyType.APPEND, expectations, rows(3, 9))
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should include("without_id(9). The write is rolled back.")
+      ids(s"$taskFolder.h2_appended") shouldBe List(1L, 2L)
+      expectationResults(taskFolder, "h2_appended") shouldBe List("false", "true")
+    }
+
+    "The first run of a JDBC transform on H2, whose CREATE TABLE commits on its own" should
+    "drop the table when an expectation checked before the commit fails" in {
+      val result = transform(
+        "h2_created",
+        WriteStrategyType.OVERWRITE,
+        List(ExpectationItem("at_least_rows(2)")),
+        rows(9)
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should endWith(
+        "at_least_rows(2). The table that this run created is dropped."
+      )
+      tableExists(taskFolder, "h2_created") shouldBe false
+      expectationResults(taskFolder, "h2_created") shouldBe List("false")
+    }
+
+    "A JDBC transform with presql on H2, whose statements may commit on their own" should
+    "run its expectations after the write, its presql not being analysed" in {
+      val result = transform(
+        "h2_with_presql",
+        WriteStrategyType.APPEND,
+        List(ExpectationItem("at_least_rows(2)")),
+        rows(9),
+        List(s"DELETE FROM $taskFolder.h2_with_presql WHERE id = 9")
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should include("1 Expectations failed")
+      result.failed.get.getMessage should not include "before the commit"
+      ids(s"$taskFolder.h2_with_presql") shouldBe List(9L)
+    }
+
+    "A JDBC transform in OVERWRITE on H2, whose TRUNCATE commits on its own" should
+    "run its expectations after the write, which a rollback could not undo" in {
+      val expectations = List(ExpectationItem("at_least_rows(2)"))
+      transform(
+        "h2_overwritten",
+        WriteStrategyType.OVERWRITE,
+        expectations,
+        rows(1, 2, 3)
+      ).isSuccess shouldBe true
+      val result = transform("h2_overwritten", WriteStrategyType.OVERWRITE, expectations, rows(9))
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should include("1 Expectations failed")
+      result.failed.get.getMessage should not include "before the commit"
+      // As without expectations.beforeCommit, rather than an empty table
+      ids(s"$taskFolder.h2_overwritten") shouldBe List(9L)
+      expectationResults(taskFolder, "h2_overwritten") shouldBe List("false", "true")
+    }
+  }
+
+  // PostgreSQL keeps its statements in the transaction: its presql and postsql are analysed
+  new Fixture("test-pg") {
+    "A JDBC transform in OVERWRITE on PostgreSQL" should
+    "keep its previous rows when an expectation checked before the commit fails" in {
+      val expectations = List(ExpectationItem("at_least_rows(2)"))
+      transform(
+        "pg_overwritten",
+        WriteStrategyType.OVERWRITE,
+        expectations,
+        rows(1, 2, 3)
+      ).isSuccess shouldBe true
+      val result = transform("pg_overwritten", WriteStrategyType.OVERWRITE, expectations, rows(9))
+      result.isFailure shouldBe true
+      // Its TRUNCATE is rolled back too: PostgreSQL is not taken for Redshift
+      result.failed.get.getMessage should endWith("at_least_rows(2). The write is rolled back.")
+      ids(s"$folder.pg_overwritten") shouldBe List(1L, 2L, 3L)
+    }
+
+    "A JDBC transform with presql and postsql on PostgreSQL" should
+    "roll them back with its write when an expectation checked before the commit fails" in {
+      val expectations = List(ExpectationItem("at_least_rows(2)"))
+      transform(
+        "pg_with_sql",
+        WriteStrategyType.APPEND,
+        expectations,
+        rows(1, 2)
+      ).isSuccess shouldBe true
+      val result = transform(
+        "pg_with_sql",
+        WriteStrategyType.APPEND,
+        List(ExpectationItem("without_id(9)")),
+        rows(9),
+        presql = List(s"DELETE FROM $folder.pg_with_sql WHERE id = 1"),
+        postsql = List(s"UPDATE $folder.pg_with_sql SET id = id WHERE id = 2")
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should endWith("without_id(9). The write is rolled back.")
+      ids(s"$folder.pg_with_sql") shouldBe List(1L, 2L)
+    }
+
+    "The first run of a JDBC transform with presql on PostgreSQL" should
+    "drop the table created for its presql when an expectation checked before the commit fails" in {
+      val result = transform(
+        "pg_created_for_presql",
+        WriteStrategyType.OVERWRITE,
+        List(ExpectationItem("at_least_rows(2)")),
+        rows(9),
+        List(s"DELETE FROM $folder.pg_created_for_presql WHERE id = 9")
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should endWith(
+        "at_least_rows(2). The table that this run created is dropped."
+      )
+      tableExists(folder, "pg_created_for_presql") shouldBe false
+    }
+  }
+
+  // MariaDB commits TRUNCATE and the DDL statements on their own. Its user may use its database only.
+  new Fixture("test-mariadb", "starlake") {
+    "A JDBC transform in APPEND on MariaDB" should
+    "append no row when an expectation checked before the commit fails" in {
+      val expectations = List(ExpectationItem("without_id(9)"))
+      transform(
+        "before_commit_appended",
+        WriteStrategyType.APPEND,
+        expectations,
+        rows(1, 2)
+      ).isSuccess shouldBe true
+      val result =
+        transform("before_commit_appended", WriteStrategyType.APPEND, expectations, rows(3, 9))
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should endWith("without_id(9). The write is rolled back.")
+      ids(s"$folder.before_commit_appended") shouldBe List(1L, 2L)
+    }
+
+    "The first run of a JDBC transform on MariaDB, whose CREATE TABLE commits on its own" should
+    "drop the table when an expectation checked before the commit fails" in {
+      val result = transform(
+        "before_commit_created",
+        WriteStrategyType.OVERWRITE,
+        List(ExpectationItem("at_least_rows(2)")),
+        rows(9)
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should endWith(
+        "at_least_rows(2). The table that this run created is dropped."
+      )
+      tableExists(folder, "before_commit_created") shouldBe false
+    }
+
+    "A JDBC transform in APPEND on a MyISAM table of MariaDB" should
+    "run its expectations after the write, which a rollback would not undo" in {
+      execute(s"DROP TABLE IF EXISTS $folder.before_commit_myisam")
+      execute(s"CREATE TABLE $folder.before_commit_myisam (id BIGINT) ENGINE = MyISAM")
+      execute(s"INSERT INTO $folder.before_commit_myisam VALUES (1), (2)")
+      val result = transform(
+        "before_commit_myisam",
+        WriteStrategyType.APPEND,
+        List(ExpectationItem("without_id(9)")),
+        rows(3, 9)
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should not include "before the commit"
+      ids(s"$folder.before_commit_myisam") shouldBe List(1L, 2L, 3L, 9L)
+    }
+
+    "A JDBC transform in OVERWRITE on MariaDB, whose TRUNCATE commits on its own" should
+    "run its expectations after the write, which a rollback could not undo" in {
+      val expectations = List(ExpectationItem("at_least_rows(2)"))
+      transform(
+        "before_commit_overwritten",
+        WriteStrategyType.OVERWRITE,
+        expectations,
+        rows(1, 2, 3)
+      ).isSuccess shouldBe true
+      val result =
+        transform("before_commit_overwritten", WriteStrategyType.OVERWRITE, expectations, rows(9))
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should not include "before the commit"
+      // As without expectations.beforeCommit, rather than an empty table
+      ids(s"$folder.before_commit_overwritten") shouldBe List(9L)
     }
   }
 }

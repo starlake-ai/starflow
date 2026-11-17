@@ -1181,6 +1181,7 @@ object YamlConfigGenerators {
       quote           <- arbitrary[String]
       preActions      <- arbitrary[Option[String]]
       strategyBuilder <- arbitrary[String]
+      implicitCommits <- Gen.option(arbitrary[List[String]])
     } yield JdbcEngine(
       tables = tables,
       partitionBy = partitionBy,
@@ -1188,7 +1189,8 @@ object YamlConfigGenerators {
       quote = quote,
       viewPrefix = viewPrefix,
       preActions = preActions,
-      strategyBuilder = strategyBuilder
+      strategyBuilder = strategyBuilder,
+      implicitCommits = implicitCommits
     )
   }
 
