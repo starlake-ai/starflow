@@ -1,6 +1,13 @@
 
 # Release notes
 
+# 1.7.10:
+__Improvement__:
+- **Installing Spark no longer takes about 20 minutes** (#1974): since Spark 3.5.9 came out, the CDN of Apache no longer has 3.5.8, so the installer got its 410 MB from `archive.apache.org`, at under 1 MB/s: the Docker image of v1.7.9 spent 23 minutes on it, against 37 seconds for v1.7.8. The installer now gets it from a copy in our GitHub releases (`spark-3.5.8`), as on `master` since #1920. A `SPARK_VERSION` that we did not publish still comes from Apache.
+  - The tarball is now checked against the SHA-512 of Apache, wherever it comes from. A `SPARK_VERSION` without a pinned checksum is not checked, as before.
+  - **Network rules**: a network allowing `archive.apache.org` must also allow GitHub, as for the Starflow jar. A connection that fails on GitHub stops the installation instead of trying Apache: only an HTTP error answer falls back.
+  - The rebuilt `distrib/setup.jar` reaches the Linux and macOS installs (`starlake.sh`) and the Docker image at the release of 1.7.10. The Windows launcher (`starlake.cmd`) is not changed: it always takes the `setup.jar` of `master`, which installs the Spark of `master`.
+
 # 1.7.9:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
 - **BigQuery permissions**:
