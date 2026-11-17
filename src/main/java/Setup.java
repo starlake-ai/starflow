@@ -81,6 +81,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.KeyManagementException;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
@@ -88,6 +89,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -406,7 +408,18 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final ResourceDependency SL_API_RELEASE_ZIP = new ResourceDependency("starlake-api", SL_RELEASE_BASE_URL + "/v" + SL_API_VERSION + "/starlake-api_" + SCALA_VERSION + "-" + SL_API_VERSION + ".zip");
 
     // SPARK
-    private static final ResourceDependency SPARK_JAR = new ResourceDependency("dist/spark", "https://www.apache.org/dyn/closer.lua/spark/spark-" + SPARK_VERSION + "/spark-" + SPARK_VERSION + "-bin-hadoop" + HADOOP_VERSION  + "-scala2.13.tgz?action=download");
+    private static final String SPARK_TARBALL = "spark-" + SPARK_VERSION + "-bin-hadoop" + HADOOP_VERSION + "-scala2.13.tgz";
+    // Apache keeps only the current Spark releases on its CDN. Any other one comes from
+    // archive.apache.org, at under 1 MB/s for about 410 MB, so our release has a copy of it.
+    // A version that we did not publish answers 404 there, and comes from Apache.
+    // To publish a new one: scripts/publish-spark-tarball.sh
+    private static final ResourceDependency SPARK_JAR = new ResourceDependency("dist/spark",
+            SL_RELEASE_BASE_URL + "/spark-" + SPARK_VERSION + "/" + SPARK_TARBALL,
+            "https://www.apache.org/dyn/closer.lua/spark/spark-" + SPARK_VERSION + "/" + SPARK_TARBALL + "?action=download");
+    // The SHA-512 that Apache publishes. Pinned here rather than read from where the tarball
+    // comes from, which could then replace both.
+    private static final Map<String, String> SPARK_SHA512 = Map.of(
+            "spark-3.5.8-bin-hadoop3-scala2.13.tgz", "a90077cb4403684b5231a05b269d4c1175ec0a349a686c29c47c94462b1510eda2a9e6617ef6f9bb80de15fda3a00bf7ff8c943e605de3503541f77ad79082e9");
     private static final ResourceDependency SPARK_BQ_JAR = new ResourceDependency("bigquery-with-dependencies",
             "https://repo1.maven.org/maven2/com/google/cloud/spark/spark-bigquery-with-dependencies_" + SCALA_VERSION + "/" +
                     SPARK_BQ_VERSION + "/" +
@@ -1126,9 +1139,21 @@ public class Setup extends ProxySelector implements X509TrustManager {
     }
 
     public static void downloadSpark(File binDir) throws IOException, InterruptedException {
-        ResourceDependency sparkJar = SPARK_JAR;
+        downloadSpark(binDir, SPARK_SHA512.get(SPARK_TARBALL), SPARK_JAR);
+    }
+
+    /**
+     * @param expectedSha512 null when no SHA-512 is pinned for the tarball, for a SPARK_VERSION or a HADOOP_VERSION
+     *                       that we did not publish: the tarball is then not checked.
+     */
+    public static void downloadSpark(File binDir, String expectedSha512, String... urls) throws IOException, InterruptedException {
+        downloadSpark(binDir, expectedSha512, new ResourceDependency("dist/spark", urls));
+    }
+
+    private static void downloadSpark(File binDir, String expectedSha512, ResourceDependency sparkJar) throws IOException, InterruptedException {
         downloadAndDisplayProgress(new ResourceDependency[]{sparkJar}, binDir, false);
-        sparkJar.getUrlNames().stream().map(tgzName -> new File(binDir, tgzName)).filter(File::exists).forEach(sparkFile -> {
+        sparkJar.getUrlNames().stream().distinct().map(tgzName -> new File(binDir, tgzName)).filter(File::exists).forEach(sparkFile -> {
+            checkSha512(sparkFile, expectedSha512);
             String tgzName = sparkFile.getName();
             ProcessBuilder builder = new ProcessBuilder("tar", "-xzf", sparkFile.getAbsolutePath(), "-C", binDir.getAbsolutePath()).inheritIO();
             try {
@@ -1145,6 +1170,32 @@ public class Setup extends ProxySelector implements X509TrustManager {
             File log4j2File = new File(sparkDir, "conf/log4j2.properties.template");
             log4j2File.renameTo(new File(sparkDir, "conf/log4j2.properties"));
         });
+    }
+
+    private static void checkSha512(File file, String expected) {
+        if (expected == null) {
+            return;
+        }
+        String actual;
+        try (InputStream input = new BufferedInputStream(new FileInputStream(file))) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-512");
+            byte[] buffer = new byte[1024 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, count);
+            }
+            actual = String.format("%0128x", new java.math.BigInteger(1, digest.digest()));
+        } catch (IOException | NoSuchAlgorithmException e) {
+            throw new RuntimeException("Could not compute the SHA-512 of " + file.getName(), e);
+        }
+        if (!expected.equalsIgnoreCase(actual)) {
+            deleteFile(file);
+            String removal = file.exists()
+                    ? "The file could not be removed: delete " + file.getAbsolutePath() + ", then run the installation again"
+                    : "The file was removed; run the installation again";
+            throw new RuntimeException("The SHA-512 of " + file.getName() + " is not the expected one: got " + actual
+                    + ", expected " + expected + ". " + removal + ", and report it if this happens again.");
+        }
     }
 
     private static void downloadPythonLibs(File targetDir) throws IOException, InterruptedException {
