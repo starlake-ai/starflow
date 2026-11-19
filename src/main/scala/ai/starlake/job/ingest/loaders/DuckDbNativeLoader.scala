@@ -79,7 +79,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               val countSql =
                 s"SELECT COUNT(*) AS cnt FROM ${domain.finalName}.${schema.finalName};"
               val res = JdbcDbUtils.executeQueryAsMap(countSql, conn)
-              val count = res.head("cnt").toInt
+              val count = res.head("cnt").toLong
               logger
                 .info(
                   s"Table ${domain.finalName}.${schema.finalName} already exists with $count records"
@@ -97,7 +97,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         logger.warn(
           s"${domain.finalName}.${schema.finalName} loads in one step: its expectations run after the write, not before its commit"
         )
-      val rejectedCount = if (twoSteps) {
+      // The rejected rows, and the counters of a load in two steps
+      val (rejectedCount, secondStep) = if (twoSteps) {
         // Dropped whatever happens, a failure on a later file included
         val tempTables = ListBuffer.empty[String]
         try {
@@ -190,14 +191,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             syncSchema = false
           )(settings, storageHandler, schemaHandler)
           val job = TransformContext.createJdbcTask(context, None)
-          // The counters of the load, before its write: the audit row counts the rows of the
-          // table instead
-          val counters =
-            if (settings.appConfig.expectations.active && schema.expectations.nonEmpty)
-              Some(secondStepCounters(sqlWithTransformedFields, rejected))
-            else None
-          counters.filter(_.acceptedCount >= 0).foreach(ingestionJob.countedBeforeWrite)
-          if (taskDesc.expectations.nonEmpty) ingestionJob.handOverExpectations(job, counters)
+          // The counters of the load, before its write, for its audit row and its expectations:
+          // the rows that its second step reads, as it renders them, whatever the table holds
+          // before (#1980)
+          val counters = secondStepCounters(job.buildSelectStatement(), rejected)
+          if (counters.acceptedCount >= 0) ingestionJob.countedBeforeWrite(counters)
+          if (taskDesc.expectations.nonEmpty)
+            ingestionJob.handOverExpectations(job, Some(counters))
           val incomingSchema = schema.sparkSchemaWithoutIgnore(
             schemaHandler,
             withFinalName = true
@@ -210,7 +210,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           )
           // A failed second step fails the load, whose files must not be archived
           ingestionJob.writingWith(job)(job.run().get)
-          rejected
+          (rejected, Some(counters))
         } finally {
           tempTables.foreach { tempTable =>
             Try {
@@ -228,10 +228,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           }
         }
       } else {
-        singleStepLoad(domain.finalName, schema.finalName, schemaWithMergedMetadata, path).count
+        (
+          singleStepLoad(domain.finalName, schema.finalName, schemaWithMergedMetadata, path).count,
+          None
+        )
       }
-      (initialRowCount, rejectedCount)
-    }.map { case (initialRowCount, rejectedCount) =>
+      (initialRowCount, rejectedCount, secondStep)
+    }.map { case (initialRowCount, rejectedCount, secondStep) =>
       val countSql =
         s"SELECT COUNT(*) AS cnt FROM ${domain.finalName}.${schema.finalName};"
 
@@ -239,37 +242,46 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
           conn =>
             val res = JdbcDbUtils.executeQueryAsMap(countSql, conn)
-            val count = res.head("cnt").toInt
+            val count = res.head("cnt").toLong
             logger.info(
               s"Table ${domain.finalName}.${schema.finalName} now has $count records"
             )
             count
         }
-      // Only the Parquet loads find their rejected rows (#1952)
-      val countsRejected = mergedMetadata.resolveFormat() == Format.PARQUET
-      List(
+      List(secondStep.filter(_.acceptedCount >= 0).getOrElse {
+        // Without the counters of the second step: a load in one step, which appends its rows
+        // (APPEND) or replaces the table with them (OVERWRITE), or a load in two steps whose rows
+        // could not be counted (#1980). An OVERWRITE leaves its rows only and an APPEND adds them;
+        // the other strategies get the change of the table, which they may make smaller
+        val accepted =
+          if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE) currentRowCount
+          else currentRowCount - initialRowCount
+        // Only the Parquet loads find their rejected rows (#1952)
+        val countsRejected = mergedMetadata.resolveFormat() == Format.PARQUET
         IngestionCounters(
-          inputCount = currentRowCount - initialRowCount + rejectedCount,
-          acceptedCount = currentRowCount - initialRowCount,
+          inputCount = accepted + rejectedCount,
+          acceptedCount = accepted,
           rejectedCount = if (countsRejected) rejectedCount else -1,
           paths = path.map(_.toString),
           jobid = ingestionJob.applicationId()
         )
-      )
+      })
     }
   }
 
   /** @param secondStepSql
-    *   the SELECT of the second step, over the tables of the first step
+    *   the SELECT of the second step, over the tables of the first step, as the second step renders
+    *   it: evaluated in the count, whose failure it may cause
     * @param rejected
     *   the rows that the first step rejected, counted for Parquet files only
     * @return
-    *   the counters of the load, before its second step writes the rows that it accepts: those of
-    *   the SELECT of the second step, without the rows that its filter drops, as a native BigQuery
-    *   load counts them. -1 for the rejected rows of the files that are not Parquet, as in the
-    *   audit, and for the rows that cannot be counted.
+    *   the counters of the load, for its audit row and its expectations, before its second step
+    *   writes the rows that it accepts: those of the SELECT of the second step, without the rows
+    *   that its filter drops, as a native BigQuery load counts them, whatever the write strategy
+    *   does with them (#1980). -1 for the rejected rows of the files that are not Parquet, and for
+    *   the rows that cannot be counted.
     */
-  private def secondStepCounters(secondStepSql: String, rejected: Long): IngestionCounters = {
+  private def secondStepCounters(secondStepSql: => String, rejected: Long): IngestionCounters = {
     val accepted =
       Try {
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
@@ -284,7 +296,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         }
       }.recover { case exception =>
         logger.warn(
-          s"The rows that the load of ${domain.finalName}.${schema.finalName} accepts cannot be counted for its expectations: ${exception.getMessage}"
+          s"The rows that the load of ${domain.finalName}.${schema.finalName} accepts cannot be counted for its audit and its expectations: ${exception.getMessage}"
         )
         -1L
       }.get

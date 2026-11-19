@@ -21,6 +21,10 @@ __Bug fix__:
   - A variable holds 1 MB at most. More than 4,000 distinct values, the partitions that a job may modify, are finer than the partitions, such as the timestamps of a table partitioned by day: their `DELETE` keeps the subquery and scans every partition, as before.
   - The `DELETE` statements run only when incoming rows replace partitions, the NULL one included: a run no longer pays for a statement that deletes nothing.
   - A project that overrides `overwrite_by_partition.j2` keeps its own `DELETE`: to get the fix, collect the partitions into a variable as the template now does.
+- **The audit row of a native DuckDB load counts the rows that the load accepts** (#1980): `countAccepted` and `count` were the change of the number of rows of the table during the load, which the rows that the write strategy replaces make smaller. Reloading a table of 3 rows with a file of 2 rows in `OVERWRITE` gave -1; reloading 2 rows of a date that held 14 rows in `OVERWRITE_BY_PARTITION` gave -12; an `UPSERT_BY_KEY` did not count the rows it updated. An expectation that checks `countAccepted` failed on a valid reload, while the same check passes on BigQuery.
+  - A load in two steps (Parquet files, transformed or filtered attributes, write strategies other than `APPEND` and `OVERWRITE`...) now counts the rows that its second step reads, before its write, without the rows that the `filter` of the table drops, as a native BigQuery load counts them: the rows that an `UPSERT` updates are accepted rows. The expectations of #1976 already read these counts through `sl_accepted_count`.
+  - A load in one step (`VARIANT` tables) counts the rows of the table after an `OVERWRITE`, and the rows added to it by an `APPEND`.
+  - The rows that a load in two steps reads are counted once more, before the write.
 
 # 1.7.9:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
