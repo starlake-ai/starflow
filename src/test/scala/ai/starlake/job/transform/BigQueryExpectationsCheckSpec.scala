@@ -81,14 +81,25 @@ class BigQueryExpectationsCheckSpec extends TestHelper {
       script,
       s"RAISE USING MESSAGE = CONCAT('${BigQueryAutoTask.WriteNotUndone}', sl_error);"
     )
-    // nativeScript adds the terminator
-    script should endWith("END")
+    // The variables of the handler are declared in the enclosing block: an EXCEPTION handler
+    // cannot see those of its own block
+    script should startWith(
+      "BEGIN\nDECLARE sl_rollback_failed BOOL DEFAULT FALSE;\nDECLARE sl_error STRING;\nBEGIN\nBEGIN TRANSACTION;"
+    )
+    // The handler belongs to the inner block; nativeScript adds the terminator
+    script should endWith("RAISE;\nEND;\nEND")
   }
 
   "The script of a write that creates the table" should "drop it when the check fails" in {
     val main = s"CREATE TABLE $table AS SELECT 1 AS id"
     val script = BigQueryAutoTask.withExpectationsCheck(main, check, table, createsTable = true).get
     script should not include "TRANSACTION"
+    // sl_error is declared in the enclosing block: an EXCEPTION handler cannot see the variables
+    // of its own block ("Undeclared variable: sl_error", #1976)
+    script should include(
+      s"$main\n;\nBEGIN\nDECLARE sl_error STRING;\nBEGIN\n$check\nEXCEPTION WHEN ERROR THEN"
+    )
+    script should endWith("RAISE;\nEND;\nEND")
     indexOf(script, main) should be < indexOf(script, check)
     indexOf(script, check) should be < indexOf(script, "EXCEPTION WHEN ERROR THEN")
     script should include(s"DROP TABLE IF EXISTS $table;")
@@ -99,6 +110,18 @@ class BigQueryExpectationsCheckSpec extends TestHelper {
       s"RAISE USING MESSAGE = CONCAT('${BigQueryAutoTask.WriteNotUndone}', sl_error);"
     )
     script should endWith("END")
+  }
+
+  "The statements of a write that end with a terminator and a comment" should
+  "not leave an empty statement, which BigQuery rejects" in {
+    val created = s"CREATE TABLE $table AS SELECT 1 AS id; -- the end\n"
+    BigQueryAutoTask
+      .withExpectationsCheck(created, check, table, createsTable = true)
+      .get should startWith(s"CREATE TABLE $table AS SELECT 1 AS id\n;\nBEGIN\n")
+    val merged = s"MERGE INTO $table USING (SELECT 1) ON FALSE WHEN NOT MATCHED THEN INSERT ROW"
+    BigQueryAutoTask
+      .withExpectationsCheck(s"$merged;", check, table, createsTable = false)
+      .get should include(s"BEGIN\n$merged\n;\nEND;")
   }
 
   "The values of a failed check" should "be read from the error of the script" in {
