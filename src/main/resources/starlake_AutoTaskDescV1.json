@@ -8,7 +8,7 @@
           "description": "SQL expression that must evaluate to true for the expectation to pass. Use {{table}} to reference the output table"
         },
         "failOnError": {
-          "description": "should load / transform fail on expectation error ?",
+          "description": "Should a load or a transform fail when this expectation fails? Applies when expectations.failOnError is true in the application settings. With expectations.beforeCommit, such an expectation runs before the commit of the write, which its failure rolls back. Default is true",
           "type": "boolean"
         }
       }
@@ -565,7 +565,7 @@
     },
     "taskTimeoutMs": {
       "type": "integer",
-      "description": "Number of milliseconds before a communication timeout."
+      "description": "Timeout in milliseconds of each statement of the task on BigQuery. Default is longJobTimeoutMs"
     },
     "parseSQL": {
       "type": "boolean",

@@ -3,6 +3,7 @@ package ai.starlake.tests
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.job.Main
+import ai.starlake.job.ingest.IngestionJob
 import ai.starlake.job.metrics.{ExpectationJob, SQLConnectionExpectationAssertionHandler}
 import ai.starlake.schema.handlers.{SchemaHandler, SqlTransformations}
 import ai.starlake.schema.model.ConnectionType.JDBC
@@ -388,7 +389,9 @@ object StarlakeTestData {
                 test = true
               )
             )
-            .getOrElse(sql)
+            .getOrElse(sql),
+        // The counters that a load gives to its expectations, which a test does not count (#1976)
+        variables = IngestionJob.expectationVariables(None)
       ).runExpectations()
     reports.map { report =>
       StarlakeTestResult(

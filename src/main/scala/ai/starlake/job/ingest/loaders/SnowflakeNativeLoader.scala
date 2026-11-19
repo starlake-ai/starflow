@@ -25,7 +25,9 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
   def run(): Try[List[IngestionCounters]] = {
     Try {
       val sinkConnection = mergedMetadata.getSinkConnection()
-      val twoSteps = requireTwoSteps(effectiveSchema)
+      // The second step checks the expectations before its commit (#1976)
+      val twoSteps =
+        requireTwoSteps(effectiveSchema) || expectationsBeforeCommit.nonEmpty
       JdbcDbUtils
         .withJDBCConnection(
           this.schemaHandler.dataBranch(),
@@ -83,7 +85,9 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 postsql = starlakeSchema.postsql,
                 sink = mergedMetadata.sink,
                 rls = starlakeSchema.rls,
-                expectations = starlakeSchema.expectations,
+                // Those that the second step checks before its commit (#1976): IngestionJob runs
+                // the others, once the load is audited
+                expectations = expectationsBeforeCommit,
                 acl = starlakeSchema.acl,
                 comment = starlakeSchema.comment,
                 tags = starlakeSchema.tags,
@@ -101,7 +105,9 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 interactive = None,
                 truncate = false,
                 test = false,
-                logExecution = true,
+                // IngestionJob writes the LOAD audit row, as for Spark loads: a TRANSFORM row would
+                // duplicate it. A failure still writes one, as a Spark sink task does (#1838)
+                logExecution = false,
                 accessToken = ingestionJob.accessToken,
                 resultPageSize = 200,
                 resultPageNumber = 1,
@@ -110,6 +116,8 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 syncSchema = false
               )(settings, storageHandler, schemaHandler)
               val job = TransformContext.createJdbcTask(context, Some(conn))
+              // The native Snowflake loader counts no row, as in the audit
+              if (taskDesc.expectations.nonEmpty) ingestionJob.handOverExpectations(job, None)
 
               job.updateJdbcTableSchema(
                 starlakeSchema.sparkSchemaWithoutIgnore(
@@ -121,7 +129,8 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
                 true
               )
 
-              val runResult = job.runJDBC(df = None, sqlConnection = Some(conn))
+              val runResult =
+                ingestionJob.writingWith(job)(job.runJDBC(df = None, sqlConnection = Some(conn)))
 
               runResult match {
                 case Success(_) =>
@@ -151,6 +160,7 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
               path = path,
               conn = conn
             )
+            ingestionJob.markRowsWritten()
           }
         }
     }.map { _ =>
@@ -237,11 +247,28 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
         ""
   }
 
-  private def purge: String =
-    if (mergedMetadata.getOptions().getOrElse("PURGE", "false").equalsIgnoreCase("true"))
-      "TRUE"
-    else
-      "FALSE"
+  private def purges: Boolean =
+    mergedMetadata.getOptions().getOrElse("PURGE", "false").equalsIgnoreCase("true")
+
+  private def purge: String = if (purges) "TRUE" else "FALSE"
+
+  /** The expectations that the second step checks before its commit (#1976). IngestionJob runs the
+    * others once the load is audited.
+    */
+  private lazy val expectationsBeforeCommit: List[ExpectationItem] = {
+    val checked = SnowflakeNativeLoader.checkedBeforeCommit(
+      ingestionJob.expectationsBeforeCommit,
+      purges = purges,
+      filesInSnowflakeStage = !isLocalOrRemotePath
+    )
+    if (checked.isEmpty && ingestionJob.expectationsBeforeCommit.nonEmpty)
+      logger.warn(
+        s"The expectations of ${domain.finalName}.${starlakeSchema.finalName} run after its " +
+        "write: its COPY purges the files of its stage (PURGE = TRUE), which a rolled-back write " +
+        "would lose"
+      )
+    checked
+  }
 
   private def encoding: String =
     mergedMetadata
@@ -512,4 +539,19 @@ class SnowflakeNativeLoader(ingestionJob: IngestionJob)(implicit settings: Setti
         JdbcDbUtils.executeQueryAsMap(sql, conn)
     }
   }
+}
+
+object SnowflakeNativeLoader {
+
+  /** The expectations that the second step of a load checks before its commit (#1976): none when
+    * its COPY purges the files of a Snowflake stage, whose rows a rolled-back second step would
+    * lose. The files of a local or remote path are copied to a temporary stage first: the purge
+    * removes only these copies.
+    */
+  private[loaders] def checkedBeforeCommit(
+    expectations: List[ExpectationItem],
+    purges: Boolean,
+    filesInSnowflakeStage: Boolean
+  ): List[ExpectationItem] =
+    if (purges && filesInSnowflakeStage) Nil else expectations
 }

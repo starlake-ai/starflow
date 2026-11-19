@@ -15,7 +15,13 @@ import ai.starlake.job.transform.BigQueryAutoTask
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model._
 import ai.starlake.sql.SQLUtils
-import ai.starlake.utils.conversion.{BigQueryNativeSchema, BigQueryUtils}
+import ai.starlake.utils.conversion.{
+  BigQueryNativeSchema,
+  BigQueryPositionValues,
+  BigQueryScriptChecks,
+  BigQueryType,
+  BigQueryUtils
+}
 import ai.starlake.utils.{IngestionCounters, JobResult, Utils}
 import com.google.cloud.bigquery
 import com.google.cloud.bigquery.{
@@ -34,8 +40,7 @@ import org.apache.hadoop.fs.Path
 
 import java.io.{BufferedWriter, OutputStreamWriter, Writer}
 import java.nio.charset.Charset
-import java.time.{Duration, Instant, ZoneId}
-import java.time.format.DateTimeFormatter
+import java.time.Duration
 import java.util.UUID
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -91,15 +96,29 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
   private lazy val format: Format = mergedMetadata.resolveFormat()
 
   override protected def requireTwoSteps(schema: SchemaInfo): Boolean =
-    super.requireTwoSteps(schema) || format == Format.PARQUET && (
-      // Local files are uploaded through a single stream per load job: the first step loads
-      // them one by one, since their concatenation is not a Parquet file
-      BigQueryNativeLoader.requiresOneLoadPerFile(format, path) ||
+    super.requireTwoSteps(schema) ||
+    BigQueryNativeLoader.secondStepRequired(schema, path) || format == Format.DSV &&
+    // The first step reads them as strings, that the second step converts (#1935). The target
+    // table is not read yet: with the mappings or without, which may be disabled. `run` reads it.
+    List(true, false).exists(fromDdlMapping =>
+      BigQueryNativeLoader
+        .dsvTypedColumns(
+          schema.attributes,
+          BigQueryNativeLoader.firstStepSchema(
+            schema,
+            None,
+            schemaHandler,
+            fromDdlMapping,
+            log = false
+          ),
+          typesByAttribute,
+          emptyIsNull
+        )
+        .nonEmpty
+    ) || format == Format.PARQUET && (
       // The first step reads every column as nullable, and the second step writes into the
       // target table, which fails on a null value of a required attribute
       BigQueryNativeLoader.hasRequiredAttributes(schema.attributes) ||
-      // Run by the second step, as Spark ran them: a load in one step does not
-      schema.presql.nonEmpty || schema.postsql.nonEmpty ||
       // The first step reads them as strings, that the second step converts. The target table
       // is not read yet: one of its columns can keep a mapped type even when the mappings are
       // disabled, so they are applied
@@ -116,18 +135,84 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         .nonEmpty
     )
 
+  /** @return
+    *   the schema of the temporary table of the first step, where the attributes of a DSV file that
+    *   the second step converts are strings (see [[typedColumns]])
+    */
   private def firstStepSchema(
     schema: SchemaInfo,
     existingTargetSchema: Option[bigquery.Schema],
     log: Boolean
-  ): bigquery.Schema =
-    BigQueryNativeLoader.firstStepSchema(
+  ): bigquery.Schema = {
+    val typed = BigQueryNativeLoader.firstStepSchema(
       schema,
       existingTargetSchema,
       schemaHandler,
       settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
       log
     )
+    BigQueryNativeLoader.readAsStrings(
+      typed,
+      typedColumns(typed).toList.flatMap(_.columns.map(_.attribute.name)).toSet
+    )
+  }
+
+  /** @param firstStep
+    *   the schema of the temporary table of the first step, with the types of the target columns
+    * @return
+    *   the attributes of a DSV file that the first step reads as strings and the second step
+    *   converts, if any (#1935)
+    */
+  private def typedColumns(firstStep: bigquery.Schema): Option[BigQueryNativeLoader.TypedColumns] =
+    if (format == Format.DSV)
+      BigQueryNativeLoader.dsvTypedColumns(
+        starlakeSchema.attributes,
+        firstStep,
+        typesByAttribute,
+        emptyIsNull
+      )
+    else None
+
+  /** An empty string of a DSV file is NULL, as the Spark loader reads it */
+  private lazy val emptyIsNull: Boolean =
+    mergedMetadata.emptyIsNull.getOrElse(settings.appConfig.emptyIsNull)
+
+  /** @return
+    *   the SQL rendered as the second step renders its query, but for the references to tables
+    */
+  private def render(sql: String): String = {
+    val vars = schemaHandler.activeEnvVars()
+    Utils.parseJinja(
+      SQLUtils.instantiateMacrosInSql(SQLUtils.stripComments(sql), schemaHandler.allMacros, vars),
+      vars
+    )
+  }
+
+  /** The scripted attributes of a DSV or POSITION file with strict conversions, which the second
+    * step checks and evaluates in their safe form (#1935), rendered once, as the scripts that it
+    * does not check. A script that does not render or parse is evaluated as it is, with a warning.
+    */
+  private lazy val checkedScripts: List[(TableAttribute, BigQueryScriptChecks.Script)] =
+    if (format == Format.DSV || format == Format.POSITION)
+      starlakeSchema.attributes.filter(a => a.script.nonEmpty && !a.resolveIgnore()).flatMap {
+        attribute =>
+          // The checks read the script rendered, the second step renders its safe form
+          Try(render(attribute.script.get)).toOption
+            .flatMap(BigQueryScriptChecks.analyze(_, attribute.script.get)) match {
+            case None =>
+              logger.warn(
+                s"The conversions of the script of ${attribute.name} of $targetFullTableName are not checked: it does not parse, or it has a strict conversion in a subquery or a window. A value that does not convert fails the load, or is NULL with a safe conversion"
+              )
+              None
+            case Some(script) if script.conversions.isEmpty => None
+            case Some(script)                               => Some(attribute -> script)
+          }
+      }
+    else Nil
+
+  /** The safe form of the checked scripts, by attribute name */
+  private lazy val safeScripts: Map[String, String] =
+    checkedScripts.map { case (attribute, script) => attribute.name -> script.safe }.toMap
 
   def run(): Try[List[IngestionCounters]] = {
     Try {
@@ -146,6 +231,7 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           days = bqSink.days,
           requirePartitionFilter = bqSink.requirePartitionFilter.getOrElse(false),
           rls = effectiveSchema.rls,
+          acl = effectiveSchema.acl,
           partitionsToUpdate = Nil,
           starlakeSchema = Some(schemaWithMergedMetadata),
           domainTags = domain.tags,
@@ -155,7 +241,19 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         )
       // Read once: the types of its existing columns are kept by every step
       val existingTargetSchema = targetSchema(targetConfig)
-      if (twoSteps) {
+      // The attributes of a DSV file that the first step reads as strings, given the types of the
+      // existing columns of the target: they need two steps, whatever the mappings say (#1935)
+      val typed = typedColumns(
+        BigQueryNativeLoader.firstStepSchema(
+          schemaWithMergedMetadata,
+          existingTargetSchema,
+          schemaHandler,
+          settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
+          log = false
+        )
+      )
+      // The second step checks the expectations before its commit (#1976)
+      if (twoSteps || typed.nonEmpty || ingestionJob.expectationsBeforeCommit.nonEmpty) {
         val (loadResults, tempTableIds, tableInfos) =
           ParUtils
             .runInParallel(path.map(_.toString).zipWithIndex, Some(settings.appConfig.maxParTask)) {
@@ -169,17 +267,8 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                       .get("projectId")
                       .orElse(settings.appConfig.getDefaultDatabase())
                   )
-                val firstStepConfig =
-                  targetConfig
-                    .copy(
-                      source = Left(sourceUri),
-                      outputTableId = Some(firstStepTempTable),
-                      outputTableDesc = Some("Temporary table created during data ingestion."),
-                      // force first step to be write append, otherwise write_truncate overwrite the
-                      // created structure with default values, making second step query to fail if it relies on
-                      // technical column such as comet_input_filename.
-                      writeDisposition = JobInfo.WriteDisposition.WRITE_APPEND.name()
-                    )
+                val firstStepConfig = BigQueryNativeLoader
+                  .firstStepConfig(targetConfig, sourceUri, firstStepTempTable)
 
                 val firstStepBigqueryJob = new BigQueryNativeJob(firstStepConfig, "")
                 // For POSITION format the first step loads each line as a single VARCHAR
@@ -266,12 +355,23 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
           )
 
         try {
-          tempTableIds.zip(tableInfos).foreach { case (id, info) =>
-            val database = Option(id.getProject()).getOrElse("")
-            val schema = Option(id.getDataset()).getOrElse("")
-            val table = Option(id.getTable()).getOrElse("")
-            archiveTableTask(database, schema, table, info).foreach(_.run())
-          }
+          // The files are archived once the table may have their rows: a load that failed before
+          // gives its files back, and their next load archives them
+          if (ingestionJob.rowsWritten)
+            tempTableIds.zip(tableInfos).foreach { case (id, info) =>
+              val database = Option(id.getProject()).getOrElse("")
+              val schema = Option(id.getDataset()).getOrElse("")
+              val table = Option(id.getTable()).getOrElse("")
+              // With the values that the first step reads as strings converted: the columns keep
+              // their type. The rows that the checks reject are archived too, as for POSITION files
+              archiveTableTask(
+                database,
+                schema,
+                table,
+                info,
+                rows = table => typed.map(_.loaded(table, None)).getOrElse(table)
+              ).foreach(_.run())
+            }
         } finally {
           Try(ParUtils.runInParallel(tempTableIds, Some(settings.appConfig.maxParTask)) { tableId =>
             BigQueryJobBase.recoverBigqueryException(settings.appConfig.onExceptionRetries) {
@@ -319,9 +419,11 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
               .build()
               .update()
           }
-        bigqueryJob
-          .loadPathsToBQ(tableInfo)
-          .map { loadInfo =>
+        val loaded = bigqueryJob.loadPathsToBQ(tableInfo)
+        // A load job that did not fail may have loaded its rows
+        if (bigqueryJob.mayHaveWritten) ingestionJob.markRowsWritten()
+        loaded
+          .flatMap { loadInfo =>
             // The bad records that a one-step load job skipped, known once it loaded the others: a
             // failure to keep them does not fail the load, whose rows are written. Two-step loads
             // keep them before their second step.
@@ -332,7 +434,13 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   exception
                 )
               }
-            List(loadInfo)
+            // Then the ACL, row access policies and policy tags of the table: a failure fails the
+            // load, whose rows are written, as with Spark and the second step of two-step loads
+            BigQueryJobBase
+              .recoverBigqueryException(settings.appConfig.onExceptionRetries)(
+                bigqueryJob.applyRLSAndCLS().get
+              )
+              .map(_ => List(loadInfo))
           }
           .recoverWith { case exception: BigQueryLoadJobException =>
             keepBadRecordsOfFailedJobs(List(exception))
@@ -400,96 +508,333 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         logger.info(s"First step result: ${loadFileResult.map(_.toString).mkString(", ")}")
         val targetBigqueryJob = new BigQueryNativeJob(targetConfig, "")
         val tempTableNames = firstStepTempTable.map(t => BigQueryUtils.tableIdToTableName(t))
-        // The first step of a Parquet load reads every column as nullable: the rows without a
-        // value for a required attribute are rejected by the second step
-        val requiredCondition =
-          if (format == Format.PARQUET)
-            BigQueryNativeLoader.requiredValuesCondition(starlakeSchema.attributes)
-          else None
+        // The schema of the first step, with the types of the target columns, and the attributes
+        // of a DSV file that it reads as strings instead
+        val typedFirstStep = BigQueryNativeLoader.firstStepSchema(
+          schemaWithMergedMetadata,
+          existingTargetSchema,
+          schemaHandler,
+          settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
+          log = false
+        )
+        val typed = typedColumns(typedFirstStep)
+        val firstStep = BigQueryNativeLoader.readAsStrings(
+          typedFirstStep,
+          typed.toList.flatMap(_.columns.map(_.attribute.name)).toSet
+        )
         val result = for {
           // The bad records that the first step skipped, as BigQuery reports them, before
           // anything is loaded into the target: a failure to keep them fails the load, as with
           // Spark
-          _ <- Try(
-            keepBadRecords(
-              targetConfig,
-              Some(firstStepSchema(schemaWithMergedMetadata, existingTargetSchema, log = false)),
-              loadFileResult
-            )
+          _              <- Try(keepBadRecords(targetConfig, Some(firstStep), loadFileResult))
+          incomingSchema <- Try(this.incomingSchema(existingTargetSchema))
+          castTypes = BigQueryNativeSchema.castTypes(
+            incomingSchema,
+            starlakeSchema.attributes,
+            schemaHandler
           )
-          rejectedByFile <- requiredCondition
-            .map(condition =>
-              rejectRowsWithoutRequiredValues(
+          checks <- Try(firstStepChecks(castTypes, typedFirstStep, typed))
+          (rejectedByFile, filteredByFile) <- checks
+            .map(checks =>
+              rejectRows(
                 targetBigqueryJob,
                 tempTableNames,
                 firstStepTables.map(BigQueryUtils.tableIdToTableName),
-                condition
+                checks,
+                // The bad records of the load jobs are rejected rows too
+                loadFileResult.map(_.totalRejectedRows).sum,
+                firstStep
               )
             )
-            .getOrElse(Success(Map.empty[Int, Long]))
+            .getOrElse(Success((Map.empty[Int, Long], Map.empty[Int, Long])))
+          // The limits apply to the rejected rows over the files of the load, as for a load in one
+          // step, where each load job of the first step allows rejectMaxRecords bad records.
+          // `rejectRows` applies them when the checks reject rows.
+          _ <- Try {
+            val badRecords = loadFileResult.map(_.totalRejectedRows).sum
+            if (rejectedByFile.isEmpty)
+              BigQueryNativeLoader
+                .rejectedRowsError(
+                  badRecords,
+                  settings.appConfig.rejectAllOnError,
+                  settings.appConfig.rejectMaxRecords
+                )
+                .foreach { error =>
+                  throw new IllegalArgumentException(
+                    s"The load jobs of the files of $targetFullTableName rejected $badRecords bad records. $error"
+                  )
+                }
+          }
+          counted <- Try(
+            BigQueryNativeLoader.withRejectedRows(loadFileResult, rejectedByFile, filteredByFile)
+          )
           _ <- targetBigqueryJob.cliConfig.outputTableId
             .map { _ =>
-              applyBigQuerySecondStepSQL(tempTableNames, existingTargetSchema, requiredCondition)
+              applyBigQuerySecondStepSQL(
+                targetBigqueryJob,
+                tempTableNames,
+                existingTargetSchema,
+                incomingSchema,
+                castTypes,
+                checks.filter(_.checks.nonEmpty).map(_.condition),
+                typed,
+                // The counters of the audit row, which the expectations checked before the commit
+                // of the second step read (#1976)
+                IngestionCounters(
+                  inputCount = counted.map(_.totalRows).sum,
+                  acceptedCount = counted.map(_.totalAcceptedRows).sum,
+                  rejectedCount = counted.map(_.totalRejectedRows).sum,
+                  paths = counted.flatMap(_.paths),
+                  jobid = ingestionJob.applicationId()
+                )
+              )
             }
             .getOrElse(throw new IllegalStateException("Should never happen"))
-        } yield BigQueryNativeLoader.withRejectedRows(loadFileResult, rejectedByFile)
+        } yield counted
         result
       case res @ Failure(_) =>
         res
     }
   }
 
+  /** @return
+    *   the schema of the rows that the second step writes into the target table
+    */
+  private def incomingSchema(existingTargetSchema: Option[bigquery.Schema]): bigquery.Schema =
+    BigQueryNativeSchema.patch(
+      starlakeSchema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
+      starlakeSchema.attributes.filterNot(_.resolveIgnore()),
+      _.getFinalName(),
+      existingTargetSchema,
+      schemaHandler,
+      settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
+      // Logged by the first step
+      log = false
+    )
+
+  /** @param castTypes
+    *   the types that the second step casts the values of POSITION files to, instead of their
+    *   mapping
+    * @param typedFirstStep
+    *   the schema of the first step, with the types of the target columns
+    * @param typed
+    *   the attributes of a DSV file that the first step reads as strings, if any
+    * @return
+    *   the checks of the rows of the first step that the second step rejects, if any:
+    *   - the first step of a Parquet load reads every column as nullable, and the rows without a
+    *     value for a required attribute are rejected;
+    *   - the first step of a POSITION load reads each line as a string, and the rows with a value
+    *     that does not convert to the type of its attribute, or without a value for a required
+    *     attribute, are rejected (#1886);
+    *   - the first step of a DSV load reads as strings the values that its load job does not read
+    *     as Spark does, and the rows with such a value that does not convert, or without a value
+    *     for such a required attribute, are rejected (#1935);
+    *   - the rows of a DSV or POSITION load on which a strict conversion of a script would fail are
+    *     rejected (#1935).
+    */
+  private def firstStepChecks(
+    castTypes: Map[String, String],
+    typedFirstStep: bigquery.Schema,
+    typed: Option[BigQueryNativeLoader.TypedColumns]
+  ): Option[BigQueryNativeLoader.FirstStepChecks] = {
+    val withValue = settings.appConfig.rejectWithValue
+    lazy val scriptChecks =
+      BigQueryNativeLoader.scriptChecks(checkedScripts, starlakeSchema.attributes, withValue)
+    lazy val checkedNames =
+      typed.toList.flatMap(_.columns.map(_.attribute.name)) ++ checkedScripts.map(_._1.name)
+    format match {
+      case Format.PARQUET =>
+        BigQueryNativeLoader.requiredValuesChecks(starlakeSchema.attributes, withValue)
+      case Format.DSV =>
+        val columnTypes = typedFirstStep.getFields.asScala.toList
+          .map(field => field.getName -> BigQueryType.of(field).render)
+          .toMap
+        // The ignored and transformed attributes are in the files too
+        failOnUnreadableValues(
+          columnTypes,
+          starlakeSchema.attributes.filter(_.script.isEmpty),
+          BigQueryPositionValues.unreadableInCsv
+        )
+        val checks = typed.toList.flatMap(_.checks(withValue)) ++ scriptChecks
+        if (checks.isEmpty) None
+        else
+          Some(
+            BigQueryNativeLoader.FirstStepChecks(
+              checks.map(_.condition).mkString(" AND "),
+              checks,
+              if (withValue)
+                Some(
+                  BigQueryNativeLoader.dsvRowValue(
+                    typedFirstStep.getFields.asScala.toList.map(_.getName),
+                    // With the columns of the header that the table does not declare, ignored
+                    schemaWithMergedMetadata.attributes,
+                    typed
+                  )
+                )
+              else None,
+              s"have a value that does not convert to the type of its attribute, or no value for a required attribute, or a value that a script does not convert (${checkedNames
+                  .mkString(", ")})",
+              typed = typed
+            )
+          )
+      case Format.POSITION =>
+        val ddlTypes = ddlTypesByAttribute(castTypes)
+        failOnUnreadableValues(
+          ddlTypes,
+          starlakeSchema.exceptIgnoreScriptAndTransformAttributes(),
+          BigQueryPositionValues.unreadable
+        )
+        val positional = BigQueryNativeLoader.positionChecks(
+          starlakeSchema.attributes,
+          ddlTypes,
+          typesByAttribute,
+          withValue
+        )
+        val checks =
+          if (scriptChecks.isEmpty) positional
+          else {
+            val conditions = scriptChecks.map(_.condition).mkString(" AND ")
+            val reason =
+              s"have a value that a script does not convert (${checkedScripts.map(_._1.name).mkString(", ")})"
+            Some(positional match {
+              case Some(checks) =>
+                checks.copy(
+                  condition = s"${checks.condition} AND $conditions",
+                  checks = checks.checks ++ scriptChecks,
+                  reason = s"${checks.reason}, or $reason"
+                )
+              case None =>
+                BigQueryNativeLoader.FirstStepChecks(
+                  conditions,
+                  scriptChecks,
+                  if (withValue)
+                    Some(BigQueryNativeLoader.positionRowValue(starlakeSchema.attributes))
+                  else None,
+                  reason
+                )
+            })
+          }
+        // The rows that the filter drops are neither rejected nor counted, even without checks
+        starlakeSchema.filter.fold(checks) { filter =>
+          Some(
+            checks
+              .getOrElse(BigQueryNativeLoader.FirstStepChecks("TRUE", Nil, None, ""))
+              .copy(scope =
+                Some(
+                  BigQueryNativeLoader.RowScope(
+                    render(
+                      starlakeSchema
+                        .secondStepProjections(
+                          queryEngine,
+                          ddlTypes,
+                          typesByAttribute,
+                          // The values that the scripts do not convert are NULL, as in the
+                          // second step
+                          safeScripts
+                        )
+                        .mkString(", ")
+                    ),
+                    render(filter)
+                  )
+                )
+              )
+          )
+        }
+      case _ => None
+    }
+  }
+
+  /** Fails when a loaded attribute has a type whose values the second step does not read: the Spark
+    * fallback reads the mappings, and a column that kept another type may need a pattern that
+    * BigQuery cannot apply, which would reject every row
+    *
+    * @param columnTypes
+    *   the types of the columns of the attributes, by attribute name
+    * @param attributes
+    *   the attributes whose values the second step reads
+    * @param unreadable
+    *   why the second step does not read the values of a type into a column, if it does not
+    */
+  private def failOnUnreadableValues(
+    columnTypes: Map[String, String],
+    attributes: List[TableAttribute],
+    unreadable: (Type, Option[String]) => Option[String]
+  ): Unit = {
+    val unreadableValues =
+      attributes.flatMap { attribute =>
+        typesByAttribute
+          .get(attribute.name)
+          .flatMap(unreadable(_, columnTypes.get(attribute.name)))
+          .map(reason =>
+            s"${attribute.name} ($reason, read into a ${columnTypes.getOrElse(attribute.name, "")} column)"
+          )
+      }
+    if (unreadableValues.nonEmpty)
+      throw new IllegalArgumentException(
+        s"The native bigquery loader does not read the values of ${unreadableValues.mkString(", ")} of $targetFullTableName: load it with Spark (loader: spark)"
+      )
+  }
+
   /** @param tempTableNames
     *   the wildcard name of the temporary tables of the first step, whose suffix is the index of
     *   their file in the load
+    * @param badRecords
+    *   the number of bad records that the load jobs of the first step rejected
+    * @param firstStep
+    *   the schema of the temporary tables of the first step
     * @return
-    *   the number of rows of the first step without a value for a required attribute, by index of
-    *   their file. They are rejected as BigQuery rejects the bad records of the other formats, or
-    *   the load fails (see [[BigQueryNativeLoader.rejectedRowsError]]).
+    *   the number of rows of the first step that the checks reject, and of those that the filter
+    *   drops, by index of their file. The rejected rows are rejected as BigQuery rejects the bad
+    *   records of the other formats, or the load fails (see
+    *   [[BigQueryNativeLoader.rejectedRowsError]], over the bad records too); the filtered rows are
+    *   not counted.
     */
-  private def rejectRowsWithoutRequiredValues(
+  private def rejectRows(
     job: BigQueryNativeJob,
     tempTableNames: List[String],
     tables: List[String],
-    condition: String
-  ): Try[Map[Int, Long]] =
+    checks: BigQueryNativeLoader.FirstStepChecks,
+    badRecords: Long,
+    firstStep: bigquery.Schema
+  ): Try[(Map[Int, Long], Map[Int, Long])] =
     job
-      .runBigQueryJob(
-        Some(
-          tempTableNames
-            .map(table =>
-              s"SELECT _TABLE_SUFFIX AS suffix, COUNT(*) AS rejected FROM $table WHERE NOT ($condition) GROUP BY 1"
-            )
-            .mkString(" UNION ALL ")
-        )
-      )
+      .runBigQueryJob(Some(tempTableNames.map(checks.countsSql).mkString(" UNION ALL ")))
       .map { result =>
-        val rejectedByFile = result.tableResult.toList
+        val counts = result.tableResult.toList
           .flatMap(_.iterateAll().asScala)
-          .map(row => row.get(0).getStringValue.toInt -> row.get(1).getLongValue)
-          .toMap
+          .map(row =>
+            (row.get(0).getStringValue.toInt, row.get(1).getLongValue, row.get(2).getLongValue)
+          )
+        def byFile(count: ((Int, Long, Long)) => Long): Map[Int, Long] =
+          counts.groupMapReduce(_._1)(count)(_ + _).filter { case (_, rows) => rows > 0 }
+        val rejectedByFile = byFile(_._2)
+        val filteredByFile = byFile(_._3)
+        if (filteredByFile.nonEmpty)
+          logger.info(
+            s"${filteredByFile.values.sum} rows of $targetFullTableName are dropped by its filter"
+          )
         val rejected = rejectedByFile.values.sum
         if (rejected > 0) {
           val files = rejectedByFile.toList.sorted.map { case (index, count) =>
             s"${path.lift(index).map(_.toString).getOrElse(index.toString)} ($count)"
           }
           val message =
-            s"$rejected rows of $targetFullTableName have no value for one of its required attributes (${BigQueryNativeLoader
-                .requiredAttributePaths(starlakeSchema.attributes)
-                .mkString(", ")}), in ${files.take(10).mkString(", ")}${if (files.size > 10)
+            s"$rejected rows of $targetFullTableName ${checks.reason}, in ${files.take(10).mkString(", ")}${if (files.size > 10)
                 s" and ${files.size - 10} other files"
+              else ""}${if (badRecords > 0)
+                s", after the $badRecords bad records that the load jobs rejected"
               else ""}"
           val error = BigQueryNativeLoader.rejectedRowsError(
-            rejected,
+            rejected + badRecords,
             settings.appConfig.rejectAllOnError,
             settings.appConfig.rejectMaxRecords
           )
           logger.warn(s"$message. ${error.getOrElse("They are rejected")}")
           // As the Spark loads, the rejected rows are kept before the load fails because of them
-          keepRowsWithoutRequiredValues(job, tempTableNames, tables, condition)
+          keepRejectedRows(job, tempTableNames, tables, checks, firstStep)
           error.foreach(error => throw new IllegalArgumentException(s"$message. $error"))
         }
-        rejectedByFile
+        (rejectedByFile, filteredByFile)
       }
 
   /** Writes the rejected records of the load to the audit `rejected` table: a failure to write them
@@ -671,15 +1016,25 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
                   // of the attributes still protects their raw values
                   rls = Nil,
                   acl = Nil,
-                  starlakeSchema =
-                    Some(schemaWithMergedMetadata.copy(metadata = Some(diagnosticMetadata)))
+                  starlakeSchema = Some(
+                    BigQueryNativeLoader.withoutKeys(
+                      schemaWithMergedMetadata.copy(metadata = Some(diagnosticMetadata))
+                    )
+                  )
                 ),
                 ""
               )
               val tableInfo = diagnosticJob.getTableInfo(tableId, _ => diagnosticSchema)
-              job -> diagnosticJob
+              val loaded = diagnosticJob
                 .loadPathsToBQ(tableInfo, Some(withInputFileName(tableInfo, file)))
                 .get
+              // The policy tags of the attributes protect their raw values: the rows are searched
+              // even when they cannot be applied
+              diagnosticJob.applyRLSAndCLS().failed.foreach { exception =>
+                logger
+                  .warn(s"Could not apply the policy tags of the attributes to $tableId", exception)
+              }
+              job -> loaded
           }
           .toList
       // Rows for the audit only
@@ -786,32 +1141,30 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     }
   }
 
-  /** @return
-    *   the name of new replay files of the domain, without extension: unique, so that two loads of
-    *   the table in the same second keep their files
-    */
-  private def replayName(): String = {
-    val timestamp = DateTimeFormatter
-      .ofPattern("yyyyMMddHHmmss")
-      .withZone(ZoneId.systemDefault())
-      .format(Instant.now())
-    s"${domain.name}.${starlakeSchema.name}.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
-  }
+  private def replayName(): String = IngestionJob.replayName(domain.name, starlakeSchema.name)
 
-  /** The replay file of the rejected rows of CSV or JSON files, in the replay area of the domain,
-    * created with its first row: the lines of a JSON file, the rows of a CSV file with its header,
-    * separator, quote and null value, in their encoding, so that the table loads it again. A
-    * failure to write it deletes it, with a `WARN`: the rows are kept in the audit.
+  /** The replay file of the rejected rows of CSV, JSON or POSITION files, in the replay area of the
+    * domain, created with its first row: the lines of a JSON or POSITION file, the rows of a CSV
+    * file with its header, separator, quote and null value, in their encoding, so that the table
+    * loads it again. A failure to write it deletes it, with a `WARN`: the rows are kept in the
+    * audit.
     *
     * @param names
-    *   the names of the columns of a CSV file
+    *   the names of the columns of a CSV file, or of the attributes of a POSITION file
     */
   private class ReplayFile(names: List[String]) {
     private val csv = format == Format.DSV
-    private val path =
-      new Path(DatasetArea.replay(domain.name), s"${replayName()}.${if (csv) "csv" else "json"}")
-    private val charset =
-      Charset.forName(BigQueryRejectedRows.diagnosticMetadata(mergedMetadata).resolveEncoding())
+    private val extension = format match {
+      case Format.DSV      => "csv"
+      case Format.POSITION => "txt"
+      case _               => "json"
+    }
+    private val path = new Path(DatasetArea.replay(domain.name), s"${replayName()}.$extension")
+    // JSON load jobs read UTF-8 files only, the others are written in their encoding
+    private val charset = Charset.forName(
+      if (format == Format.POSITION) mergedMetadata.resolveEncoding()
+      else BigQueryRejectedRows.diagnosticMetadata(mergedMetadata).resolveEncoding()
+    )
     private var writer: Option[Writer] = None
     private var started = false
     private var failed = false
@@ -838,6 +1191,9 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
             writer = Some(created)
             if (csv && mergedMetadata.resolveWithHeader())
               created.write(line(names.map(Some(_))) + "\n")
+            // The load skips the header of a POSITION file without keeping it: any line will do
+            else if (format == Format.POSITION && mergedMetadata.resolveWithHeader())
+              created.write(names.mkString(" ") + "\n")
             created
           }
           output.write(line(values) + "\n")
@@ -872,27 +1228,24 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     }
   }
 
-  /** Keeps the rows of the first step without a value for a required attribute, as the Spark loads
-    * keep their rejected rows: the first `audit.maxErrors` of them in the audit `rejected` table,
-    * and all of them in replay files with `sinkReplayToFile`
+  /** Keeps the rows of the first step that the checks reject, as the Spark loads keep their
+    * rejected rows: the first `audit.maxErrors` of them in the audit `rejected` table, and all of
+    * them in replay files with `sinkReplayToFile`
+    *
+    * @param firstStep
+    *   the schema of the temporary tables of the first step
     */
-  private def keepRowsWithoutRequiredValues(
+  private def keepRejectedRows(
     job: BigQueryNativeJob,
     tempTableNames: List[String],
     tables: List[String],
-    condition: String
+    checks: BigQueryNativeLoader.FirstStepChecks,
+    firstStep: bigquery.Schema
   ): Unit = {
-    val withValue = settings.appConfig.rejectWithValue
+    val withValue = checks.value.isDefined
     val maxErrors = settings.appConfig.audit.maxErrors
     if (maxErrors > 0) {
-      val sql = BigQueryNativeLoader.rejectedRowsSql(
-        tempTableNames,
-        condition,
-        BigQueryNativeLoader.requiredValueTerms(starlakeSchema.attributes),
-        if (withValue) Some(BigQueryNativeLoader.hiddenValuePaths(starlakeSchema.attributes))
-        else None,
-        maxErrors
-      )
+      val sql = BigQueryNativeLoader.rejectedRowsSql(tempTableNames, checks, maxErrors)
       val records = job
         .runBigQueryJob(Some(sql))
         .get
@@ -911,8 +1264,97 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         }
       sinkRejected(records)
     }
-    if (settings.appConfig.sinkReplayToFile)
-      writeReplayFiles(job, tables, condition)
+    if (settings.appConfig.sinkReplayToFile) {
+      if (format == Format.POSITION) writeLineReplayFile(job, tempTableNames, checks)
+      else if (format == Format.DSV) writeCsvReplayFile(job, tempTableNames, checks, firstStep)
+      else writeReplayFiles(job, tables, checks.condition)
+    }
+  }
+
+  /** Writes all the rejected rows of a DSV load to a CSV replay file of the replay area of the
+    * domain, so that the table loads them again (see [[ReplayFile]]): the values that the first
+    * step reads as strings as they are in the files, the others as BigQuery writes them (see
+    * [[BigQueryNativeLoader.replayText]]). A failure to read them deletes it, with a `WARN`: the
+    * rows are kept in the audit.
+    *
+    * @param firstStep
+    *   the schema of the temporary tables of the first step
+    */
+  private def writeCsvReplayFile(
+    job: BigQueryNativeJob,
+    tempTableNames: List[String],
+    checks: BigQueryNativeLoader.FirstStepChecks,
+    firstStep: bigquery.Schema
+  ): Unit = {
+    // Not in the input files
+    val scripted = starlakeSchema.attributes.filter(_.script.nonEmpty).map(_.name).toSet
+    val columns = firstStep.getFields.asScala.toList.filterNot(field => scripted(field.getName))
+    val replay = new ReplayFile(columns.map(_.getName))
+    Try {
+      job
+        .runBigQueryJob(
+          Some(
+            BigQueryNativeLoader.rejectedCsvRowsSql(
+              tempTableNames,
+              checks,
+              columns.map(field =>
+                checks.typed
+                  .flatMap(_.raw(field.getName))
+                  .getOrElse(BigQueryNativeLoader.replayText(field))
+              )
+            )
+          ),
+          pageSize = Some(1000)
+        )
+        .get
+        .tableResult
+        .foreach(_.iterateAll().forEach { row =>
+          replay.write(
+            columns.indices.toList
+              .map(index => Option(row.get(index)).filterNot(_.isNull).map(_.getStringValue))
+          )
+        })
+    } match {
+      case Success(_) => replay.close()
+      case Failure(exception) =>
+        logger.warn(
+          s"Could not read the rejected rows of $targetFullTableName: no replay file is written",
+          exception
+        )
+        replay.abort()
+    }
+  }
+
+  /** Writes all the rejected lines of a POSITION load to a replay file of the replay area of the
+    * domain, as they are in the files, so that the table loads them again (see [[ReplayFile]]). A
+    * failure to read them deletes it, with a `WARN`: the rows are kept in the audit.
+    */
+  private def writeLineReplayFile(
+    job: BigQueryNativeJob,
+    tempTableNames: List[String],
+    checks: BigQueryNativeLoader.FirstStepChecks
+  ): Unit = {
+    val replay = new ReplayFile(starlakeSchema.attributes.filter(_.position.isDefined).map(_.name))
+    Try {
+      job
+        .runBigQueryJob(
+          Some(BigQueryNativeLoader.rejectedLinesSql(tempTableNames, checks)),
+          pageSize = Some(1000)
+        )
+        .get
+        .tableResult
+        .foreach(_.iterateAll().forEach { row =>
+          replay.write(List(Option(row.get(0)).filterNot(_.isNull).map(_.getStringValue)))
+        })
+    } match {
+      case Success(_) => replay.close()
+      case Failure(exception) =>
+        logger.warn(
+          s"Could not read the rejected lines of $targetFullTableName: no replay file is written",
+          exception
+        )
+        replay.abort()
+    }
   }
 
   /** Writes all the rejected rows to Parquet replay files of the replay area of the domain, as the
@@ -987,21 +1429,25 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
     }
   }
 
+  /** @param targetJob
+    *   the job of the target table of the load, with its Starlake schema
+    * @param condition
+    *   the condition of the rows of the first step that the second step loads, if they are checked
+    * @param typed
+    *   the attributes of a DSV file that the first step reads as strings, if any
+    * @param counters
+    *   the counters of the load, for the expectations that the second step checks before its commit
+    */
   private def applyBigQuerySecondStepSQL(
+    targetJob: BigQueryNativeJob,
     firstStepTempTableTableNames: List[String],
     existingTargetSchema: Option[bigquery.Schema],
-    requiredCondition: Option[String]
+    incomingSchema: bigquery.Schema,
+    castTypes: Map[String, String],
+    condition: Option[String],
+    typed: Option[BigQueryNativeLoader.TypedColumns],
+    counters: IngestionCounters
   ): Try[JobResult] = {
-    val incomingSchema = BigQueryNativeSchema.patch(
-      starlakeSchema.bigquerySchemaWithoutIgnore(schemaHandler, withFinalName = true),
-      starlakeSchema.attributes.filterNot(_.resolveIgnore()),
-      _.getFinalName(),
-      existingTargetSchema,
-      schemaHandler,
-      settings.appConfig.bigqueryNativeSchemaFromDdlMapping,
-      // Logged by the first step
-      log = false
-    )
     // The values that the first step of a Parquet load reads as strings
     val conversions =
       if (format == Format.PARQUET)
@@ -1010,18 +1456,30 @@ class BigQueryNativeLoader(ingestionJob: IngestionJob, accessToken: Option[Strin
         )
       else Nil
     val task = this.secondStepSQLTask(
-      firstStepTempTableTableNames.map(
-        BigQueryNativeLoader.withConversions(_, conversions, requiredCondition)
+      firstStepTempTableTableNames.map(table =>
+        typed match {
+          case Some(typed) => typed.loaded(table, condition)
+          case None        => BigQueryNativeLoader.withConversions(table, conversions, condition)
+        }
       ),
-      BigQueryNativeSchema.castTypes(incomingSchema, starlakeSchema.attributes, schemaHandler)
+      // Those that the second step checks before its commit (#1976): IngestionJob runs the others,
+      // once the load is audited
+      expectations = ingestionJob.expectationsBeforeCommit,
+      castTypes = castTypes,
+      scripts = safeScripts
     )
     val bqTask = task.asInstanceOf[BigQueryAutoTask]
+    if (task.taskDesc.expectations.nonEmpty)
+      ingestionJob.handOverExpectations(bqTask, Some(counters))
     bqTask.updateBigQueryTableSchemaWith(
       incomingSchema = Some(incomingSchema),
       createIfAbsent = true
     )
-    val jobResult = bqTask.run()
-    jobResult
+    // The second step writes the target as a transform does, which sets neither its labels nor
+    // its keys: they are set as by a load in one step, before the rows are written, the keys on a
+    // target that did not exist before the load. Its writes keep them (#1838)
+    Try(targetJob.updateLabelsAndConstraints(withConstraints = existingTargetSchema.isEmpty))
+      .flatMap(_ => ingestionJob.writingWith(bqTask)(bqTask.run()))
   }
 
 }
@@ -1044,6 +1502,57 @@ object BigQueryNativeLoader {
       table,
       sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
     )
+
+  /** @return
+    *   the config of the load of a file into a temporary table of the first step
+    */
+  def firstStepConfig(
+    targetConfig: BigQueryLoadConfig,
+    sourceUri: String,
+    tempTableId: TableId
+  ): BigQueryLoadConfig =
+    targetConfig.copy(
+      source = Left(sourceUri),
+      outputTableId = Some(tempTableId),
+      outputTableDesc = Some("Temporary table created during data ingestion."),
+      // force first step to be write append, otherwise write_truncate overwrite the
+      // created structure with default values, making second step query to fail if it relies on
+      // technical column such as comet_input_filename.
+      writeDisposition = JobInfo.WriteDisposition.WRITE_APPEND.name(),
+      // The second step reads every row and column of the temporary tables, to which no access
+      // policy is applied: a row access policy would hide rows from it, a policy tag would deny or
+      // mask columns, and a required partition filter would reject its queries. The second step
+      // applies the ACL and row access policies to the target
+      requirePartitionFilter = false,
+      rls = Nil,
+      acl = Nil,
+      // Nor is it partitioned or clustered, since the second step reads all of it, nor does it
+      // get the keys of the target. The target names its partition, clustering and key columns
+      // after their final names, which a temporary table lacks: it has the source names of the
+      // attributes, and a single `value` column for POSITION files (#1838)
+      outputPartition = None,
+      outputClustering = Nil,
+      days = None,
+      starlakeSchema = targetConfig.starlakeSchema.map(withoutKeys)
+    )
+
+  /** @return
+    *   the schema without primary key nor foreign keys, for a table of the load that has not the
+    *   columns of the target
+    */
+  def withoutKeys(schema: SchemaInfo): SchemaInfo =
+    schema.copy(
+      primaryKey = Nil,
+      attributes = schema.attributes.map(_.copy(foreignKey = None))
+    )
+
+  /** @return
+    *   true if a load takes two steps, whatever its attributes and its format (#1838): the second
+    *   step runs its presql and postsql statements, as Spark runs them, and its local files are
+    *   loaded one by one (see [[requiresOneLoadPerFile]])
+    */
+  def secondStepRequired(schema: SchemaInfo, paths: List[Path]): Boolean =
+    (schema.presql ++ schema.postsql).exists(_.trim.nonEmpty) || requiresOneLoadPerFile(paths)
 
   /** @return
     *   the schema of the temporary table of the first step, with the source names of the attributes
@@ -1074,12 +1583,294 @@ object BigQueryNativeLoader {
     )
 
   /** @return
-    *   true if each file must be loaded by its own load job: local files are uploaded through a
-    *   single stream per job, and the concatenation of Parquet files is not a Parquet file
+    *   the schema of the first step, with these fields read as strings
     */
-  def requiresOneLoadPerFile(format: Format, paths: List[Path]): Boolean =
+  def readAsStrings(schema: bigquery.Schema, names: Set[String]): bigquery.Schema =
+    if (names.isEmpty) schema
+    else
+      bigquery.Schema.of(schema.getFields.asScala.map { field =>
+        if (names(field.getName))
+          Field
+            .newBuilder(field.getName, StandardSQLTypeName.STRING)
+            .setMode(Option(field.getMode).getOrElse(Field.Mode.NULLABLE))
+            .setDescription(field.getDescription)
+            .build()
+        else field
+      }.asJava)
+
+  /** An attribute of a DSV file that the first step of a native load reads as a string, and that
+    * the second step converts (#1935): the load job does not read the values of its type as the
+    * Spark loader does (see [[BigQueryPositionValues.readWithSql]]), or it declares `trim`
+    *
+    * @param columnType
+    *   the type of its column
+    * @param tpe
+    *   its type, if known
+    * @param emptyIsNull
+    *   true if an empty string is NULL: the null value of the table is empty
+    */
+  case class TypedColumn(
+    attribute: TableAttribute,
+    columnType: BigQueryType,
+    tpe: Option[Type],
+    emptyIsNull: Boolean
+  ) {
+    private val textual = columnType.standardType == StandardSQLTypeName.STRING
+
+    /** @return
+      *   the SQL of the text of a raw value, with its declared trim: spaces only, as the Spark
+      *   loader trims them
+      */
+    def text(raw: String): String =
+      attribute.trim match {
+        case Some(Trim.LEFT)  => s"LTRIM($raw, ' ')"
+        case Some(Trim.RIGHT) => s"RTRIM($raw, ' ')"
+        case Some(Trim.BOTH)  => s"TRIM($raw, ' ')"
+        case _                => raw
+      }
+
+    /** @return
+      *   the SQL of the value of a raw value in its column, read with the pattern of its type if it
+      *   has one (see [[BigQueryPositionValues.value]]): NULL when its text is empty or does not
+      *   convert
+      */
+    def value(raw: String): String =
+      BigQueryPositionValues.value(
+        if (textual && emptyIsNull) s"NULLIF(${text(raw)}, '')" else text(raw),
+        Some(columnType.render),
+        tpe,
+        padded = false
+      )
+
+    /** @return
+      *   the checks of a raw value, as for POSITION files (see [[positionChecks]]): its text is
+      *   empty, or it converts; a required attribute has a value. Its value is shown with
+      *   `withValue`, unless the attribute has a privacy.
+      */
+    def checks(raw: String, withValue: Boolean): List[RowCheck] = {
+      val text = this.text(raw)
+      val blank = s"IFNULL($text, '') = ''"
+      val required =
+        if (attribute.resolveRequired())
+          List(
+            RowCheck(
+              if (textual && !emptyIsNull) s"$text IS NOT NULL" else s"NOT ($blank)",
+              bigQueryLiteral(s"`${attribute.name}`  can't be null\n")
+            )
+          )
+        else Nil
+      // A string without a maximum length is its text
+      val converted =
+        if (textual && !columnType.hasParameters) Nil
+        else {
+          val pattern = tpe
+            .filter(BigQueryPositionValues.readsPattern(Some(columnType), _))
+            .map(tpe => s" with the pattern `${tpe.pattern}`")
+            .getOrElse("")
+          val message = s"`${attribute.name}` is not a valid ${columnType.render}$pattern"
+          val error =
+            if (withValue && attribute.resolvePrivacy() == TransformInput.None)
+              s"CONCAT(${bigQueryLiteral(message + ": ")}, $raw, ${bigQueryLiteral("\n")})"
+            else bigQueryLiteral(message + "\n")
+          List(RowCheck(s"($blank OR ${value(raw)} IS NOT NULL)", error))
+        }
+      required ++ converted
+    }
+  }
+
+  /** The attributes of a DSV file that the first step of a native load reads as strings (#1935) */
+  case class TypedColumns(columns: List[TypedColumn]) {
+
+    /** @return
+      *   the column of the raw text of the attribute at this index, in [[rows]]
+      */
+    private def rawColumn(index: Int): String = s"sl_raw_$index"
+
+    /** @return
+      *   the column of the raw text of the attribute, in [[rows]], if the first step reads it as a
+      *   string
+      */
+    def raw(name: String): Option[String] =
+      Some(columns.indexWhere(_.attribute.name == name)).filter(_ >= 0).map(rawColumn)
+
+    /** @param suffix
+      *   true for the rows of a wildcard table, with the index of their file (`sl_suffix`)
+      * @return
+      *   the SQL of the rows of a table of the first step, with the values of the attributes
+      *   converted, as the scripts, transforms and filter of the second step read them, and their
+      *   raw text in other columns (see [[raw]])
+      */
+    def rows(table: String, suffix: Boolean): String = {
+      val converted = columns
+        .map(column =>
+          s"${column.value(s"`${column.attribute.name}`")} AS `${column.attribute.name}`"
+        )
+        .mkString(", ")
+      val raws = columns.zipWithIndex.map { case (column, index) =>
+        s", `${column.attribute.name}` AS ${rawColumn(index)}"
+      }.mkString
+      s"(SELECT * REPLACE ($converted)$raws${if (suffix) ", _TABLE_SUFFIX AS sl_suffix" else ""} FROM $table)"
+    }
+
+    /** @return
+      *   the checks of the attributes, on [[rows]]
+      */
+    def checks(withValue: Boolean): List[RowCheck] =
+      columns.zipWithIndex.flatMap { case (column, index) =>
+        column.checks(rawColumn(index), withValue)
+      }
+
+    /** @param condition
+      *   the condition of the rows that the second step loads, on [[rows]], if they are checked
+      * @return
+      *   the SQL of the rows of a table of the first step that the second step loads, with the
+      *   values of the attributes converted
+      */
+    def loaded(table: String, condition: Option[String]): String =
+      s"(SELECT * EXCEPT (${columns.indices.map(rawColumn).mkString(", ")}) FROM ${rows(table, suffix = false)}${condition
+          .map(" WHERE " + _)
+          .getOrElse("")})"
+  }
+
+  /** @param firstStep
+    *   the schema of the first step, with the types of the target columns
+    * @param emptyIsNull
+    *   true if an empty string is NULL: the null value of the table is empty
+    * @return
+    *   the attributes of a DSV file that the first step reads as strings, if any (#1935): the load
+    *   job does not read the values of their type into their column as the Spark loader does, or
+    *   they declare `trim`. The ignored and transformed attributes too, which the Spark loader
+    *   checks, and that the scripts and transforms read. Bytes are not, whose text is base64.
+    */
+  def dsvTypedColumns(
+    attributes: List[TableAttribute],
+    firstStep: bigquery.Schema,
+    types: Map[String, Type],
+    emptyIsNull: Boolean
+  ): Option[TypedColumns] = {
+    val fields = firstStep.getFields.asScala.toList.map(field => field.getName -> field).toMap
+    val columns = attributes
+      .filter(attribute =>
+        attribute.script.isEmpty && attribute.attributes.isEmpty && !attribute.resolveArray()
+      )
+      .flatMap { attribute =>
+        for {
+          field <- fields.get(attribute.name)
+          columnType = BigQueryType.of(field)
+          tpe = types.get(attribute.name)
+          if columnType.standardType != StandardSQLTypeName.BYTES &&
+          !tpe.exists(_.primitiveType == PrimitiveType.byte)
+          if attribute.trim.exists(_ != Trim.NONE) ||
+          tpe.exists(BigQueryPositionValues.readWithSql(_, Some(columnType.render)))
+        } yield TypedColumn(attribute, columnType, tpe, emptyIsNull)
+      }
+    if (columns.isEmpty) None else Some(TypedColumns(columns))
+  }
+
+  /** @return
+    *   the checks of the strict conversions of the scripts (see [[BigQueryScriptChecks]]): one
+    *   error line per conversion that fails, with the value that it converts with `withValue`,
+    *   unless the scripted attribute or a column that this value reads has a privacy, or it reads
+    *   the line of a POSITION file with an attribute with a privacy
+    */
+  def scriptChecks(
+    scripts: List[(TableAttribute, BigQueryScriptChecks.Script)],
+    attributes: List[TableAttribute],
+    withValue: Boolean
+  ): List[RowCheck] = {
+    def hidden(name: String): Boolean =
+      attributes.exists(attribute =>
+        attribute.resolvePrivacy() != TransformInput.None && (
+          attribute.name.equalsIgnoreCase(name) ||
+          // A slice of the line may hold its value
+          attribute.position.isDefined && name.equalsIgnoreCase(lineColumn)
+        )
+      )
+    scripts.flatMap { case (attribute, script) =>
+      script.conversions.map { conversion =>
+        val message = s"`${attribute.name}` is not computed: ${conversion.sql} fails"
+        val error =
+          if (withValue && !hidden(attribute.name) && !conversion.columns.exists(hidden))
+            // FORMAT writes a value of any type, and NULL
+            s"CONCAT(${bigQueryLiteral(message + ": ")}, FORMAT('%t', ${conversion.input}), ${bigQueryLiteral("\n")})"
+          else bigQueryLiteral(message + "\n")
+        RowCheck(conversion.check, error)
+      }
+    }
+  }
+
+  /** @param names
+    *   the columns of the first step, in their order
+    * @return
+    *   the SQL of a rejected row of a DSV load as JSON: the raw text of the values that the first
+    *   step reads as strings, the others as it reads them. The values of the ignored attributes, of
+    *   the attributes with a privacy, and of the scripted ones, which are not in the files, are not
+    *   shown.
+    */
+  def dsvRowValue(
+    names: List[String],
+    attributes: List[TableAttribute],
+    typed: Option[TypedColumns]
+  ): String = {
+    val shown = names.filter(name =>
+      attributes
+        .find(_.name.equalsIgnoreCase(name))
+        .forall(attribute =>
+          !attribute.resolveIgnore() && attribute.script.isEmpty &&
+          attribute.resolvePrivacy() == TransformInput.None
+        )
+    )
+    if (shown.isEmpty) "'{}'"
+    else
+      shown
+        .map(name =>
+          typed.flatMap(_.raw(name)).map(raw => s"$raw AS `$name`").getOrElse(s"`$name`")
+        )
+        .mkString("TO_JSON_STRING(STRUCT(", ", ", "))")
+  }
+
+  /** @return
+    *   the SQL of the text of a value of the first step of a DSV load in a CSV replay file, as
+    *   BigQuery writes it, which the load job reads: bytes in base64, as BigQuery reads them
+    */
+  def replayText(field: Field): String = {
+    val column = s"`${field.getName}`"
+    field.getType.getStandardType match {
+      case StandardSQLTypeName.STRING    => column
+      case StandardSQLTypeName.BYTES     => s"TO_BASE64($column)"
+      case StandardSQLTypeName.JSON      => s"TO_JSON_STRING($column)"
+      case StandardSQLTypeName.GEOGRAPHY => s"ST_ASTEXT($column)"
+      case _                             => s"CAST($column AS STRING)"
+    }
+  }
+
+  /** @param columns
+    *   the SQL of the text of each column of the replay file
+    * @return
+    *   the query of all the rows of the first step of a DSV load that the checks reject, as the
+    *   columns of a CSV replay file
+    */
+  def rejectedCsvRowsSql(
+    tempTableNames: List[String],
+    checks: FirstStepChecks,
+    columns: List[String]
+  ): String =
+    tempTableNames
+      .map(table =>
+        s"SELECT ${columns.mkString(", ")} FROM ${checks.rows(table)._1} WHERE NOT (${checks.condition})"
+      )
+      .mkString(" UNION ALL ")
+
+  /** @return
+    *   true if each file must be loaded by its own load job: local files are uploaded through a
+    *   single stream per job, and their concatenation is not one file of their format. The
+    *   concatenation of Parquet files is not a Parquet file, and that of CSV or JSON files reads
+    *   the headers of the files after the first one as rows, and joins the last line of a file
+    *   without a final newline to the first line of the next one.
+    */
+  def requiresOneLoadPerFile(paths: List[Path]): Boolean =
     // Same test of local files as BigQueryNativeJob.loadPathsToBQ
-    format == Format.PARQUET && paths.size > 1 && paths.exists(_.toString.startsWith("file:"))
+    paths.size > 1 && paths.exists(_.toString.startsWith("file:"))
 
   /** @return
     *   the schema of an existing table, with the fields of the incoming schema that it lacks, at
@@ -1260,23 +2051,29 @@ object BigQueryNativeLoader {
 
   /** @param rejectedByFile
     *   the number of rejected rows by index of their file, the index of its load info
+    * @param filteredByFile
+    *   the number of rows that the filter drops by index of their file
     * @return
     *   the load infos of the files, with their rejected rows counted as rejected instead of
-    *   accepted
+    *   accepted, and their filtered rows not counted, as Spark counts them
     */
   def withRejectedRows(
     loadInfos: List[BqLoadInfo],
-    rejectedByFile: Map[Int, Long]
+    rejectedByFile: Map[Int, Long],
+    filteredByFile: Map[Int, Long] = Map.empty
   ): List[BqLoadInfo] = {
-    rejectedByFile.keys.find(index => !loadInfos.indices.contains(index)).foreach { index =>
-      throw new IllegalStateException(
-        s"Rejected rows counted for the file $index of a load of ${loadInfos.size} files"
-      )
-    }
+    (rejectedByFile.keys ++ filteredByFile.keys)
+      .find(index => !loadInfos.indices.contains(index))
+      .foreach { index =>
+        throw new IllegalStateException(
+          s"Rows counted for the file $index of a load of ${loadInfos.size} files"
+        )
+      }
     loadInfos.zipWithIndex.map { case (loadInfo, index) =>
       val rejected = rejectedByFile.getOrElse(index, 0L)
       loadInfo.copy(
-        totalAcceptedRows = loadInfo.totalAcceptedRows - rejected,
+        totalAcceptedRows =
+          loadInfo.totalAcceptedRows - rejected - filteredByFile.getOrElse(index, 0L),
         totalRejectedRows = loadInfo.totalRejectedRows + rejected
       )
     }
@@ -1382,37 +2179,260 @@ object BigQueryNativeLoader {
       .replace("\n", "\\n")
       .replace("\r", "\\r") + "\""
 
+  /** A check of the rows of the first step of a load
+    *
+    * @param condition
+    *   its SQL condition, true for a row that it accepts and never NULL
+    * @param error
+    *   the SQL of the error line of a row that it rejects, ending with a line break
+    */
+  case class RowCheck(condition: String, error: String)
+
+  /** The checks of the rows of the first step that the second step rejects
+    *
+    * @param condition
+    *   the SQL condition of the rows that the second step loads, never NULL: the conjunction of the
+    *   checks
+    * @param checks
+    *   the checks, which give the error lines of a rejected row: none when only the rows that the
+    *   filter drops are counted, with the condition `TRUE`
+    * @param value
+    *   the SQL of a rejected row as JSON, without its hidden values, with `rejectWithValue`
+    * @param reason
+    *   why the rows are rejected, for the log
+    * @param scope
+    *   the rows that the checks apply to, if not all
+    * @param typed
+    *   the attributes of a DSV file that the first step reads as strings, whose values the checks
+    *   read converted, if any
+    */
+  case class FirstStepChecks(
+    condition: String,
+    checks: List[RowCheck],
+    value: Option[String],
+    reason: String,
+    scope: Option[RowScope] = None,
+    typed: Option[TypedColumns] = None
+  ) {
+
+    /** @param table
+      *   the wildcard name of the temporary tables of the first step
+      * @return
+      *   the SQL of the rows of the tables that the checks apply to, and of the index of their file
+      */
+    def rows(table: String): (String, String) =
+      scope match {
+        case None =>
+          typed match {
+            case None        => (table, "_TABLE_SUFFIX")
+            case Some(typed) => (typed.rows(table, suffix = true), "sl_suffix")
+          }
+        case Some(scope) =>
+          (
+            s"(SELECT `$lineColumn`, `$inputFileColumn`, sl_suffix FROM ${scope.lines(table)} WHERE sl_kept IS NOT FALSE)",
+            "sl_suffix"
+          )
+      }
+
+    /** @param table
+      *   the wildcard name of the temporary tables of the first step
+      * @return
+      *   the SQL of the number of rows of the tables that the checks reject (`rejected`), and of
+      *   those that the filter drops (`filtered`), by index of their file (`suffix`). The second
+      *   step loads a row when the checks and the filter keep it.
+      */
+    def countsSql(table: String): String =
+      scope match {
+        case None =>
+          val (rows, suffix) = this.rows(table)
+          s"SELECT $suffix AS suffix, COUNT(*) AS rejected, 0 AS filtered FROM $rows WHERE NOT ($condition) GROUP BY 1"
+        case Some(scope) =>
+          s"SELECT sl_suffix AS suffix, COUNTIF(sl_kept IS NOT FALSE AND NOT ($condition)) AS rejected, COUNTIF(sl_kept IS FALSE OR (sl_kept IS NULL AND ($condition))) AS filtered FROM ${scope
+              .lines(table)} GROUP BY 1"
+      }
+  }
+
+  private val inputFileColumn = CometColumns.cometInputFileNameColumn
+  private val lineColumn = BigQueryPositionValues.lineColumn
+
+  /** The rows of the first step of a POSITION load that its filter keeps, or may keep: the filter
+    * of the second step reads the values of the attributes, which a rejected row may lack. The rows
+    * that it drops are neither rejected nor counted, as with Spark, which filters the lines before
+    * reading them.
+    *
+    * @param columns
+    *   the SQL of the columns that the second step selects from the rows of its first step
+    * @param filter
+    *   the filter of the table, on these columns
+    */
+  case class RowScope(columns: String, filter: String) {
+
+    /** @return
+      *   the SQL of the rows of the tables, with the index of their file (`sl_suffix`) and the
+      *   value of the filter on their columns (`sl_kept`), where a value that does not convert is
+      *   NULL, as in the second step. The line and the name of its file are renamed among the
+      *   columns, which an attribute may name.
+      */
+    def lines(table: String): String =
+      s"(SELECT sl_line AS `$lineColumn`, sl_file AS `$inputFileColumn`, sl_suffix, ($filter) AS sl_kept FROM (SELECT _TABLE_SUFFIX AS sl_suffix, `$lineColumn` AS sl_line, `$inputFileColumn` AS sl_file, $columns FROM $table) AS SL_INTERNAL_FROM_SELECT)"
+  }
+
+  /** The alias of a row of the first step in the queries of the rejected rows */
+  val rejectedRow = "sl_rejected_row"
+
   /** @return
-    *   the query of the first `limit` rows of the first step without a value for a required
-    *   attribute: their file, their errors, one line per attribute without a value as the Spark
-    *   validators write them, and with `withValue` the row as JSON
+    *   the checks of the rows of the first step of a Parquet load, if a required attribute is
+    *   checked (see [[requiredValuesCondition]]): one error line per attribute without a value, as
+    *   the Spark validators write them, and with `withValue` the row as JSON, without the values of
+    *   [[hiddenValuePaths]]
+    */
+  def requiredValuesChecks(
+    attributes: List[TableAttribute],
+    withValue: Boolean
+  ): Option[FirstStepChecks] =
+    requiredValuesCondition(attributes).map { condition =>
+      val file = CometColumns.cometInputFileNameColumn
+      // Wide numbers as strings, as TO_JSON_STRING writes them: TO_JSON fails on them otherwise
+      val value =
+        if (withValue) {
+          val removed = (s"""$$."$file"""" :: hiddenValuePaths(attributes))
+            .map(path => s"'$path'")
+            .mkString(", ")
+          Some(
+            s"TO_JSON_STRING(JSON_REMOVE(TO_JSON($rejectedRow, stringify_wide_numbers => TRUE), $removed))"
+          )
+        } else None
+      FirstStepChecks(
+        condition,
+        requiredValueTerms(attributes).map { case (path, term) =>
+          RowCheck(term, bigQueryLiteral(s"`$path`  can't be null\n"))
+        },
+        value,
+        s"have no value for one of its required attributes (${requiredAttributePaths(attributes).mkString(", ")})"
+      )
+    }
+
+  /** @param ddlTypes
+    *   the types of the columns of the attributes, by attribute name
+    * @param types
+    *   the types of the attributes, by attribute name
+    * @return
+    *   the checks of the lines of the first step of a POSITION load (#1886), if any:
+    *   - a required attribute has a slice that is not blank (see [[BigQueryPositionValues.blank]]);
+    *   - a slice that is not blank converts to the type of its column, read with the pattern of its
+    *     type if it has one (see [[BigQueryPositionValues.value]]). A blank slice of an optional
+    *     attribute is NULL, or the slice itself for a string, where the Spark loader nulls an empty
+    *     value only and checks the others. A `byte` value is not checked: the Spark loader reads
+    *     any character, and loads NULL when it is not a number.
+    *
+    * One error line per invalid attribute, with its value with `withValue`, and the row as the JSON
+    * object of its slices. The values of the attributes with a privacy are not shown. The slices of
+    * the ignored, scripted and transformed attributes are not loaded, and not checked.
+    */
+  def positionChecks(
+    attributes: List[TableAttribute],
+    ddlTypes: Map[String, String],
+    types: Map[String, Type],
+    withValue: Boolean
+  ): Option[FirstStepChecks] = {
+    def shown(attribute: TableAttribute): Boolean =
+      attribute.resolvePrivacy() == TransformInput.None
+    val loaded = attributes.filter(attribute =>
+      !attribute.resolveIgnore() && attribute.script.isEmpty && attribute.transform.isEmpty
+    )
+    val checksByAttribute = loaded.flatMap { attribute =>
+      attribute.position.map { position =>
+        val slice = BigQueryPositionValues.slice(position)
+        val blank = BigQueryPositionValues.blank(slice)
+        val ddlType = ddlTypes.get(attribute.name).map(_.trim)
+        val value = BigQueryPositionValues.value(slice, ddlType, types.get(attribute.name))
+        val required =
+          if (attribute.resolveRequired())
+            List(
+              RowCheck(s"NOT ($blank)", bigQueryLiteral(s"`${attribute.name}`  can't be null\n"))
+            )
+          else Nil
+        // A string without a maximum length is the slice itself
+        val converted =
+          if (
+            value == slice ||
+            types.get(attribute.name).exists(_.primitiveType == PrimitiveType.byte)
+          ) Nil
+          else {
+            val pattern = types
+              .get(attribute.name)
+              .filter(BigQueryPositionValues.readsPattern(ddlType.flatMap(BigQueryType.parse), _))
+              .map(tpe => s" with the pattern `${tpe.pattern}`")
+              .getOrElse("")
+            val message = s"`${attribute.name}` is not a valid ${ddlType.getOrElse("")}$pattern"
+            val error =
+              if (withValue && shown(attribute))
+                s"CONCAT(${bigQueryLiteral(message + ": ")}, $slice, ${bigQueryLiteral("\n")})"
+              else bigQueryLiteral(message + "\n")
+            List(RowCheck(s"($blank OR $value IS NOT NULL)", error))
+          }
+        attribute.name -> (required ++ converted)
+      }
+    }
+    val checks = checksByAttribute.flatMap { case (_, checks) => checks }
+    if (checks.isEmpty) None
+    else {
+      val value = if (withValue) Some(positionRowValue(attributes)) else None
+      val checked = checksByAttribute.collect { case (name, checks) if checks.nonEmpty => name }
+      Some(
+        FirstStepChecks(
+          checks.map(_.condition).mkString(" AND "),
+          checks,
+          value,
+          s"have a value that does not convert to the type of its attribute, or no value for a required attribute (${checked
+              .mkString(", ")})"
+        )
+      )
+    }
+  }
+
+  /** @return
+    *   the SQL of a rejected line of a POSITION load as the JSON object of its slices, without
+    *   those of the ignored and scripted attributes, nor those of the attributes with a privacy
+    */
+  def positionRowValue(attributes: List[TableAttribute]): String = {
+    val slices = attributes
+      .filter(a =>
+        !a.resolveIgnore() && a.script.isEmpty && a.resolvePrivacy() == TransformInput.None
+      )
+      .flatMap(a => a.position.map(p => s"${BigQueryPositionValues.slice(p)} AS `${a.name}`"))
+    if (slices.isEmpty) "'{}'" else slices.mkString("TO_JSON_STRING(STRUCT(", ", ", "))")
+  }
+
+  /** @return
+    *   the query of the first `limit` rows of the first step that the checks reject: their file,
+    *   their error lines, and with `rejectWithValue` the row as JSON
     */
   def rejectedRowsSql(
     tempTableNames: List[String],
-    condition: String,
-    terms: List[(String, String)],
-    hiddenPaths: Option[List[String]],
+    checks: FirstStepChecks,
     limit: Int
   ): String = {
     val file = CometColumns.cometInputFileNameColumn
-    val row = "sl_rejected_row"
-    val errors = terms
-      .map { case (path, term) =>
-        s"IF($term, '', ${bigQueryLiteral(s"`$path`  can't be null\n")})"
-      }
+    val errors = checks.checks
+      .map(check => s"IF(${check.condition}, '', ${check.error})")
       .mkString("CONCAT(", ", ", ")")
-    // Wide numbers as strings, as TO_JSON_STRING writes them: TO_JSON fails on them otherwise
-    val value = hiddenPaths
-      .map { paths =>
-        val removed = (s"""$$."$file"""" :: paths).map(path => s"'$path'").mkString(", ")
-        s", TO_JSON_STRING(JSON_REMOVE(TO_JSON($row, stringify_wide_numbers => TRUE), $removed)) AS row_json"
-      }
-      .getOrElse("")
+    val value = checks.value.map(value => s", $value AS row_json").getOrElse("")
     val selects = tempTableNames.map(table =>
-      s"SELECT $row.`$file` AS file, $errors AS errors$value FROM $table AS $row WHERE NOT ($condition)"
+      s"SELECT $rejectedRow.`$file` AS file, $errors AS errors$value FROM ${checks.rows(table)._1} AS $rejectedRow WHERE NOT (${checks.condition})"
     )
     s"SELECT * FROM (${selects.mkString(" UNION ALL ")}) LIMIT $limit"
   }
+
+  /** @return
+    *   the query of all the lines of the first step of a POSITION load that the checks reject
+    */
+  def rejectedLinesSql(tempTableNames: List[String], checks: FirstStepChecks): String =
+    tempTableNames
+      .map(table =>
+        s"SELECT `${BigQueryPositionValues.lineColumn}` FROM ${checks.rows(table)._1} WHERE NOT (${checks.condition})"
+      )
+      .mkString(" UNION ALL ")
 
   /** @return
     *   the JSON paths of the values that a rejected row does not show: those of the ignored

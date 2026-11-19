@@ -83,7 +83,7 @@ class BigQueryNativeParquetSpec extends TestHelper {
     IngestionJob.isNativelySupported("bigquery", Format.JSON, array = true) shouldBe false
     // The array metadata, a JSON setting inherited from the domain, does not apply to Parquet
     IngestionJob.isNativelySupported("bigquery", Format.PARQUET, array = true) shouldBe true
-    IngestionJob.isNativelySupported("duckdb", Format.PARQUET, array = false) shouldBe false
+    IngestionJob.isNativelySupported("duckdb", Format.PARQUET, array = false) shouldBe true
     IngestionJob.isNativelySupported("snowflake", Format.PARQUET, array = false) shouldBe true
   }
 
@@ -159,14 +159,6 @@ class BigQueryNativeParquetSpec extends TestHelper {
     List(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION).foreach { format =>
       BigQueryNativeJob.supportsBadRecords(format) shouldBe true
     }
-  }
-
-  "requiresOneLoadPerFile" should "load several local PARQUET files one by one" in {
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.PARQUET, localFiles) shouldBe true
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.PARQUET, localFiles.take(1)) shouldBe false
-    // A single load job reads several Cloud Storage URIs
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.PARQUET, gcsFiles) shouldBe false
-    BigQueryNativeLoader.requiresOneLoadPerFile(Format.DSV, localFiles) shouldBe false
   }
 
   "requiredValuesCondition" should "keep the rows with a value for every required attribute, at any level" in {
@@ -263,6 +255,23 @@ class BigQueryNativeParquetSpec extends TestHelper {
     an[IllegalStateException] should be thrownBy BigQueryNativeLoader.withRejectedRows(
       loadInfos,
       Map(3 -> 1L)
+    )
+  }
+
+  it should "not count the rows that the filter drops, as Spark" in {
+    def loadInfo(path: String, accepted: Long) =
+      BqLoadInfo(accepted, 0, List(path), BigQueryJobResult(None, 0, None))
+    val loadInfos = List(loadInfo("gs://b/a", 12), loadInfo("gs://b/b", 5))
+    BigQueryNativeLoader
+      .withRejectedRows(loadInfos, Map(0 -> 8L), Map(0 -> 1L, 1 -> 2L))
+      .map(info => (info.totalAcceptedRows, info.totalRejectedRows, info.totalRows)) shouldBe List(
+      (3, 8, 11),
+      (3, 0, 3)
+    )
+    an[IllegalStateException] should be thrownBy BigQueryNativeLoader.withRejectedRows(
+      loadInfos,
+      Map.empty,
+      Map(2 -> 1L)
     )
   }
 

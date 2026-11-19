@@ -1,0 +1,68 @@
+{#- SQL fragments that differ between the engines, for the expectation macros of this directory.
+    `sl_engine` is the engine on which the expectation runs, as Starlake names it: `bigquery`,
+    `duckdb`, `snowflake`... Any engine other than BigQuery gets the fragment of DuckDB, the
+    engine of the bootstrapped projects. -#}
+
+{#- num / den, as a fraction, or NULL when den is 0, on an empty table for example: the expectation
+    then fails, on every engine. -#}
+{% macro sl_ratio(num, den) -%}
+{%- if sl_engine == 'bigquery' -%}
+SAFE_DIVIDE({{ num }}, {{ den }})
+{%- else -%}
+(CAST({{ num }} AS FLOAT) / NULLIF({{ den }}, 0))
+{%- endif -%}
+{%- endmacro %}
+
+{#- Does the column contain a match of the regular expression? BigQuery reads the pattern as a
+    raw string, so that a backslash keeps its meaning, as on DuckDB. -#}
+{% macro sl_regex_contains(column, pattern) -%}
+{%- if sl_engine == 'bigquery' -%}
+REGEXP_CONTAINS({{ column }}, r'{{ pattern }}')
+{%- else -%}
+regexp_matches({{ column }}, '{{ pattern }}')
+{%- endif -%}
+{%- endmacro %}
+
+{#- A sort key that puts the NULLs last, as DuckDB does by default; BigQuery puts them first. -#}
+{% macro sl_nulls_last(column) -%}
+{%- if sl_engine == 'bigquery' -%}
+({{ column }} IS NULL), {{ column }}
+{%- else -%}
+{{ column }}
+{%- endif -%}
+{%- endmacro %}
+
+{#- A value compared with a list of strings: neither BigQuery nor DuckDB compares a string with a
+    number or a date without an explicit cast. -#}
+{% macro sl_as_string(column) -%}
+{%- if sl_engine == 'bigquery' -%}
+CAST({{ column }} AS STRING)
+{%- else -%}
+CAST({{ column }} AS VARCHAR)
+{%- endif -%}
+{%- endmacro %}
+
+{#- The SQL string literal of a value. On DuckDB, each single quote is doubled: O'K is written
+    O''K. BigQuery refuses two single quotes in a row: a backslash goes before each single quote
+    and each backslash. The macros that take SQL literals accept it in their arguments.
+    Keep an even number of single quotes in this file, these comments included: Starlake strips
+    the SQL comments of all the macros at once, and counts the quotes of their Jinja code as SQL
+    ones, so an odd number would change how the files read next are stripped. -#}
+{% macro sl_literal(value) -%}
+{%- if sl_engine == 'bigquery' -%}
+'{{ value | string | replace("\\", "\\\\") | replace("'", "\\'") }}'
+{%- else -%}
+'{{ value | string | replace("'", "''") }}'
+{%- endif -%}
+{%- endmacro %}
+
+{#- BigQuery only: the columns of a table, from the INFORMATION_SCHEMA.COLUMNS view of its dataset,
+    followed by the condition on the table (FROM {{ sl_bq_columns(table_name) }} AND ...).
+    table_name is dataset.table or project.dataset.table; `sl_this` stands for the table of the
+    expectation. The pseudo-columns, such as _PARTITIONTIME, do not count. -#}
+{% macro sl_bq_columns(table_name) -%}
+{%- set parts = table_name | split('.') -%}
+{%- for part in parts -%}{%- if not loop.last -%}`{{ part }}`.{%- endif -%}{%- endfor -%}INFORMATION_SCHEMA.COLUMNS
+WHERE table_name = '{{ parts | last }}'
+AND is_hidden = 'NO'
+{%- endmacro %}

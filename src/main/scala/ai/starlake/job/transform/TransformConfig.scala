@@ -24,7 +24,8 @@ case class TransformConfig(
   pageNumber: Int = 1,
   scheduledDate: Option[String] = None,
   reportFormat: Option[String] = None,
-  parallelism: Option[Int] = None
+  parallelism: Option[Int] = None,
+  refreshInheritedDescriptions: Boolean = false
 ) extends ReportFormatConfig {
   def optionsAsString: String = options.map { case (k, v) => s"$k=$v" }.mkString(",")
 

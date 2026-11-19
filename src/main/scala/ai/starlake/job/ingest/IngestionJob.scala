@@ -11,11 +11,13 @@ import ai.starlake.job.ingest.loaders.{
   SnowflakeNativeLoader
 }
 import ai.starlake.job.sink.bigquery.*
+import ai.starlake.job.transform.AutoTask
 import ai.starlake.job.validator.{GenericRowValidator, SimpleRejectedRecord}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
 import ai.starlake.utils.*
 import ai.starlake.utils.Formatter.*
+import ai.starlake.utils.conversion.BigQueryPositionValues
 import com.google.cloud.bigquery.TableId
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
@@ -23,7 +25,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.*
 
 import java.sql.Timestamp
-import java.time.Instant
+import java.time.format.DateTimeFormatter
+import java.time.{Instant, ZoneId}
+import java.util.UUID
 import scala.util.{Failure, Success, Try}
 
 trait IngestionJob
@@ -187,7 +191,76 @@ trait IngestionJob
     new NativeLoader(this, None).buildSQLStatements()
   }
 
+  @volatile private var loadedRows: Boolean = false
+
+  /** @return
+    *   true once the load may have written rows to its table, even when it then failed: on its
+    *   access policies, its postsql, its audit row or an expectation. Loading its files again could
+    *   add these rows again.
+    */
+  def rowsWritten: Boolean = loadedRows
+
+  /** Called by the loaders once their write to the table succeeded */
+  private[ingest] def markRowsWritten(): Unit = loadedRows = true
+
+  /** Runs a task that writes the table of the load, and keeps whether it wrote it, failed or not,
+    * and the expectations that it checked before its commit
+    */
+  private[ingest] def writingWith[T](task: AutoTask)(run: => T): T =
+    try run
+    finally {
+      if (task.targetWritten) markRowsWritten()
+      expectationsCheckedByWrite =
+        expectationsCheckedByWrite ++ task.expectationsCheckedBeforeCommit
+    }
+
+  /** The expectations declared `failOnError` of the table, which the write of a native load in two
+    * steps checks before its commit, under `expectations.beforeCommit` (#1976)
+    */
+  private[ingest] lazy val expectationsBeforeCommit: List[ExpectationItem] =
+    if (settings.appConfig.expectations.checkedBeforeCommit)
+      schema.expectations.filter(_.failOnError)
+    else Nil
+
+  /** The expectations that the write of the load checked before its commit */
+  @volatile private var expectationsCheckedByWrite: List[ExpectationItem] = Nil
+
+  /** The counters of the load, as its loader counted them before its write */
+  @volatile private var countersBeforeWrite: Option[IngestionCounters] = None
+
+  /** Gives the task of the second step of a native load, which has the expectations to check before
+    * its commit, the counters of the load: the expectations that it cannot check are left to the
+    * load, which runs them once audited (#1976)
+    *
+    * @param counters
+    *   the counters of the load, if the loader counts its rows
+    */
+  private[ingest] def handOverExpectations(
+    task: AutoTask,
+    counters: Option[IngestionCounters]
+  ): Unit =
+    task
+      .withExpectationVariables(IngestionJob.expectationVariables(counters))
+      .leavingUncheckedExpectations()
+
+  /** Called by a loader that counts the rows of the load before its write, otherwise than its audit
+    * row: the expectations that run once the load is audited get the same counters as those checked
+    * before the commit
+    */
+  private[ingest] def countedBeforeWrite(counters: IngestionCounters): Unit =
+    countersBeforeWrite = Some(counters)
+
+  /** @return
+    *   the expectations of the table that run once the load is audited: those that its write did
+    *   not check before its commit
+    */
+  protected def expectationsAfterAudit: List[ExpectationItem] =
+    schema.expectations.diff(expectationsCheckedByWrite)
+
   def run(): Try[JobResult] = {
+    loadedRows = false
+    expectationsCheckedByWrite = Nil
+    countersBeforeWrite = None
     // A failure to select the loader is logged in the audit, as a failure to load
     val jobResult = Try(selectLoader()).flatMap {
       case "bigquery" => new BigQueryNativeLoader(this, accessToken).run()
@@ -206,6 +279,13 @@ trait IngestionJob
       }
       .map { (counterResults: List[IngestionCounters]) =>
         val validCounterResults = counterResults.filter(!_.ignore)
+        // A loader that succeeded has written its rows, except under rejectAllOnError when it
+        // rejected records: then it writes none. The native Snowflake loader, and the native
+        // DuckDB loader for other files than Parquet, which count no rejected record (-1), write
+        // them all; the native DuckDB loader of Parquet files fails under rejectAllOnError.
+        val allRejected =
+          settings.appConfig.rejectAllOnError && validCounterResults.exists(_.rejectedCount > 0)
+        if (!allRejected) markRowsWritten()
         logLoadInAudit(now, validCounterResults) match {
           case Failure(exception) => throw exception
           case Success(auditLogs) =>
@@ -213,7 +293,14 @@ trait IngestionJob
               throw new DisallowRejectRecordException()
             }
         }
-        runExpectations() match {
+        runExpectations(
+          IngestionJob.expectationVariables(
+            // The counters that the expectations checked before the commit read
+            countersBeforeWrite.orElse(
+              IngestionCounters.aggregate(validCounterResults, applicationId())
+            )
+          )
+        ) match {
           case Failure(exception) if settings.appConfig.expectations.failOnError =>
             throw exception
           case _ =>
@@ -303,6 +390,34 @@ trait IngestionJob
 
 object IngestionJob extends LazyLogging {
 
+  /** @param counters
+    *   the counters of a load, if it counts its rows
+    * @return
+    *   the variables of the macros of the expectations of the load (#1976): the number of its input
+    *   rows, of the rows that it accepts and of those that it rejects, -1 when it does not count
+    *   them
+    */
+  def expectationVariables(counters: Option[IngestionCounters]): Map[String, Any] = {
+    val counted = counters.filterNot(_.ignore)
+    Map(
+      "sl_input_count"    -> counted.map(_.inputCount).getOrElse(-1L),
+      "sl_accepted_count" -> counted.map(_.acceptedCount).getOrElse(-1L),
+      "sl_rejected_count" -> counted.map(_.rejectedCount).getOrElse(-1L)
+    )
+  }
+
+  /** @return
+    *   the name of new replay files of the table, without extension: unique, so that two loads of
+    *   the table in the same second keep their files
+    */
+  def replayName(domain: String, table: String): String = {
+    val timestamp = DateTimeFormatter
+      .ofPattern("yyyyMMddHHmmss")
+      .withZone(ZoneId.systemDefault())
+      .format(Instant.now())
+    s"$domain.$table.$timestamp.replay-${UUID.randomUUID().toString.take(8)}"
+  }
+
   private[starlake] def runSparkPrePostSql(
     session: SparkSession,
     targetTableName: String,
@@ -318,7 +433,7 @@ object IngestionJob extends LazyLogging {
 
   private val nativeSupportedFormats: Map[String, Set[Format]] = Map(
     "bigquery" -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION, Format.PARQUET),
-    "duckdb"   -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION),
+    "duckdb"   -> Set(Format.DSV, Format.JSON, Format.JSON_FLAT, Format.POSITION, Format.PARQUET),
     "snowflake" -> Set(
       Format.DSV,
       Format.JSON,
@@ -444,23 +559,57 @@ object IngestionJob extends LazyLogging {
         )
       binaryAttributes.isEmpty
     } && {
-      // Parquet tables were loaded with Spark before the native BigQuery loader read Parquet: they
-      // keep doing so when it would load them differently
+      // Parquet tables were loaded with Spark before the native BigQuery and DuckDB loaders read
+      // Parquet: they keep doing so when it would load them differently
       val unsupported =
-        if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.PARQUET)
+        if (mergedMetadata.resolveFormat() != Format.PARQUET) Nil
+        else if (dbName == "bigquery")
           parquetFeaturesNotLoadedByBigQuery(
             mergedMetadata,
             attributes,
             paths,
             unconvertedParquetFields
           )
+        else if (dbName == "duckdb")
+          parquetFeaturesNotLoadedByDuckDb(mergedMetadata, attributes)
         else Nil
       if (unsupported.nonEmpty)
         logger.warn(
-          s"Loading $tableName with Spark instead of the native bigquery loader, which does not load Parquet files with ${unsupported
+          s"Loading $tableName with Spark instead of the native $dbName loader, which does not load Parquet files with ${unsupported
               .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
         )
       unsupported.isEmpty
+    } && {
+      // The second step reads the values of POSITION files with SQL, and those of DSV files that
+      // the load job does not read as Spark does: a type whose format BigQuery cannot apply would
+      // reject all of them (#1886, #1935)
+      val unreadable =
+        if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.POSITION)
+          attributes
+            .filter(attribute =>
+              !attribute.resolveIgnore() && attribute.script.isEmpty && attribute.transform.isEmpty
+            )
+            .flatMap { attribute =>
+              types
+                .find(_.name == attribute.`type`)
+                .flatMap(BigQueryPositionValues.unreadable(_))
+                .map(reason => s"${attribute.name} ($reason)")
+            }
+        else if (dbName == "bigquery" && mergedMetadata.resolveFormat() == Format.DSV)
+          // The ignored and transformed attributes are in the files too
+          attributes.filter(_.script.isEmpty).flatMap { attribute =>
+            types
+              .find(_.name == attribute.`type`)
+              .flatMap(BigQueryPositionValues.unreadableInCsv(_))
+              .map(reason => s"${attribute.name} ($reason)")
+          }
+        else Nil
+      if (unreadable.nonEmpty)
+        logger.warn(
+          s"Loading $tableName with Spark instead of the native bigquery loader, which does not read the values of ${unreadable
+              .mkString(", ")}. Its scripts, SQL privacy and filter run as Spark SQL"
+        )
+      unreadable.isEmpty
     }
   }
 
@@ -533,33 +682,12 @@ object IngestionJob extends LazyLogging {
     paths: List[Path],
     unconvertedFields: List[String]
   ): List[String] = {
-    // Every attribute, at every nesting level, with its path
-    def withPaths(
-      attributes: List[TableAttribute],
-      prefix: String
-    ): List[(String, TableAttribute)] =
-      attributes.flatMap { attribute =>
-        val path = prefix + attribute.name
-        (path, attribute) :: withPaths(attribute.attributes, path + ".")
-      }
-    // Scripted attributes are computed by the second step, ignored ones are not loaded
-    val loaded = withPaths(
-      attributes.filterNot(attribute => attribute.resolveIgnore() || attribute.script.nonEmpty),
-      ""
-    )
-    def feature(name: String, paths: List[String]): Option[String] =
-      if (paths.isEmpty) None else Some(s"$name (${paths.mkString(", ")})")
+    val loaded = loadedParquetAttributes(attributes)
     // Same test of local files as BigQueryNativeJob.loadPathsToBQ
     val localFiles = paths.exists(_.toString.startsWith("file:"))
     List(
-      feature(
-        "Spark read options",
-        metadata.getOptions().toList.sorted.collect {
-          case ("format", format) if !format.equalsIgnoreCase("parquet") => s"format $format"
-          case (option, _) if option != "format"                         => option
-        }
-      ),
-      feature(
+      sparkReadOptionsFeature(metadata),
+      parquetFeature(
         "array attributes in local files",
         if (localFiles)
           // Ignored attributes are in the files: they are loaded into the temporary table
@@ -568,27 +696,90 @@ object IngestionJob extends LazyLogging {
           }
         else Nil
       ),
-      feature(
+      parquetFeature(
         "nested renames",
         loaded.collect {
           case (path, attribute)
               if path.contains('.') && attribute.getFinalName() != attribute.name =>
             path
         }
-      ),
-      feature(
+      )
+    ).flatten ++
+    defaultAndTrimFeatures(loaded) ++
+    parquetFeature("nested or repeated JSON, INTERVAL or RANGE fields", unconvertedFields)
+  }
+
+  /** @return
+    *   the features of a Parquet table that the native DuckDB loader would not apply as the Spark
+    *   loader does, with the attributes they concern, if any:
+    *   - Spark read options (`options`), as for BigQuery;
+    *   - struct, variant and array attributes: the tables of the native DuckDB loader have no
+    *     `STRUCT` or `LIST` column. Ignored and scripted attributes are columns of its first step
+    *     table too;
+    *   - `default` and `trim`, which no native loader applies.
+    */
+  def parquetFeaturesNotLoadedByDuckDb(
+    metadata: Metadata,
+    attributes: List[TableAttribute]
+  ): List[String] =
+    List(
+      sparkReadOptionsFeature(metadata),
+      parquetFeature(
+        "struct, variant or array attributes",
+        withPaths(attributes, "").collect {
+          case (path, attribute)
+              if attribute.attributes.nonEmpty || attribute.resolveArray() ||
+              Set("struct", "variant").contains(attribute.`type`) =>
+            path
+        }
+      )
+    ).flatten ++ defaultAndTrimFeatures(loadedParquetAttributes(attributes))
+
+  /** Every attribute, at every nesting level, with its path */
+  private def withPaths(
+    attributes: List[TableAttribute],
+    prefix: String
+  ): List[(String, TableAttribute)] =
+    attributes.flatMap { attribute =>
+      val path = prefix + attribute.name
+      (path, attribute) :: withPaths(attribute.attributes, path + ".")
+    }
+
+  /** Scripted attributes are computed by the second step, ignored ones are not loaded */
+  private def loadedParquetAttributes(
+    attributes: List[TableAttribute]
+  ): List[(String, TableAttribute)] =
+    withPaths(
+      attributes.filterNot(attribute => attribute.resolveIgnore() || attribute.script.nonEmpty),
+      ""
+    )
+
+  private def parquetFeature(name: String, paths: List[String]): Option[String] =
+    if (paths.isEmpty) None else Some(s"$name (${paths.mkString(", ")})")
+
+  /** Spark reads the files with its read options, in another format (ORC, Avro...) for `format` */
+  private def sparkReadOptionsFeature(metadata: Metadata): Option[String] =
+    parquetFeature(
+      "Spark read options",
+      metadata.getOptions().toList.sorted.collect {
+        case ("format", format) if !format.equalsIgnoreCase("parquet") => s"format $format"
+        case (option, _) if option != "format"                         => option
+      }
+    )
+
+  private def defaultAndTrimFeatures(loaded: List[(String, TableAttribute)]): List[String] =
+    List(
+      parquetFeature(
         "default values",
         loaded.collect { case (path, attribute) if attribute.default.nonEmpty => path }
       ),
-      feature(
+      parquetFeature(
         "trim",
         loaded.collect {
           case (path, attribute) if attribute.trim.exists(_ != Trim.NONE) => path
         }
-      ),
-      feature("nested or repeated JSON, INTERVAL or RANGE fields", unconvertedFields)
+      )
     ).flatten
-  }
 
   /** @return
     *   the paths of the loaded leaf attributes, at every nesting level, scripted ones included, of

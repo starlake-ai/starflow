@@ -9,7 +9,10 @@ import ai.starlake.utils.{GcpCredentials, StarlakeConfigException, Utils}
 import better.files.File
 import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.api.gax.core.FixedCredentialsProvider
+import com.google.api.client.json.gson.GsonFactory
 import com.google.api.gax.retrying.PollException
+import com.google.api.services.bigquery.Bigquery
+import com.google.cloud.http.HttpTransportOptions
 import com.google.cloud.bigquery.{Schema as BQSchema, TableInfo as BQTableInfo, *}
 import com.google.cloud.datacatalog.v1.*
 import com.google.cloud.hadoop.repackaged.gcs.com.google.auth.oauth2.{
@@ -58,7 +61,8 @@ trait BigQueryJobBase extends LazyLogging {
   // Lazy otherwise tests fail since there is no GCP credentials in test mode
 
   private def policyClient()(implicit settings: Settings): PolicyTagManagerClient = {
-    val credentials = GcpCredentials.credentials(connectionOptions)
+    // The credentials of the access token of the run, as the BigQuery client of the job
+    val credentials = GcpCredentials.credentials(connectionOptions, cliConfig.accessToken)
     val policySettings =
       credentials match {
         case None =>
@@ -70,22 +74,11 @@ trait BigQueryJobBase extends LazyLogging {
     PolicyTagManagerClient.create(policySettings)
 
   }
-  def applyRLSAndCLS(forceApply: Boolean = false)(implicit settings: Settings): Try[Unit] = {
-    // Built on demand: applyCLS only needs the client when an attribute actually carries an
-    // access policy, and creating it requires GCP credentials.
-    var clientCreated = false
-    lazy val client = {
-      val created = policyClient()
-      clientCreated = true
-      created
-    }
-    val result = for {
+  def applyRLSAndCLS(forceApply: Boolean = false)(implicit settings: Settings): Try[Unit] =
+    for {
       _ <- applyRLS(forceApply)
-      _ <- applyCLS(forceApply, client)
+      _ <- applyCLS(forceApply)
     } yield ()
-    if (clientCreated) client.shutdown()
-    result
-  }
 
   def bigquery(alwaysCreate: Boolean = false, accessToken: scala.Option[String])(implicit
     settings: Settings
@@ -169,7 +162,7 @@ trait BigQueryJobBase extends LazyLogging {
             case Some(tableId) => tableId
           }
         applyACL(outputTableId, cliConfig.acl)
-        BigQueryJobBase.buildRLSQueries(outputTableId, cliConfig.rls).foreach { rlsStatement =>
+        def run(rlsStatement: String): Unit = {
           logger.info(s"Applying row level security $rlsStatement")
           new BigQueryNativeJob(
             cliConfig,
@@ -187,8 +180,55 @@ trait BigQueryJobBase extends LazyLogging {
               logger.info(s"Job with id $job on Statement $rlsStatement succeeded")
           }
         }
+        // The declared policies first: when a statement fails, the table keeps its policies, and
+        // nobody reads more rows. BigQuery also refuses to drop the last policy of a table.
+        BigQueryJobBase.buildRLSQueries(outputTableId, cliConfig.rls).foreach(run)
+        // A table without declared policy keeps the ones that it has, set outside of Starlake
+        if (cliConfig.rls.nonEmpty)
+          BigQueryJobBase
+            .buildRLSDropQueries(
+              outputTableId,
+              cliConfig.rls,
+              rowAccessPolicyNames(outputTableId)
+            )
+            .foreach(run)
       }
     }
+  }
+
+  /** The BigQuery client has no call to list the row access policies of a table: this one goes
+    * through the REST client, with the credentials and the transport of the BigQuery client.
+    *
+    * @return
+    *   the names of the row access policies of the table
+    */
+  def rowAccessPolicyNames(tableId: TableId)(implicit settings: Settings): List[String] = {
+    val options = bigquery(accessToken = cliConfig.accessToken).getOptions
+    val transport = options.getTransportOptions.asInstanceOf[HttpTransportOptions]
+    val client =
+      new Bigquery.Builder(
+        transport.getHttpTransportFactory.create(),
+        GsonFactory.getDefaultInstance,
+        transport.getHttpRequestInitializer(options)
+      ).setApplicationName(options.getApplicationName).build()
+    val project = scala.Option(tableId.getProject).getOrElse(options.getProjectId)
+    def names(pageToken: String): List[String] = {
+      val page = client
+        .rowAccessPolicies()
+        .list(project, tableId.getDataset, tableId.getTable)
+        .setPageToken(pageToken)
+        .execute()
+      val policies = scala.Option(page.getRowAccessPolicies).map(_.asScala.toList).getOrElse(Nil)
+      policies.map(_.getRowAccessPolicyReference.getPolicyId) ++
+      scala.Option(page.getNextPageToken).map(names).getOrElse(Nil)
+    }
+    BigQueryJobBase
+      .recoverBigqueryException(settings.appConfig.onExceptionRetries) {
+        // Translated as the BigQuery client does, so that its rate limits are retried
+        try names(null)
+        catch { case e: java.io.IOException => throw new BigQueryException(e) }
+      }
+      .get
   }
 
   private def getPolicyTag(
@@ -297,7 +337,7 @@ trait BigQueryJobBase extends LazyLogging {
     (location, taxonomyProjectId, taxonomy, taxonomyRef)
   }
 
-  private def applyCLS(forceApply: Boolean, policyTagClient: => PolicyTagManagerClient)(implicit
+  private def applyCLS(forceApply: Boolean)(implicit
     settings: Settings
   ): Try[Unit] = {
     Try {
@@ -322,71 +362,47 @@ trait BigQueryJobBase extends LazyLogging {
                 .map { case (attrName, attrAccessPolicy) => attrAccessPolicy }
                 .count(_.isDefined) > 0
             if (anyAccessPolicyToApply) {
-              val (location, projectId, taxonomy, taxonomyRef) =
-                getTaxonomy(policyTagClient)
-              val policyTagIds = mutable.Map.empty[String, String]
-              val table = cliConfig.outputTableId match {
-                case None =>
-                  throw new RuntimeException("TableId must be defined in order to apply CLS")
-                case Some(outputTableId) =>
-                  bigquery(accessToken = cliConfig.accessToken).getTable(outputTableId)
-              }
-              val tableDefinition = table.getDefinition[StandardTableDefinition]
-              val bqSchema = tableDefinition.getSchema()
-              val bqFields = bqSchema.getFields.asScala.toList
-              val attributesMap = attrs.toMap
-              val updatedFields = bqFields.map { field =>
-                attributesMap.get(field.getName.toLowerCase) match {
+              // Created only when a policy tag is applied
+              val policyTagClient = policyClient()
+              try {
+                val (location, projectId, taxonomy, taxonomyRef) =
+                  getTaxonomy(policyTagClient)
+                val policyTagIds = mutable.Map.empty[String, String]
+                val table = cliConfig.outputTableId match {
                   case None =>
-                    // Maybe an ignored field
-                    logger.info(
-                      s"Ignore this field ${table}.${field.getName} during CLS application "
-                    )
-                    field
-                  case Some(accessPolicy) =>
-                    accessPolicy match {
-                      case None =>
-                        field
-                      case Some(accessPolicy) =>
-                        val policyTagId = policyTagIds.getOrElse(
-                          accessPolicy, {
-                            val policyTagRef =
-                              getPolicyTag(
-                                location,
-                                projectId,
-                                taxonomy,
-                                taxonomyRef,
-                                accessPolicy,
-                                policyTagClient
-                              )
-                            policyTagIds.put(accessPolicy, policyTagRef)
-                            policyTagRef
-                          }
-                        )
-
-                        val fieldPolicyTags =
-                          scala
-                            .Option(field.getPolicyTags)
-                            .map(_.getNames.asScala.toList)
-                            .getOrElse(Nil)
-                        if (fieldPolicyTags.length == 1 && fieldPolicyTags.head == policyTagId)
-                          field
-                        else {
-                          Field
-                            .newBuilder(field.getName, field.getType, field.getSubFields)
-                            .setMode(field.getMode)
-                            .setPolicyTags(
-                              PolicyTags.newBuilder().setNames(List(policyTagId).asJava).build()
-                            )
-                            .build()
-                        }
-                    }
+                    throw new RuntimeException("TableId must be defined in order to apply CLS")
+                  case Some(outputTableId) =>
+                    bigquery(accessToken = cliConfig.accessToken).getTable(outputTableId)
                 }
+                val tableDefinition = table.getDefinition[StandardTableDefinition]
+                val bqSchema = tableDefinition.getSchema()
+                val bqFields = bqSchema.getFields.asScala.toList
+                val updatedFields = BigQueryJobBase.withPolicyTags(
+                  table.getTableId.getTable,
+                  bqFields,
+                  attrs,
+                  accessPolicy =>
+                    policyTagIds.getOrElseUpdate(
+                      accessPolicy,
+                      getPolicyTag(
+                        location,
+                        projectId,
+                        taxonomy,
+                        taxonomyRef,
+                        accessPolicy,
+                        policyTagClient
+                      )
+                    )
+                )
+                // Each update of a table counts in its rate limit of metadata updates
+                if (updatedFields != bqFields)
+                  table.toBuilder
+                    .setDefinition(StandardTableDefinition.of(BQSchema.of(updatedFields: _*)))
+                    .build()
+                    .update()
+              } finally {
+                policyTagClient.shutdown()
               }
-              table.toBuilder
-                .setDefinition(StandardTableDefinition.of(BQSchema.of(updatedFields: _*)))
-                .build()
-                .update()
             }
         }
       }
@@ -492,8 +508,15 @@ trait BigQueryJobBase extends LazyLogging {
           scala.Option(bigquery(accessToken = cliConfig.accessToken).getDataset(datasetId))
         val labels = Utils.extractTags(cliConfig.domainTags).toMap
         existingDataset match {
+          // The datasets are then managed outside of Starlake, which needs no update permission
+          case Some(ds) if !settings.appConfig.createSchemaIfNotExists =>
+            ds
           case Some(ds) =>
             updateDatasetInfo(ds, domainDescription, labels)
+          case None if !settings.appConfig.createSchemaIfNotExists =>
+            throw new RuntimeException(
+              s"Dataset ${datasetId.getDataset} does not exist and createSchemaIfNotExists is false"
+            )
           case None =>
             val datasetInfo = DatasetInfo
               .newBuilder(datasetId)
@@ -578,11 +601,10 @@ trait BigQueryJobBase extends LazyLogging {
   protected def setTagsOnTable(table: Table): Unit = {
     cliConfig.starlakeSchema.foreach { schema =>
       BigQueryJobBase.recoverBigqueryException(settings.appConfig.onExceptionRetries) {
-        val tags = Utils.extractTags(schema.tags)
-        val tableTagPairs = tags map { case (k, v) => (k.toLowerCase, v.toLowerCase) }
-        if (table.getLabels.asScala.toSet != tableTagPairs) {
+        val labels = declaredLabels(schema)
+        if (BigQueryJobBase.labelsChanged(table.getLabels, labels)) {
           logger.info("Table's tag has changed")
-          table.toBuilder.setLabels(tableTagPairs.toMap.asJava).build().update()
+          table.toBuilder.setLabels(labels.asJava).build().update()
         } else {
           logger.info("Table's tag has not changed")
         }
@@ -592,6 +614,51 @@ trait BigQueryJobBase extends LazyLogging {
       }
     }
   }
+
+  /** @return
+    *   the labels of a table, from the tags of its schema
+    */
+  private def declaredLabels(schema: model.SchemaInfo): Map[String, String] =
+    Utils.extractTags(schema.tags).map { case (k, v) => (k.toLowerCase, v.toLowerCase) }.toMap
+
+  /** Sets the labels of the table of the Starlake schema when they changed, as [[getOrCreateTable]]
+    * does on every run, and its primary and foreign keys if asked, which a table that it creates
+    * gets. The second step of a load in two steps writes its target as a transform does, which sets
+    * neither (#1838).
+    *
+    * @param withConstraints
+    *   true if the table was just created, by the second step of a load
+    */
+  def updateLabelsAndConstraints(withConstraints: Boolean)(implicit settings: Settings): Unit =
+    cliConfig.starlakeSchema.foreach { schema =>
+      BigQueryJobBase
+        .recoverBigqueryException(settings.appConfig.onExceptionRetries) {
+          val table = bigquery(accessToken = cliConfig.accessToken).getTable(tableId)
+          val labels = declaredLabels(schema)
+          val labelsChanged = BigQueryJobBase.labelsChanged(table.getLabels, labels)
+          val constraints =
+            if (withConstraints)
+              Some(getTableConstraints()).filter { constraints =>
+                scala.Option(constraints.getPrimaryKey).nonEmpty ||
+                scala.Option(constraints.getForeignKeys).exists(!_.isEmpty)
+              }
+            else None
+          // In one update: an update from the table read before another one would revert it
+          if (labelsChanged || constraints.nonEmpty) {
+            val builder = table.toBuilder
+            if (labelsChanged) builder.setLabels(labels.asJava)
+            constraints.foreach(builder.setTableConstraints)
+            builder.build().update()
+            logger.info(
+              s"Table $tableId updated with ${List(
+                  Some("its labels").filter(_ => labelsChanged),
+                  constraints.map(_ => "its keys")
+                ).flatten.mkString(" and ")}"
+            )
+          }
+        }
+        .get
+    }
 
   protected def updateTableDescription(bqTable: Table, description: String)(implicit
     settings: Settings
@@ -618,7 +685,7 @@ trait BigQueryJobBase extends LazyLogging {
     labels: Map[String, String]
   ): Dataset = {
     val alterDescriptionIfChanged = (datasetBuilder: Dataset.Builder, changeState: Boolean) => {
-      if (description.isDefined && scala.Option(dataset.getDescription) != description) {
+      if (description.exists(_ != scala.Option(dataset.getDescription).getOrElse(""))) {
         // Update dataset description only when description is explicitly set
         logger.info("Dataset's description has changed")
         datasetBuilder.setDescription(description.orNull) -> true
@@ -626,9 +693,7 @@ trait BigQueryJobBase extends LazyLogging {
         datasetBuilder -> changeState
     }
     val alterLabelsIfChanged = (datasetBuilder: Dataset.Builder, changeState: Boolean) => {
-      val existingLabels =
-        scala.Option(dataset.getLabels).map(_.asScala).getOrElse(Map.empty[String, String])
-      if (existingLabels.size != labels.size || existingLabels != labels) {
+      if (BigQueryJobBase.labelsChanged(dataset.getLabels, labels)) {
         logger.info("Dataset's labels has changed")
         datasetBuilder.setLabels(labels.asJava) -> true
       } else
@@ -640,7 +705,14 @@ trait BigQueryJobBase extends LazyLogging {
       }
     if (changed) {
       logger.info("Updating dataset")
-      builder.build().update()
+      try {
+        builder.build().update()
+      } catch {
+        // Another load has just updated it: the next one compares them again
+        case e: BigQueryException if e.getCode == 412 =>
+          logger.info(s"Dataset ${dataset.getDatasetId.getDataset} updated concurrently")
+          dataset
+      }
     } else {
       logger.info("No metadata change for dataset")
       dataset
@@ -1243,6 +1315,62 @@ object BigQueryJobBase extends LazyLogging {
       }
   }
 
+  /** An update merges the labels of a dataset or a table: the labels that are not declared stay,
+    * whoever set them. Comparing them as well would update the dataset on every load, without any
+    * effect (#1913).
+    *
+    * @return
+    *   true when a declared label is missing or has another value
+    */
+  def labelsChanged(existing: util.Map[String, String], declared: Map[String, String]): Boolean = {
+    val labels = scala.Option(existing).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
+    declared.exists { case (key, value) => !labels.get(key).contains(value) }
+  }
+
+  /** @param attributes
+    *   the column name of the attributes, and their access policy if any
+    * @param policyTagId
+    *   the policy tag of an access policy
+    * @return
+    *   the columns of a table with the policy tag of the access policy of their attribute. The
+    *   columns that keep their policy tags are the same objects
+    */
+  def withPolicyTags(
+    table: String,
+    fields: List[Field],
+    attributes: List[(String, scala.Option[String])],
+    policyTagId: String => String
+  ): List[Field] = {
+    // BigQuery column names are case-insensitive
+    val accessPolicies = attributes.map { case (name, accessPolicy) =>
+      name.toLowerCase -> accessPolicy
+    }.toMap
+    fields.map { field =>
+      accessPolicies.get(field.getName.toLowerCase) match {
+        case None =>
+          // Maybe an ignored field
+          logger.info(s"Ignore this field $table.${field.getName} during CLS application")
+          field
+        case Some(None) =>
+          field
+        case Some(Some(accessPolicy)) =>
+          val tagId = policyTagId(accessPolicy)
+          val fieldPolicyTags =
+            scala
+              .Option(field.getPolicyTags)
+              .map(_.getNames.asScala.toList)
+              .getOrElse(Nil)
+          if (fieldPolicyTags == List(tagId))
+            field
+          else
+            // The other properties of the column, such as its description, are kept
+            field.toBuilder
+              .setPolicyTags(PolicyTags.newBuilder().setNames(List(tagId).asJava).build())
+              .build()
+      }
+    }
+  }
+
   /** Retry on retryable bigquery exception.
     */
   def recoverBigqueryException[T](maxAttempts: Int)(bigqueryProcess: => T): Try[T] = {
@@ -1287,10 +1415,12 @@ object BigQueryJobBase extends LazyLogging {
     val outputTable = BigQueryJobBase.getBqTableForNative(outputTableId)
     buildRLSQueries(outputTable, rls)
   }
+
+  /** @return
+    *   the statements that create or replace the row access policies of a table, each of them
+    *   atomically
+    */
   def buildRLSQueries(outputTable: String, rls: List[RowLevelSecurity]): List[String] = {
-    def revokeAllPrivileges(): String = {
-      s"DROP ALL ROW ACCESS POLICIES ON $outputTable"
-    }
 
     /** Grant privileges to the users and groups defined in the schema
       * @param rlsRetrieved
@@ -1307,7 +1437,7 @@ object BigQueryJobBase extends LazyLogging {
       val name = rlsRetrieved.name
       val filter = rlsRetrieved.predicate
       s"""
-             | CREATE ROW ACCESS POLICY
+             | CREATE OR REPLACE ROW ACCESS POLICY
              |  $name
              | ON
              |  $outputTable
@@ -1317,16 +1447,30 @@ object BigQueryJobBase extends LazyLogging {
              |  ($filter)
              |""".stripMargin
     }
-    val rlsCreateStatements = rls.map { rlsRetrieved =>
+    rls.map { rlsRetrieved =>
       logger.info(s"Building security statement $rlsRetrieved")
       val rlsCreateStatement = grantPrivileges(rlsRetrieved)
       logger.info(s"An access policy will be created using $rlsCreateStatement")
       rlsCreateStatement
     }
+  }
 
-    val rlsDeleteStatement = rls.map(_ => revokeAllPrivileges())
-
-    rlsDeleteStatement ++ rlsCreateStatements
+  /** @param existing
+    *   the names of the row access policies of the table
+    * @return
+    *   the statements that drop the policies that are no longer declared. A name that differs only
+    *   by its case is kept: it could be the declared policy
+    */
+  def buildRLSDropQueries(
+    outputTableId: TableId,
+    rls: List[RowLevelSecurity],
+    existing: List[String]
+  ): List[String] = {
+    val outputTable = BigQueryJobBase.getBqTableForNative(outputTableId)
+    val declared = rls.map(_.name.toLowerCase).toSet
+    existing
+      .filterNot(name => declared(name.toLowerCase))
+      .map(name => s"DROP ROW ACCESS POLICY IF EXISTS `$name` ON $outputTable")
   }
 
 }

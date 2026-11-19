@@ -368,7 +368,7 @@ trait SparkIngestionPipeline { self: IngestionJob =>
           case _ =>
             TransformContext.createSparkTask(context, Some(schema))
         }
-      if (autoTask.sink(mergedDF, Some(this.schema))) {
+      if (writingWith(autoTask)(autoTask.sink(mergedDF, Some(this.schema)))) {
         Success(0L)
       } else {
         Failure(new Exception("Failed to sink"))

@@ -1,0 +1,9 @@
+version: 1
+task:
+  name: order_export
+  writeStrategy:
+    type: OVERWRITE
+  sink:
+    connectionRef: "files"
+    format: "parquet"
+    path: "{{SL_ROOT}}/datasets/exports/order_export.parquet"

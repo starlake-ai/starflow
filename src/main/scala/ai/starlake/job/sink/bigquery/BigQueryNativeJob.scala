@@ -12,7 +12,7 @@ import ai.starlake.schema.model.{
   TableInfo as SLTableInfo
 }
 import ai.starlake.sql.SQLUtils
-import ai.starlake.utils.{JobBase, JobResult, Utils}
+import ai.starlake.utils.{JobBase, JobResult}
 import better.files.File
 import com.google.cloud.bigquery.BigQuery.QueryResultsOption
 import com.google.cloud.bigquery.JobInfo.{CreateDisposition, SchemaUpdateOption, WriteDisposition}
@@ -26,8 +26,9 @@ import java.net.URI
 import java.nio.channels.Channels
 import java.nio.file.Files
 import java.util.UUID
+import scala.annotation.tailrec
 import scala.jdk.CollectionConverters.*
-import scala.util.{Failure, Success, Try, Using}
+import scala.util.{Failure, Success, Try}
 
 /** A load job that BigQuery ran and that failed: its execution errors may report bad records
   *
@@ -48,6 +49,14 @@ class BigQueryNativeJob(
   override def name: String = s"bqload-${bqNativeTable}"
 
   logger.debug(s"BigQuery Config $cliConfig")
+
+  @volatile private var wroteTables: Boolean = false
+
+  /** @return
+    *   true once a job of this one may have written to its tables: a job that succeeded, a script
+    *   that failed after committing some of its statements, or a job that may still be running
+    */
+  def mayHaveWritten: Boolean = wroteTables
 
   def loadPathsToBQ(
     tableInfo: SLTableInfo,
@@ -114,27 +123,26 @@ class BigQueryNativeJob(
                         // waitFor throws when the job fails: the failed job reports its bad
                         // records, kept by the native loader
                         case exception: BigQueryException =>
-                          Try(
-                            bigquery(accessToken = cliConfig.accessToken).getJob(job.getJobId)
-                          ).toOption
-                            .flatMap(scala.Option(_))
-                            .filter(failed =>
-                              scala
-                                .Option(failed.getStatus)
-                                .flatMap(s => scala.Option(s.getError))
-                                .isDefined
-                            )
-                            .map(Success(_))
-                            .getOrElse(Failure(exception))
+                          val current =
+                            Try(
+                              bigquery(accessToken = cliConfig.accessToken).getJob(job.getJobId)
+                            ).toOption
+                              .flatMap(scala.Option(_))
+                          val failed = current.filter(failed =>
+                            scala
+                              .Option(failed.getStatus)
+                              .flatMap(s => scala.Option(s.getError))
+                              .isDefined
+                          )
+                          // A job that did not fail may still load its rows
+                          if (failed.isEmpty) wroteTables = true
+                          failed.map(Success(_)).getOrElse(Failure(exception))
                       }
                   }
                   .map { jobResult =>
                     if (scala.Option(jobResult.getStatus.getError()).isEmpty) {
+                      wroteTables = true
                       val stats = jobResult.getStatistics.asInstanceOf[LoadStatistics]
-                      applyRLSAndCLS().recover { case e =>
-                        Utils.logException(logger, e)
-                        throw e
-                      }
                       BqLoadInfo(
                         scala.Option(stats.getOutputRows).map(_.longValue).getOrElse(0L),
                         // Parquet loads set no maximum of bad records
@@ -170,11 +178,19 @@ class BigQueryNativeJob(
   ): Job = {
     val loadConfig = bqLoadLocaFileConfig(bqSchema, formatOptions)
     val jobId: JobId = newJobIdWithLocation()
-    Using(bigquery(accessToken = cliConfig.accessToken).writer(jobId, loadConfig)) { writer =>
-      val outputStream = Channels.newOutputStream(writer)
-      sourceURIs
-        .foreach(uri => Files.copy(File(new URI(uri)).path, outputStream))
-    }
+    val outputStream = Channels.newOutputStream(
+      bigquery(accessToken = cliConfig.accessToken).writer(jobId, loadConfig)
+    )
+    // Closing the channel completes the upload, which starts the load job: an upload that fails
+    // is left incomplete, so that no job loads part of the files
+    sourceURIs
+      .foreach(uri => Files.copy(File(new URI(uri)).path, outputStream))
+    Try(outputStream.close()).recover {
+      // The upload completed before the failure: a retry would load the files again
+      case _
+          if Try(bigquery(accessToken = cliConfig.accessToken).getJob(jobId)).toOption
+            .exists(_ != null) =>
+    }.get
     bigquery(accessToken = cliConfig.accessToken).getJob(jobId)
   }
 
@@ -351,16 +367,24 @@ class BigQueryNativeJob(
               )
             if (!dryRun) {
               logger.info(s"Waiting for job $jobId")
-              queryJob.waitFor(
-                RetryOption.maxAttempts(0),
-                RetryOption.totalTimeout(
-                  org.threeten.bp.Duration.ofMinutes(
+              val done =
+                try
+                  BigQueryNativeJob.waitForQueryJob(
+                    queryJob,
                     queryJobTimeoutMs
                       .orElse(jobTimeoutMs)
                       .getOrElse(settings.appConfig.longJobTimeoutMs)
                   )
-                )
-              )
+                catch {
+                  case failure: BigQueryException => throw failure
+                  case failure: RuntimeException  =>
+                    // A script that failed may have committed some of its statements, and a job
+                    // still running after the timeout may still write
+                    wroteTables = true
+                    throw failure
+                }
+              wroteTables = true
+              done
             } else {
               logger.info(s"Dry run $jobId")
               queryJob
@@ -556,14 +580,11 @@ class BigQueryNativeJob(
                 JobInfo.newBuilder(finalConfiguration).setJobId(jobId).build()
               )
             logger.info(s"Waiting for job $jobId")
-            jobInfo.waitFor(
-              RetryOption.totalTimeout(
-                org.threeten.bp.Duration.ofMinutes(
-                  queryJobTimeoutMs
-                    .orElse(jobTimeoutMs)
-                    .getOrElse(settings.appConfig.longJobTimeoutMs)
-                )
-              )
+            BigQueryNativeJob.waitForQueryJob(
+              jobInfo,
+              queryJobTimeoutMs
+                .orElse(jobTimeoutMs)
+                .getOrElse(settings.appConfig.longJobTimeoutMs)
             )
           }
           .map { jobResult =>
@@ -579,10 +600,6 @@ class BigQueryNativeJob(
             val table = bigquery(accessToken = cliConfig.accessToken).getTable(tableId)
             setTagsOnTable(table)
 
-            applyRLSAndCLS().recover { case e =>
-              Utils.logException(logger, e)
-              throw new Exception(e)
-            }
             updateTableDescription(table, cliConfig.outputTableDesc.getOrElse(""))
             targetTableSchema
               .map(updateColumnsDescription)
@@ -591,6 +608,7 @@ class BigQueryNativeJob(
                   BigQueryJobBase.dictToBQSchema(getFieldsDescriptionSource(sql))
                 )
               )
+            applyRLSAndCLS().get
             BigQueryJobResult(Some(results), totalBytesProcessed, Some(jobResult))
           }
       }.flatten
@@ -641,11 +659,9 @@ class BigQueryNativeJob(
         else {
           if (wait) {
             logger.info(s"Waiting for job $jobId")
-            job.waitFor(
-              RetryOption.totalTimeout(
-                org.threeten.bp.Duration
-                  .ofMinutes(jobTimeoutMs.getOrElse(settings.appConfig.longJobTimeoutMs))
-              )
+            BigQueryNativeJob.waitForQueryJob(
+              job,
+              jobTimeoutMs.getOrElse(settings.appConfig.longJobTimeoutMs)
             )
           } else {
             logger.info(s"${job.getJobId()} is running in background")
@@ -664,6 +680,85 @@ class BigQueryNativeJob(
 }
 
 object BigQueryNativeJob {
+
+  /** Waits for a query job, for `timeoutMs` at most.
+    *
+    * By default, the client retries the polling on the messages of rate limits, even for a job that
+    * is done: a job that failed on a rate limit was polled until the timeout. No message is retried
+    * here, so that the failure of the job reaches `recoverBigqueryException`, which runs the
+    * statement again as a new job, within its budget (#1913). The polling request itself can be
+    * rate-limited while the job runs: only the state of the job tells them apart.
+    *
+    * @return
+    *   the job, done and successful
+    * @throws BigQueryException
+    *   the failure of a single statement, that nothing committed: retried when it is transient
+    * @throws RuntimeException
+    *   not retried, since a new job would run statements twice: a script that failed, as it may
+    *   have committed some of them, or a job still running after the timeout, whose cancellation is
+    *   requested unless it is a script, which could then stop halfway
+    */
+  def waitForQueryJob(job: Job, timeoutMs: Long): Job = {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    def remainingMs: Long = deadline - System.currentTimeMillis()
+
+    @tailrec
+    def poll(): scala.Option[Job] = {
+      val polled: scala.Option[Job] = Try(
+        job.waitFor(
+          BigQueryRetryConfig.newBuilder().build(),
+          RetryOption.maxAttempts(0),
+          RetryOption.totalTimeout(org.threeten.bp.Duration.ofMillis(math.max(remainingMs, 1L)))
+        )
+      ) match {
+        case Success(null) =>
+          throw new RuntimeException(s"BigQuery job ${job.getJobId} no longer exists")
+        case Success(current) =>
+          Some(current)
+        case Failure(exception: BigQueryException)
+            if BigQueryJobBase.isRetryableException(exception) =>
+          // Not reload, which throws for a job that failed. None when the state cannot be read
+          Try(job.getBigQuery.getJob(job.getJobId)).toOption.map { current =>
+            if (current == null) throw exception else current
+          }
+        case Failure(exception) =>
+          throw exception
+      }
+      polled.filter(_.getStatus.getState == JobStatus.State.DONE) match {
+        case done @ Some(_)           => done
+        case None if remainingMs <= 0 => None
+        case None                     =>
+          // The client stops polling before the timeout when its next delay would exceed it
+          Thread.sleep(math.min(1000L, remainingMs))
+          poll()
+      }
+    }
+
+    poll() match {
+      case Some(done) if done.getStatus.getError == null =>
+        done
+      case Some(failed) =>
+        val failure = new BigQueryException(List(failed.getStatus.getError).asJava)
+        throw if (isScript(failed)) new RuntimeException(failure.getMessage) else failure
+      case None =>
+        val cancelled =
+          Try(scala.Option(job.getBigQuery.getJob(job.getJobId))).toOption.flatten
+            .exists(!isScript(_)) &&
+          Try(job.cancel()).getOrElse(false)
+        throw new RuntimeException(
+          s"BigQuery job ${job.getJobId} was still running after $timeoutMs ms: " + (
+            if (cancelled) "its cancellation was requested"
+            else "it was not cancelled, and may still write to its tables"
+          )
+        )
+    }
+  }
+
+  private def isScript(job: Job): Boolean =
+    scala
+      .Option(job.getStatistics[JobStatistics]())
+      .flatMap(statistics => scala.Option(statistics.getNumChildJobs))
+      .exists(_ > 0)
 
   /** @return
     *   the options of a BigQuery load job reading files of this metadata format

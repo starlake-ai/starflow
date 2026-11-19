@@ -44,6 +44,7 @@ import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.{ExtractSchema, JdbcDbUtils}
 import ai.starlake.job.ingest.{AuditLog, RejectedRecord}
 import ai.starlake.job.metrics.ExpectationReport
+import ai.starlake.lineage.InheritedDescriptions
 import ai.starlake.schema.model.*
 import ai.starlake.schema.model.Severity.*
 import ai.starlake.sql.SQLUtils
@@ -1207,7 +1208,15 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
             val tables = Option(domain.tables).getOrElse(Nil) ::: schemaRefs
             val finalTables =
               if (raw) tables
-              else tables.map(t => t.copy(metadata = Some(t.mergedMetadata(domain.metadata))))
+              else
+                tables.map { t =>
+                  // Once merged, the metadata of the table no longer tells where it comes from
+                  if (t.inheritsPositionHeader(domain.metadata))
+                    logger.warn(
+                      s"Table ${domain.name}.${t.name} inherits withHeader: true from its domain: the first line of each of its POSITION files is skipped. Set withHeader on the table to choose"
+                    )
+                  t.copy(metadata = Some(t.mergedMetadata(domain.metadata)))
+                }
             logger.info(s"Successfully loaded Domain  in $path")
             Success(domain.copy(tables = finalTables))
           case (path, Failure(e)) =>
@@ -2467,17 +2476,40 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   ): AutoTaskInfo = {
     logger.debug(s"Diff SQL attributes with YAML for task ${task.getName()}: $list")
     if (list.nonEmpty) {
-      val updatedTask =
-        task
-          .updateAttributes(list.filterNot(_._2 == AttributeStatus.REMOVED).map(_._1))
-          .copy(sql = None) // do not serialize sql. It is in its own file
-      val taskPath = new Path(DatasetArea.transform, s"${task.domain}/${task.name}.sl.yml")
-
-      YamlSerde.serializeToPath(taskPath, updatedTask)(
-        settings.storageHandler()
-      )
+      val incomingAttributes = list.filterNot(_._2 == AttributeStatus.REMOVED).map(_._1)
+      // A SELECT returns at least one column: none means that its columns were not read (#1949)
+      if (incomingAttributes.isEmpty && task.attributes.nonEmpty)
+        throw new IllegalStateException(
+          s"The sync of task ${task.fullName()} would remove all its attributes: its YAML is left unchanged"
+        )
+      val attributes = task.updateAttributes(incomingAttributes).attributes
+      val folder = new Path(DatasetArea.transform, task.domain)
+      val taskPath = new Path(folder, s"${task.name}.sl.yml")
+      // The task is loaded rendered and merged with the job default: only its attributes are
+      // written, into the file as written (#1953)
+      val yaml =
+        if (storage.exists(taskPath))
+          TaskYamlAttributes.replace(
+            storage.read(taskPath),
+            attributes,
+            Utils.parseJinja(_, activeEnvVars()),
+            taskPath.toString
+          )
+        else if (declaredInJobConfig(folder, task.name))
+          throw new IllegalStateException(
+            s"Task ${task.fullName()} is declared in the _config.sl.yml of $folder: its attributes are left unchanged, update them there by hand"
+          )
+        else if (taskCommandPath(folder, task.name).isEmpty)
+          throw new IllegalStateException(
+            s"Neither the YAML file of task ${task.fullName()} nor its SQL or Python file is in $folder, the folder of its domain: its attributes are left unchanged"
+          )
+        else
+          // A task that has only an SQL or Python file
+          TaskYamlAttributes.create(attributes)
+      storage.write(yaml, taskPath)
+      // The SQL of the task is rendered too: the SQL file is written only from a given SQL text
       val sqlPath = new Path(DatasetArea.transform, s"${task.domain}/${task.name}.sql")
-      optSql.orElse(task.sql).foreach { sql =>
+      optSql.foreach { sql =>
         storage.write(sql, sqlPath)
       }
       taskUpdated(task.domain, task.name)
@@ -2490,6 +2522,17 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       taskUpdated(task.domain, task.name)
       this.taskOnly(task.fullName()).getOrElse(throw new IllegalStateException("Should not happen"))
       task
+    }
+  }
+
+  /** Whether the `_config.sl.yml` of a job folder declares the task among its `tasks` */
+  private def declaredInJobConfig(folder: Path, taskName: String): Boolean = {
+    val configPath = new Path(folder, "_config.sl.yml")
+    storage.exists(configPath) && loadJobDesc(configPath).toOption.exists { jobDesc =>
+      Option(jobDesc.tasks).getOrElse(Nil).exists { declared =>
+        val name = Option(declared.name).filter(_.nonEmpty).getOrElse(declared.table)
+        name.equalsIgnoreCase(taskName)
+      }
     }
   }
 
@@ -2537,6 +2580,34 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         logger.error("Failed to get task", exception)
         throw exception
     }
+  }
+
+  /** Puts into the attributes of a sync the descriptions that the columns of the task inherit
+    * through their column lineage (#1948): for `transform --sync-preview` and `--sync-apply`, not
+    * for the sync of a run. A column whose lineage cannot be read inherits nothing.
+    * @param list
+    *   the attributes of the sync and their status, Nil when nothing changes
+    * @param query
+    *   the SELECT read instead of the one of the task
+    * @param refresh
+    *   whether an inherited description replaces the one that an attribute has
+    */
+  def inheritDescriptions(
+    taskFullName: String,
+    list: List[(TableAttribute, AttributeStatus)],
+    query: Option[String],
+    refresh: Boolean
+  ): InheritedDescriptions.Result = {
+    val task = taskByFullName(taskFullName).get
+    val inherited = new InheritedDescriptions(this, refresh).inheritedFor(task, query)
+    inherited.failed.foreach { exception =>
+      logger.warn(
+        s"The column lineage of task $taskFullName is not read, its columns inherit no description: ${exception.getMessage}"
+      )
+    }
+    InheritedDescriptions
+      .merge(task.attributes, list, inherited.getOrElse(Map.empty), refresh)
+      .copy(error = inherited.failed.toOption.map(Utils.exceptionMessagesChainAsString))
   }
 
   def findTableFromFilename(domainName: String, filename: String): Option[SchemaInfo] = {

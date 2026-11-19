@@ -76,16 +76,13 @@ class PositionIngestionJob(
     */
   override def loadDataSet(): Try[DataFrame] = {
     Try {
-      val dfInNonFiltered = mergedMetadata.resolveEncoding().toUpperCase match {
-        case "UTF-8" =>
-          session.read.options(sparkOptions).text(path.map(_.toString): _*)
-        case _ =>
-          PositionIngestionUtil.loadDfWithEncoding(
-            session,
-            path,
-            mergedMetadata.resolveEncoding()
-          )
-      }
+      val dfInNonFiltered = PositionIngestionUtil.loadLines(
+        session,
+        path,
+        mergedMetadata.resolveEncoding(),
+        mergedMetadata.resolveWithHeader(),
+        sparkOptions
+      )
       val dfIn = schema.filter
         .map { filterExpr =>
           logger.info(s"Applying filter expression: $filterExpr")
@@ -118,7 +115,8 @@ class PositionIngestionJob(
       .write
       .format("csv")
       .option("encoding", mergedMetadata.resolveEncoding())
-      .option("header", false)
+      // A header line, which a reload with withHeader skips, as the native replay file has (#1946)
+      .option("header", mergedMetadata.resolveWithHeader().booleanValue())
       .option("delimiter", "\n")
       .option("quote", "\n")
   }
@@ -129,17 +127,54 @@ class PositionIngestionJob(
   */
 object PositionIngestionUtil {
 
+  /** @param withHeader
+    *   true if the first line of each file is a header, which is skipped
+    * @return
+    *   the lines of the files, in a single `value` column
+    */
+  def loadLines(
+    session: SparkSession,
+    path: List[Path],
+    encoding: String,
+    withHeader: Boolean,
+    sparkOptions: Map[String, String]
+  ): DataFrame =
+    encoding.toUpperCase match {
+      // The text reader cannot skip the header line of each file
+      case "UTF-8" if !withHeader =>
+        session.read.options(sparkOptions).text(path.map(_.toString): _*)
+      case _ =>
+        loadDfWithEncoding(session, path, encoding, withHeader, sparkOptions)
+    }
+
   def loadDfWithEncoding(
     session: SparkSession,
     path: List[Path],
-    encoding: String
+    encoding: String,
+    withHeader: Boolean,
+    sparkOptions: Map[String, String]
   ): DataFrame = {
     // This is an hack of how to use CSV source as a text source and have the ability to specify an encoding.
-    // Using wholeTextFile requires the input to be in UTF-8
+    // Using wholeTextFile requires the input to be in UTF-8. It drops the blank lines.
+    // The options of the table apply, except those that would parse the lines
     session.read
+      .options(sparkOptions)
       .schema(StructType(Array(StructField("value", StringType))))
       .option("encoding", encoding)
-      .option("delimiter", "\n")
+      // Read before `delimiter`
+      .option("sep", "\n")
+      // No quoting, as with the separator, which a line never holds: a line keeps its quotes, and
+      // its positions. An empty quote would make a line starting with NUL a quoted value.
+      .option("quote", "\n")
+      .option("comment", "")
+      .option("ignoreLeadingWhiteSpace", false)
+      .option("ignoreTrailingWhiteSpace", false)
+      .option("nullValue", "")
+      .option("multiLine", false)
+      .option("enforceSchema", true)
+      .option("maxCharsPerColumn", -1)
+      // Skips the first line of each file
+      .option("header", withHeader)
       .csv(path.map(_.toString): _*)
   }
 

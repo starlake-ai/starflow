@@ -28,9 +28,10 @@ import ai.starlake.job.metrics.{
   ExpectationAssertionHandler,
   ExpectationJob,
   ExpectationReport,
+  ExpectationsFailedBeforeCommitException,
   JdbcExpectationAssertionHandler
 }
-import ai.starlake.job.sink.bigquery.BigQueryJobBase
+import ai.starlake.job.sink.bigquery.{BigQueryJobBase, BigQueryJobResult}
 import ai.starlake.job.strategies.TransformStrategiesBuilder
 import ai.starlake.schema.handlers.{SchemaHandler, SqlTransformations, StorageHandler}
 import ai.starlake.schema.model.*
@@ -38,6 +39,7 @@ import ai.starlake.sql.SQLUtils
 import ai.starlake.transpiler.JSQLTranspiler
 import ai.starlake.utils.Formatter.RichFormatter
 import ai.starlake.utils.*
+import com.google.cloud.bigquery.Schema
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.types.StructType
@@ -105,21 +107,9 @@ abstract class AutoTask(
     * @return
     *   List of ExpectationReport containing pass/fail status for each assertion
     */
-  def runExpectations(): List[ExpectationReport] = {
-    val (database, domain, table) = expectationTarget
-    new ExpectationJob(
-      Option(applicationId()),
-      database,
-      domain,
-      table,
-      taskDesc.expectations,
-      storageHandler,
-      schemaHandler,
-      expectationAssertionHandler,
-      interactive = true,
-      transpileSql = transpileSql
-    ).runExpectations()
-  }
+  def runExpectations(): List[ExpectationReport] =
+    expectationJob(taskDesc.expectations, expectationAssertionHandler, interactive = true)
+      .runExpectations()
 
   /** Runs expectations and persists the results to the expectations audit table.
     *
@@ -129,21 +119,152 @@ abstract class AutoTask(
     * @return
     *   Try[JobResult] indicating success or failure of the expectation run
     */
-  def runAndSinkExpectations(): Try[JobResult] = {
+  def runAndSinkExpectations(): Try[JobResult] =
+    expectationJob(taskDesc.expectations, expectationAssertionHandler, interactive = false).run()
+
+  @volatile private var _expectationVariables: Map[String, Any] = Map.empty
+
+  /** Gives variables to the macros of the expectations of the task: the second step of a native
+    * load gives the counters of the load (#1976)
+    */
+  def withExpectationVariables(variables: Map[String, Any]): this.type = {
+    _expectationVariables = variables
+    this
+  }
+
+  protected def expectationJob(
+    expectations: List[ExpectationItem],
+    handler: ExpectationAssertionHandler,
+    interactive: Boolean
+  ): ExpectationJob = {
     val (database, domain, table) = expectationTarget
     new ExpectationJob(
       Option(applicationId()),
       database,
       domain,
       table,
-      taskDesc.expectations,
+      expectations,
       storageHandler,
       schemaHandler,
-      expectationAssertionHandler,
-      interactive = false,
-      transpileSql = transpileSql
-    ).run()
+      handler,
+      interactive = interactive,
+      transpileSql = transpileSql,
+      variables = _expectationVariables
+    )
   }
+
+  /** The expectations declared `failOnError` that the write of the task runs inside its
+    * transaction, before its commit, under `expectations.beforeCommit` (#1976). None in test mode,
+    * where the test framework reports each expectation, nor for an audit table.
+    */
+  lazy val expectationsBeforeCommit: List[ExpectationItem] =
+    if (settings.appConfig.expectations.checkedBeforeCommit && !test && !taskDesc.isAuditTable())
+      taskDesc.expectations.filter(_.failOnError)
+    else Nil
+
+  @volatile private var _expectationsCheckedBeforeCommit: List[ExpectationItem] = Nil
+
+  /** @return
+    *   the expectations that the write of the task checked before its commit
+    */
+  def expectationsCheckedBeforeCommit: List[ExpectationItem] = _expectationsCheckedBeforeCommit
+
+  protected def markCheckedBeforeCommit(expectations: List[ExpectationItem]): Unit =
+    _expectationsCheckedBeforeCommit = expectations
+
+  @volatile private var leavesUncheckedExpectations: Boolean = false
+
+  /** For the second step of a native load, which receives the expectations that the load checks
+    * before the commit: those that its write cannot check are left to the load, which runs them
+    * once it is audited
+    */
+  def leavingUncheckedExpectations(): this.type = {
+    leavesUncheckedExpectations = true
+    this
+  }
+
+  /** Sinks the reports of the expectations checked before the commit of the write, which one of
+    * them failed
+    *
+    * @param outcome
+    *   what became of the write
+    * @param cause
+    *   the error that the failed expectation raised in the statements of the write, if any
+    * @return
+    *   the failure of the task, which names the expectations that failed
+    */
+  protected def failedBeforeCommit(
+    reports: List[ExpectationReport],
+    outcome: String,
+    cause: Option[Throwable] = None
+  ): ExpectationsFailedBeforeCommitException = {
+    val failure =
+      expectationJob(Nil, expectationAssertionHandler, interactive = false)
+        .sinkAndCheck(reports, failed = true)
+        .failed
+        .toOption
+        .map(_.getMessage)
+        .getOrElse(s"${reports.count(!_.success)} Expectations failed")
+    val failed = reports.filterNot(_.success).map(_.params).mkString(", ")
+    val exception = new ExpectationsFailedBeforeCommitException(
+      s"$failure before the commit of the write of $fullTableName: $failed. $outcome"
+    )
+    cause.foreach(exception.addSuppressed)
+    exception
+  }
+
+  @volatile private var wroteTarget: Boolean = false
+
+  /** @return
+    *   true once the task may have written rows to its table, even when it then failed: on its
+    *   postsql, its access policies, its audit row or its expectations. A load that fails after
+    *   that point keeps its files, since loading them again could add these rows again.
+    */
+  def targetWritten: Boolean = wroteTarget
+
+  protected def markTargetWritten(): Unit = wroteTarget = true
+
+  /** Called once the write of the task is rolled back, when nothing else may have written its table
+    */
+  protected def markTargetNotWritten(): Unit = wroteTarget = false
+
+  /** Runs a task that writes the table of this one, and keeps whether it wrote it, failed or not */
+  protected def writingWith[T](task: AutoTask)(run: => T): T =
+    try run
+    finally if (task.targetWritten) markTargetWritten()
+
+  /** Runs the expectations of a task that has written its table, and persists their results.
+    *
+    * Throws when `expectations.failOnError` is set and an expectation fails, so that the task
+    * fails, as a load does. Its rows stay written. In test mode, the test framework reports each
+    * expectation itself. Without `expectations.failOnError`, nothing here fails the task.
+    *
+    * @param checkedBeforeCommit
+    *   the expectations that the write checked before its commit, with their reports: they do not
+    *   run again, and their reports are persisted with the others
+    */
+  protected def checkExpectations(
+    checkedBeforeCommit: List[(ExpectationItem, ExpectationReport)] = Nil
+  ): Unit =
+    if (settings.appConfig.expectations.active && !taskDesc.isAuditTable()) {
+      Try {
+        val job = expectationJob(
+          // Those of the second step of a load that it did not check are left to the load
+          if (leavesUncheckedExpectations) Nil
+          else taskDesc.expectations.diff(checkedBeforeCommit.map(_._1)),
+          expectationAssertionHandler,
+          interactive = false
+        )
+        val reports = checkedBeforeCommit.map(_._2) ++ job.runExpectations()
+        job.sinkAndCheck(reports, job.failOnError())
+      }.flatten match {
+        case Failure(exception) if settings.appConfig.expectations.failOnError && !test =>
+          throw exception
+        case Failure(exception) =>
+          logger.warn(Utils.exceptionAsString(exception))
+        case _ =>
+      }
+    }
 
   def createAuditTable(): Boolean
 
@@ -244,9 +365,13 @@ abstract class AutoTask(
       if (resolvedSelectColumns.isEmpty || resolvedSelectColumns == List("*")) None
       else {
         val target = targetColumns.map(_.toLowerCase)
+        // Without their quotes, such as those of the second step of a native load (#1952)
         val missing =
           if (target.isEmpty) Nil
-          else resolvedSelectColumns.filterNot(c => target.contains(c.toLowerCase))
+          else
+            SQLUtils
+              .unquoteAgressive(resolvedSelectColumns)
+              .filterNot(c => target.contains(c.toLowerCase))
         if (missing.isEmpty) None
         else {
           val taskName = taskDesc.fullName()
@@ -340,18 +465,22 @@ abstract class AutoTask(
     *   Force table existence check result (for testing)
     * @param forceNative
     *   Force native execution (disable Spark format)
+    * @param templateVariables
+    *   variables of the write-strategy templates, besides those of the task
     * @return
     *   Concatenated ALTER + main SQL statements
     */
   def buildAllSQLQueriesMerged(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean] = None,
-    forceNative: Boolean = false
+    forceNative: Boolean = false,
+    templateVariables: Map[String, Any] = Map.empty
   ) = {
     val (alterSqlOpt, mainSql) = buildAllSQLQueries(
       sql,
       tableExistsForcedValue,
-      forceNative
+      forceNative,
+      templateVariables
     )
     val alterSql = alterSqlOpt.getOrElse("")
     alterSql + mainSql
@@ -378,13 +507,16 @@ abstract class AutoTask(
     *   Force table existence check result (for testing)
     * @param forceNative
     *   Force native execution (disable Spark format)
+    * @param templateVariables
+    *   variables of the write-strategy templates, besides those of the task
     * @return
     *   Tuple of (Optional ALTER statements, main SQL statement)
     */
   def buildAllSQLQueries(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean] = None,
-    forceNative: Boolean = false
+    forceNative: Boolean = false,
+    templateVariables: Map[String, Any] = Map.empty
   ): (Option[String], String) = {
     val runConnection =
       if (forceNative) {
@@ -463,7 +595,7 @@ abstract class AutoTask(
           materializedView = resolveMaterializedView(),
           jdbcRunEngine,
           sinkConfig,
-          strategyTemplateVariables()
+          strategyTemplateVariables() ++ templateVariables
         )
         // When syncSqlWithYaml is enabled (SL_SYNC_SQL_WITH_YAML=true), align the task's YAML
         // attributes with the SQL before running, so that a column added to the SELECT flows into
@@ -1056,7 +1188,8 @@ object AutoTask extends LazyLogging {
     parseSQL: Boolean,
     pageSize: Int,
     pageNumber: Int,
-    scheduledDate: Option[String]
+    scheduledDate: Option[String],
+    dryRun: Boolean = false
   )(implicit
     settings: Settings,
     storageHandler: StorageHandler,
@@ -1126,7 +1259,7 @@ object AutoTask extends LazyLogging {
       accessToken = accessToken,
       resultPageSize = pageSize,
       resultPageNumber = pageNumber,
-      dryRun = false,
+      dryRun = dryRun,
       scheduledDate = scheduledDate,
       syncSchema = false
     )
@@ -1179,6 +1312,52 @@ object AutoTask extends LazyLogging {
         throw e
     }
   }
+
+  /** @return
+    *   the schema of the result of a SELECT on a BigQuery connection, from a dry run, which is
+    *   free, reads no data, and gives the types that BigQuery would produce (#1950)
+    */
+  def bigQueryDryRunSchema(
+    sql: String,
+    connection: Settings.ConnectionInfo,
+    accessToken: Option[String],
+    connectionName: Option[String]
+  )(implicit
+    settings: Settings,
+    storageHandler: StorageHandler,
+    schemaHandler: SchemaHandler
+  ): Try[Schema] =
+    Try(
+      require(
+        connection.isBigQuery(),
+        s"A dry run of the SELECT needs a BigQuery connection, not ${connection.`type`}"
+      )
+    ).flatMap(_ =>
+      executeSelectOnly(
+        domain = "__ignore__",
+        table = "__ignore__",
+        sql = SQLUtils.stripComments(sql).stripSuffix(";").trim,
+        summarizeOnly = false,
+        connection = connection,
+        accessToken = accessToken,
+        connectionName = connectionName,
+        test = false,
+        parseSQL = true,
+        pageSize = 1,
+        pageNumber = 1,
+        scheduledDate = None,
+        dryRun = true
+      ).map {
+        case result: BigQueryJobResult =>
+          result
+            .dryRunSchema()
+            .getOrElse(throw new IllegalStateException("The dry run of the SELECT gave no schema"))
+        case result =>
+          throw new IllegalStateException(
+            s"The dry run of the SELECT on a BigQuery connection gave a ${result.getClass.getSimpleName}"
+          )
+      }
+    )
 
   def executeSelectSchema(
     domain: String,

@@ -431,8 +431,8 @@ object BigQueryNativeSchema extends LazyLogging {
 
   /** @return
     *   the type of each top-level leaf attribute whose column type in the target schema differs
-    *   from its raw `ddlMapping.bigquery`, by attribute name: the column kept its type or the
-    *   mapping is disabled. POSITION loads cast their values to these types.
+    *   from its raw `ddlMapping.bigquery`, by attribute name: the column kept its type, the mapping
+    *   is disabled, or the type has none (#1886). POSITION loads cast their values to these types.
     */
   def castTypes(
     targetSchema: BQSchema,
@@ -442,11 +442,11 @@ object BigQueryNativeSchema extends LazyLogging {
     attributes.flatMap { attribute =>
       for {
         tpe <- attribute.`type`(schemaHandler)
-        if attribute.attributes.isEmpty &&
-        (tpe.primitiveType != PrimitiveType.decimal || isWideDecimal(tpe))
+        if attribute.attributes.isEmpty
         ddl = tpe.ddlMapping.flatMap(_.get("bigquery"))
-        // The type of a wide decimal comes from its zone, with or without a mapping
-        if ddl.nonEmpty || isWideDecimal(tpe)
+        // A mapped decimal keeps its unparameterized cast, unless it is wide: its type comes from
+        // its zone. A type without mapping takes the type of its column
+        if ddl.isEmpty || tpe.primitiveType != PrimitiveType.decimal || isWideDecimal(tpe)
         field <- Option(targetSchema.getFields).flatMap(fields =>
           fields.asScala.find(_.getName.equalsIgnoreCase(attribute.getFinalName()))
         )

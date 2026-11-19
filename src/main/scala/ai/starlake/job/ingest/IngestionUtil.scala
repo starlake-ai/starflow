@@ -264,7 +264,10 @@ object IngestionUtil {
           Map("table" -> table, "writeFormat" -> settings.appConfig.defaultWriteFormat),
           Map.empty
         )
-      job.runBigQueryJob(Some(createSql)).get
+      val created = job.runBigQueryJob(Some(createSql))
+      // Processes starting together all create the table: the rate limit of table updates can
+      // refuse the statement of one of them once another has created it
+      if (created.isFailure && !job.tableExists(tableId)) created.get
     }
     RejectedRecord.batches(records).foreach { group =>
       val (insert, parameters) = RejectedRecord.bigQueryInsert(table, group)

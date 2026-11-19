@@ -8,6 +8,7 @@ import net.sf.jsqlparser.schema.Column
 import net.sf.jsqlparser.statement.select.{PlainSelect, SelectItem}
 
 import java.util.UUID
+import java.util.concurrent.ThreadLocalRandom
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
@@ -15,13 +16,15 @@ object SqlFormatter extends LazyLogging {
 
   def format(input: String, outputFormat: JSQLFormatter.OutputFormat): String = {
     val sql = input.trim
+    val jinjaId = jinjaMarkerId(sql)
+    val (jinjaOpen, jinjaClose) = (s"_${jinjaId}_0_", s"_${jinjaId}_1_")
     val uppercaseSQL = sql.toUpperCase
     val formatted =
       if (
         uppercaseSQL.startsWith("SELECT") || uppercaseSQL.startsWith("WITH") || uppercaseSQL
           .startsWith("MERGE")
       ) {
-        val preformat = sql.replaceAll("}}", "______\n").replaceAll("\\{\\{", "___\n")
+        val preformat = sql.replace("}}", jinjaClose).replace("{{", jinjaOpen)
         Try(
           JSQLFormatter.format(
             preformat.trim,
@@ -42,8 +45,12 @@ object SqlFormatter extends LazyLogging {
       if (formatted.startsWith("-- failed to format start")) {
         sql
       } else {
-        val postFormat = formatted.replaceAll("______", "}}").replaceAll("___", "{{")
-        if (outputFormat == JSQLFormatter.OutputFormat.HTML) {
+        val postFormat = formatted.replace(jinjaClose, "}}").replace(jinjaOpen, "{{")
+        // JSQLFormatter formats a Jinja expression as part of an identifier: when it changes its
+        // case, or a marker (in a function name, which it splits on underscores), the SQL is kept
+        if (postFormat.contains(jinjaId) || jinjaExpressions(postFormat) != jinjaExpressions(sql)) {
+          sql
+        } else if (outputFormat == JSQLFormatter.OutputFormat.HTML) {
           val startIndex = postFormat.indexOf("<body>") + "<body>".length
           val endIndex = postFormat.indexOf("</body>")
           if (startIndex > 0 && endIndex > 0) {
@@ -62,6 +69,24 @@ object SqlFormatter extends LazyLogging {
       result
     }
   }
+
+  /** @return
+    *   the number of the markers that replace the Jinja delimiters `{{` and `}}` while
+    *   JSQLFormatter formats the SQL: `_<number>_0_` and `_<number>_1_`, identifiers that it
+    *   parses. The number is not in the SQL, so the markers cannot match any of its text, and its
+    *   own underscores are kept (#1898).
+    */
+  private def jinjaMarkerId(sql: String): String =
+    Iterator
+      .continually(ThreadLocalRandom.current().nextLong(1000000000000L, 10000000000000L).toString)
+      .filter(id => !sql.contains(id))
+      .next()
+
+  /** @return
+    *   the Jinja expressions of the SQL, without their whitespace
+    */
+  private def jinjaExpressions(sql: String): List[String] =
+    "(?s)\\{\\{(.*?)\\}\\}".r.findAllMatchIn(sql).map(_.group(1).replaceAll("\\s", "")).toList
 
   def stripComments(sql: String): String = SqlCommentStripper.stripComments(sql).trim
 

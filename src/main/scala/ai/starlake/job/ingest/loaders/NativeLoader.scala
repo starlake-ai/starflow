@@ -78,11 +78,32 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
 
   lazy val engineName: Engine = sinkConnection.getJdbcEngineName()
 
+  /** @return
+    *   the sink of the archive table, which has the columns of the temporary tables: partitioned
+    *   and clustered as the target on the columns that it has only (#1838)
+    */
+  private def archiveSink(columns: List[String]): AllSinks = {
+    val sink = mergedMetadata.getSink().toAllSinks()
+    val archived = NativeLoader.archiveSink(sink, columns)
+    if (archived != sink) archiveSinkWarning
+    archived
+  }
+
+  /** Logged once per load, whose files are archived one by one */
+  private lazy val archiveSinkWarning: Unit =
+    logger.warn(
+      s"The archive table of ${domain.finalName}.${starlakeSchema.finalName} is not partitioned or clustered as the table, on columns that it lacks"
+    )
+
+  /** @param rows
+    *   the SQL of the rows to archive, given the SQL of the temporary table of the first step
+    */
   protected def archiveTableTask(
     database: String,
     schema: String,
     table: String,
-    firstStepTableInfo: TableInfo
+    firstStepTableInfo: TableInfo,
+    rows: String => String = identity
   ): Option[AutoTask] = {
     if (settings.appConfig.archiveTable) {
       val (
@@ -107,14 +128,15 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
           )
         )
       val req =
-        s"SELECT ${firstStepFields.mkString(",")}, '${ingestionJob.applicationId()}' as JOBID FROM $targetTable"
+        s"SELECT ${firstStepFields.mkString(",")}, '${ingestionJob
+            .applicationId()}' as JOBID FROM ${rows(targetTable)}"
       val taskDesc = AutoTaskInfo(
         s"archive-${ingestionJob.applicationId()}",
         Some(req),
         database = archiveDatabaseName,
         archiveDomainName,
         archiveTableName,
-        sink = Some(mergedMetadata.getSink().toAllSinks()),
+        sink = Some(archiveSink(firstStepFields.toList)),
         connectionRef = Option(mergedMetadata.getSinkConnectionRef())
       )
 
@@ -234,10 +256,52 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
 
   /** @param castTypes
     *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
+    * @return
+    *   the DDL type of each attribute for the sink engine, by attribute name, used by POSITION to
+    *   convert each slice of a line, NULL when it does not convert, instead of aborting the whole
+    *   INSERT. An attribute without a mapping for the engine is not converted, the others still are
+    */
+  def ddlTypesByAttribute(castTypes: Map[String, String]): Map[String, String] =
+    starlakeSchema.attributes.flatMap { attribute =>
+      attribute
+        .`type`(schemaHandler)
+        .flatMap(_.ddlMapping)
+        .flatMap(_.get(engineName.toString))
+        .map(attribute.name -> _)
+    }.toMap ++ castTypes
+
+  /** The SQL engine of the sink, which quotes the columns of the second step */
+  lazy val queryEngine: Option[Settings.JdbcEngine] =
+    settings.appConfig.jdbcEngines.get(engineName.toString)
+
+  /** The cast function of the sink engine, NULL on failure: BigQuery calls it SAFE_CAST, DuckDB and
+    * Snowflake TRY_CAST
+    */
+  lazy val safeCastFunction: String = engineName.toString.toLowerCase() match {
+    case "duckdb" | "snowflake" => "TRY_CAST"
+    case _                      => "SAFE_CAST"
+  }
+
+  /** The type of each attribute, by attribute name: POSITION reads some values with its pattern */
+  lazy val typesByAttribute: Map[String, Type] =
+    starlakeSchema.attributes.flatMap { attribute =>
+      attribute.`type`(schemaHandler).map(attribute.name -> _)
+    }.toMap
+
+  /** @param expectations
+    *   the expectations of the task: a task that the loader runs has only those that it checks
+    *   before its commit (#1976), as `IngestionJob` runs the others once the load is audited; the
+    *   generated statements keep them all
+    * @param castTypes
+    *   the DDL types to cast POSITION values to, by attribute name, instead of their `ddlMapping`
+    * @param scripts
+    *   the SQL that computes a scripted attribute instead of its script, by attribute name
     */
   def secondStepSQLTask(
     firstStepTempTableNames: List[String],
-    castTypes: Map[String, String] = Map.empty
+    expectations: List[ExpectationItem],
+    castTypes: Map[String, String] = Map.empty,
+    scripts: Map[String, String] = Map.empty
   ): AutoTask = {
     // val incomingSparkSchema = starlakeSchema.targetSparkSchemaWithoutIgnore(schemaHandler)
 
@@ -248,30 +312,14 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
           .map("SELECT * FROM " + _)
           .mkString("(", " UNION ALL ", ")")
 
-    val queryEngine = settings.appConfig.jdbcEngines.get(engineName.toString)
-    // Per-attribute DDL type for the sink engine, used by POSITION to wrap each
-    // SUBSTR projection in SAFE_CAST so malformed lines fail gracefully (NULL) instead
-    // of aborting the whole INSERT.
-    // An attribute without a mapping for the engine is not cast, the others still are
-    val ddlTypesByAttribute: Map[String, String] = starlakeSchema.attributes.flatMap { attribute =>
-      attribute
-        .`type`(schemaHandler)
-        .flatMap(_.ddlMapping)
-        .flatMap(_.get(engineName.toString))
-        .map(attribute.name -> _)
-    }.toMap ++ castTypes
-    // BigQuery calls it SAFE_CAST, DuckDB and Snowflake TRY_CAST — same semantics
-    // (NULL on failure).
-    val safeCastFunction = engineName.toString.toLowerCase() match {
-      case "duckdb" | "snowflake" => "TRY_CAST"
-      case _                      => "SAFE_CAST"
-    }
     val sqlWithTransformedFields =
       starlakeSchema.buildSecondStepSqlSelectOnLoad(
         tempTable,
         queryEngine,
-        ddlTypesByAttribute,
-        safeCastFunction
+        ddlTypesByAttribute(castTypes),
+        safeCastFunction,
+        typesByAttribute,
+        scripts
       )
 
     val taskDesc = AutoTaskInfo(
@@ -284,7 +332,7 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       postsql = starlakeSchema.postsql,
       sink = mergedMetadata.sink,
       rls = starlakeSchema.rls,
-      expectations = starlakeSchema.expectations,
+      expectations = expectations,
       acl = starlakeSchema.acl,
       comment = starlakeSchema.comment,
       tags = starlakeSchema.tags,
@@ -301,8 +349,10 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
       interactive = None,
       truncate = false,
       test = false,
-      logExecution = true,
-      accessToken = None,
+      // IngestionJob writes the LOAD audit row, as for Spark loads: a TRANSFORM row would
+      // duplicate it. A failure still writes one, as a Spark sink task does (#1838)
+      logExecution = false,
+      accessToken = accessToken,
       resultPageSize = 200,
       resultPageNumber = 1,
       dryRun = false,
@@ -315,7 +365,7 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
   def secondStepSQL(
     firstStepTempTableNames: List[String]
   ): WorkflowStatements = {
-    val task = secondStepSQLTask(firstStepTempTableNames)
+    val task = secondStepSQLTask(firstStepTempTableNames, starlakeSchema.expectations)
     WorkflowStatements(
       task.buildListOfSQLStatements(), // main
       task.expectationStatements(), // expectations
@@ -516,4 +566,27 @@ class NativeLoader(ingestionJob: IngestionJob, accessToken: Option[String])(impl
   lazy val schemaWithMergedMetadata: SchemaInfo =
     effectiveSchema.copy(metadata = Some(mergedMetadata))
 
+}
+
+object NativeLoader {
+
+  /** @param columns
+    *   the columns of the archive table
+    * @return
+    *   the sink of a table, without the partition, or the clustering, of the target when it names a
+    *   column that the archive table lacks. A partition by ingestion time, or on an expression, is
+    *   kept.
+    */
+  def archiveSink(sink: AllSinks, columns: List[String]): AllSinks = {
+    val names = columns.map(_.toLowerCase).toSet
+    def lacks(column: String): Boolean = {
+      val name = column.trim.stripPrefix("`").stripSuffix("`").toLowerCase
+      !name.contains("(") && !names.contains(name) &&
+      !Set("_partitiontime", "_partitiondate").contains(name)
+    }
+    sink.copy(
+      partition = sink.partition.filterNot(_.exists(lacks)),
+      clustering = sink.clustering.filterNot(_.exists(lacks))
+    )
+  }
 }

@@ -336,6 +336,16 @@ class BigQueryNativeSchemaSpec extends TestHelper {
         "code"    -> "STRING",
         "payload" -> "JSON"
       )
+      // A type without mapping takes the type of its column (#1886)
+      val unmapped = List(
+        TableAttribute("count", "unmapped_count"),
+        TableAttribute("day", "unmapped_day"),
+        TableAttribute("price", "decimal")
+      )
+      BigQueryNativeSchema.castTypes(patched(unmapped), unmapped, schemaHandler) shouldBe Map(
+        "count" -> "INT64",
+        "day"   -> "DATE"
+      )
     }
 
     "BigQueryNativeSchema.patch" should "not hide a type change of an attribute" in {

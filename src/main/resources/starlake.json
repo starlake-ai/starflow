@@ -543,6 +543,13 @@
         "tableRemarks": {
           "type": "string",
           "description": "How to get table remarks"
+        },
+        "implicitCommits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The leading keywords of the statements that commit the transaction on their own on this engine, as TRUNCATE on MySQL, a DDL statement on Snowflake, or a procedure call; empty when none does. The expectations checked before the commit (expectations.beforeCommit) need a write that a rollback undoes. They run after the write when this list is absent, when a statement of the write or of its postsql commits on its own, or, when this list is not empty, when the task has presql or postsql statements or parseSQL: false, whose SQL is not analysed. Before the first statement of the write that stays in the transaction, a temporary table may be created and, on a first run, the new table, with a CREATE TABLE and the ALTER TABLE ... ADD statements that complete it: a failed check then drops it."
         }
       },
       "required": ["tables", "quote", "strategyBuilder"]
@@ -636,7 +643,11 @@
           "type": "boolean"
         },
         "failOnError": {
-          "description": "should load / transform fail on expectation error ?",
+          "description": "Should a load or a transform fail when one of its expectations fails? Expectations run after the write, so the rows stay in the table, unless beforeCommit is true. An expectation with failOnError false never fails them. Default is false",
+          "type": "boolean"
+        },
+        "beforeCommit": {
+          "description": "Should the expectations declared failOnError of a load or a transform run inside the transaction of its write, before its commit? A failure then rolls the write back: the table keeps its previous content, and a load whose write is rolled back entirely gives its files back to the stage area. Applies when active and failOnError are true, to the transforms that run their write strategy on BigQuery or through JDBC, and to the native loads, which then load in two steps; Spark writes, BigQuery views, native DuckDB loads in one step, Snowflake loads whose COPY purges the files of their stage (PURGE = TRUE), and JDBC writes that a rollback cannot undo (see implicitCommits in jdbcEngines) still run them after the write. Default is false",
           "type": "boolean"
         }
       }
@@ -649,7 +660,7 @@
           "description": "SQL expression that must evaluate to true for the expectation to pass. Use {{table}} to reference the output table"
         },
         "failOnError": {
-          "description": "should load / transform fail on expectation error ?",
+          "description": "Should a load or a transform fail when this expectation fails? Applies when expectations.failOnError is true in the application settings. With expectations.beforeCommit, such an expectation runs before the commit of the write, which its failure rolls back. Default is true",
           "type": "boolean"
         }
       }
@@ -875,7 +886,7 @@
         },
         "withHeader": {
           "type": "boolean",
-          "description": "does the dataset has a header ? true by default"
+          "description": "Does each file start with a header line? true by default, false for POSITION files"
         },
         "separator": {
           "$ref": "#/definitions/ConvertibleToString",
@@ -1314,7 +1325,7 @@
         },
         "taskTimeoutMs": {
           "type": "integer",
-          "description": "Number of milliseconds before a communication timeout."
+          "description": "Timeout in milliseconds of each statement of the task on BigQuery. Default is longJobTimeoutMs"
         },
         "parseSQL": {
           "type": "boolean",
@@ -2679,15 +2690,15 @@
         },
         "longJobTimeoutMs": {
           "type": "integer",
-          "description": "Timeout in milliseconds for long-running jobs. Default is 3600000 (1 hour)"
+          "description": "Timeout in milliseconds for long-running jobs. Default is 1800000 (30 minutes)"
         },
         "shortJobTimeoutMs": {
           "type": "integer",
-          "description": "Timeout in milliseconds for short-running jobs. Default is 300000 (5 minutes)"
+          "description": "Timeout in milliseconds for short-running jobs. Default is 180000 (3 minutes)"
         },
         "createSchemaIfNotExists": {
           "type": "boolean",
-          "description": "Automatically create database schema/dataset if it does not exist. Default is true"
+          "description": "Automatically create database schema/dataset if it does not exist. On BigQuery, false also leaves the description and the labels of the existing datasets as they are. Default is true"
         },
         "http": {
           "$ref": "#/definitions/HttpV1",
@@ -2744,7 +2755,7 @@
           "type": "boolean"
         },
         "onExceptionRetries": {
-          "description": "Number of retries on transient exceptions",
+          "description": "Number of retries on transient exceptions, such as a BigQuery rate limit. The nth retry waits 5 s * n, plus up to 5 s: by default, 30 to 45 s of waits in all",
           "type": "integer"
         },
         "pythonLibsDir": {
