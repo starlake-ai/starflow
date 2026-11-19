@@ -113,11 +113,24 @@ object Settings extends LazyLogging {
     active: Boolean
   ) // sunk to audit
 
+  /** @param beforeCommit
+    *   true to run the expectations declared `failOnError` of a task inside the transaction of its
+    *   write, before its commit, where the engine writes in one: a failure rolls the write back
+    *   (#1976). Applies with `active` and `failOnError` only.
+    */
   final case class ExpectationsConfig(
     path: String,
     active: Boolean,
-    failOnError: Boolean
-  ) // sunk to expectations
+    failOnError: Boolean,
+    beforeCommit: Boolean = false
+  ) { // sunk to expectations
+
+    /** @return
+      *   true when the expectations declared `failOnError` of a task run before the commit of its
+      *   write
+      */
+    def checkedBeforeCommit: Boolean = active && failOnError && beforeCommit
+  }
 
   final case class Audit(
     path: String,
@@ -167,6 +180,16 @@ object Settings extends LazyLogging {
     * @param tables
     *   for each of the Standard Table Names used by Comet, the specific SQL DDL statements as
     *   expected in the engine's own dialect.
+    * @param implicitCommits
+    *   the leading keywords of the statements that commit the transaction on their own on this
+    *   engine, as `TRUNCATE` on MySQL, a DDL statement on Snowflake, or a procedure call; empty
+    *   when none does. The expectations checked before the commit (#1976) need a write whose
+    *   rollback undoes it. They run after the write when this list is absent, when a statement of
+    *   the write or of its postsql commits on its own, or, when this list is not empty, when the
+    *   task has presql or postsql statements or `parseSQL: false`, whose SQL is not analysed.
+    *   Before the first statement of the write that stays in the transaction, a temporary table may
+    *   be created and, on a first run, the new table, with a `CREATE TABLE` and the `ALTER TABLE
+    *   ... ADD` statements that complete it: a failed check then drops it.
     */
   final case class JdbcEngine(
     tables: Map[String, TableDdl],
@@ -180,7 +203,8 @@ object Settings extends LazyLogging {
     tableRemarks: Option[String] = None,
     supportsJson: Option[Boolean] = None,
     describe: Option[String] = None,
-    lastModifiedQuery: Option[String] = None
+    lastModifiedQuery: Option[String] = None,
+    implicitCommits: Option[List[String]] = None
   ) {
     def quoteIdentifier(anyIdentifier: String) = {
       s"$quote$anyIdentifier$quote"

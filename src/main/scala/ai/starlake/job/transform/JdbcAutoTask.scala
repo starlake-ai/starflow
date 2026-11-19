@@ -2,12 +2,19 @@ package ai.starlake.job.transform
 
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.{ExtractSchemaCmd, ExtractSchemaConfig, JdbcDbUtils}
-import ai.starlake.job.metrics.{ExpectationAssertionHandler, JdbcExpectationAssertionHandler}
+import ai.starlake.job.metrics.{
+  ExpectationAssertionHandler,
+  ExpectationReport,
+  JdbcExpectationAssertionHandler,
+  SQLConnectionExpectationAssertionHandler
+}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.{
   AccessControlEntry,
   AutoTaskInfo,
   Engine,
+  ExpectationItem,
+  Materialization,
   TableSync,
   WriteStrategy,
   WriteStrategyType
@@ -206,15 +213,29 @@ class JdbcAutoTask(
     }
 
     val res = Try {
-      if (
-        df.isEmpty && interactive.isEmpty &&
-        taskDesc.presql.nonEmpty && taskDesc.parseSQL.getOrElse(true)
-      ) {
-        createEmptyTargetForPresql(sqlConnection)
-      }
+      val createdForPresql =
+        if (
+          df.isEmpty && interactive.isEmpty &&
+          taskDesc.presql.nonEmpty && taskDesc.parseSQL.getOrElse(true)
+        ) createEmptyTargetForPresql(sqlConnection)
+        else false
+      // Whether the table exists before the write, which creates it otherwise: the expectations
+      // checked before the commit drop a table that the run created, when its creation committed
+      // (#1976)
+      val targetExistsBeforeWrite: Option[Boolean] =
+        if (
+          df.isEmpty && interactive.isEmpty && expectationsBeforeCommit.nonEmpty &&
+          taskDesc.parseSQL.getOrElse(true)
+        ) Some(tableExists)
+        else None
+      val writesTable =
+        !Set[Materialization](Materialization.VIEW, Materialization.MATERIALIZED_VIEW)
+          .contains(resolveMaterializedView())
+      val createsTable = writesTable && targetExistsBeforeWrite.contains(false)
+      val createdBeforeWrite = writesTable && createdForPresql
       val (alters, mainSql) =
         if (df.isEmpty) {
-          buildAllSQLQueries(None)
+          buildAllSQLQueries(None, tableExistsForcedValue = targetExistsBeforeWrite)
         } else {
           val sql = taskDesc.getSql()
           val mainSql = schemaHandler.substituteRefTaskMainSQL(
@@ -240,7 +261,8 @@ class JdbcAutoTask(
               jdbcSinkEngine.preActions.getOrElse(""),
               Map("schema" -> taskDesc.domain)
             )
-          df match {
+          // The expectations that the write checked before its commit, with their reports
+          val checkedBeforeCommit: List[(ExpectationItem, ExpectationReport)] = df match {
             case Some(loadedDF) =>
               val tblExists = this.tableExists
               JdbcDbUtils.withJDBCConnection(
@@ -311,9 +333,15 @@ class JdbcAutoTask(
                   .options(sinkConnection.options)
                   .save()
               }
+              // The rows are written outside the transaction: the expectations run after them
+              Nil
 
             case None =>
-              JdbcDbUtils.withJDBCConnection(
+              val alterSqls = alters.toList.flatMap(_.splitSql())
+              val finalSqls = mainSql.splitSql()
+              val checkable =
+                rollbackPlan(alterSqls, finalSqls, createsTable, createdBeforeWrite, sqlConnection)
+              val written = JdbcDbUtils.withJDBCConnection(
                 this.schemaHandler.dataBranch(),
                 sinkOptions,
                 sqlConnection
@@ -322,9 +350,8 @@ class JdbcAutoTask(
                   conn.setAutoCommit(sinkConnection.isDuckDb())
                   runPreActions(conn, parsedPreActions.splitSql(";"))
                   runSqls(conn, preSql, "Pre")
-                  alters.foreach(it => runSqls(conn, it.splitSql(), "Alters"))
+                  runSqls(conn, alterSqls, "Alters")
                   conn.setAutoCommit(false)
-                  val finalSqls = mainSql.splitSql()
                   runSqls(conn, finalSqls, "Main")
                   // Committed after the postsql statements, unless one of them fails: some engines
                   // then commit them anyway, when a later statement commits implicitly (a DDL on
@@ -333,11 +360,32 @@ class JdbcAutoTask(
                 } match {
                   case Success(_) =>
                     runSqls(conn, postSql, "Post")
-                    conn.commit()
+                    // In the transaction of the write, they read the new content of the table: a
+                    // failure rolls the write back (#1976)
+                    checkable match {
+                      case None =>
+                        conn.commit()
+                        Right(Nil)
+                      case Some(plan) =>
+                        val checked = checkBeforeCommit(conn)
+                        if (checked.forall { case (_, report) => report.success }) {
+                          conn.commit()
+                          Right(checked)
+                        } else {
+                          val (outcome, failure) = undo(conn, plan)
+                          Left((checked.map { case (_, report) => report }, outcome, failure))
+                        }
+                    }
                   case Failure(e) =>
                     JdbcDbUtils.rollbackQuietly(conn)
                     throw enrichWithSchemaSyncHint(jdbcTargetColumns(conn), e)
                 }
+              }
+              // Their reports are written once the connection of the write is released
+              written match {
+                case Right(checked) => checked
+                case Left((reports, outcome, rollbackFailure)) =>
+                  throw failedBeforeCommit(reports, outcome, rollbackFailure)
               }
           }
 
@@ -357,7 +405,7 @@ class JdbcAutoTask(
             }
           }
 
-          checkExpectations()
+          checkExpectations(checkedBeforeCommit)
           if (settings.appConfig.autoExportSchema) {
             val isTableInAuditDomain =
               taskDesc.domain == settings.appConfig.audit.getDomain()
@@ -391,12 +439,249 @@ class JdbcAutoTask(
     res
   }
 
+  /** Runs a query of one value on the connection of the write
+    *
+    * @return
+    *   its value, None when it returns no row or NULL
+    */
+  private def queryValue(
+    sql: String,
+    parameters: List[String],
+    sqlConnection: Option[Connection]
+  ): Try[Option[String]] =
+    Try {
+      JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkOptions, sqlConnection) {
+        conn =>
+          val statement = conn.prepareStatement(sql)
+          try {
+            statement.setQueryTimeout(30)
+            parameters.zipWithIndex.foreach { case (parameter, index) =>
+              statement.setString(index + 1, parameter)
+            }
+            val result = statement.executeQuery()
+            if (result.next()) Option(result.getString(1)) else None
+          } finally statement.close()
+      }
+    }
+
+  /** The name of the engine and the statements that commit on their own there. A connection to a
+    * PostgreSQL URL may reach another engine:
+    *   - a Redshift cluster, whose TRUNCATE commits on its own: its URL or its version tells it,
+    *     and a version that cannot be read counts as Redshift's;
+    *   - an engine whose version names another one (CockroachDB, YugabyteDB, CrateDB), whose
+    *     statements do not all stay in the transaction: it gets the list of `jdbcEngines` declared
+    *     under its name, if any.
+    */
+  private def implicitCommitsOfSink(
+    sqlConnection: Option[Connection]
+  ): (String, Option[List[String]]) = {
+    val engine = jdbcSinkEngineName.toString
+    def declared(name: String): (String, Option[List[String]]) =
+      (name, settings.appConfig.jdbcEngines.get(name).flatMap(_.implicitCommits))
+    lazy val redshiftUrl = sinkConnection.options
+      .get("url")
+      .exists(_.toLowerCase(java.util.Locale.ROOT).contains("redshift"))
+    if (engine != "postgresql") (engine, jdbcSinkEngine.implicitCommits)
+    else if (redshiftUrl) declared("redshift")
+    else
+      queryValue("SELECT version()", Nil, sqlConnection) match {
+        case Success(Some(version)) =>
+          val lowerCase = version.toLowerCase(java.util.Locale.ROOT)
+          List("redshift", "cockroachdb", "yugabytedb", "cratedb")
+            .find(name => lowerCase.contains(name.stripSuffix("db")))
+            .map(declared)
+            .getOrElse((engine, jdbcSinkEngine.implicitCommits))
+        case Success(None) =>
+          logger.warn(
+            s"The engine of $fullTableName gives no version: it is taken for Redshift, whose " +
+            "TRUNCATE commits on its own"
+          )
+          declared("redshift")
+        case Failure(e) =>
+          logger.warn(
+            s"The version of the engine of $fullTableName cannot be read: it is taken for " +
+            s"Redshift, whose TRUNCATE commits on its own (${e.getMessage})"
+          )
+          declared("redshift")
+      }
+  }
+
+  /** @return
+    *   why a rollback cannot undo any write of the connection, if it cannot: an Arrow Flight SQL
+    *   connection or a Quack attachment commits each statement on the server, and a MySQL table of
+    *   a storage engine without transactions ignores a rollback
+    */
+  private def rollbackUnsupported(
+    engine: String,
+    createsTable: Boolean,
+    sqlConnection: Option[Connection]
+  ): Option[String] =
+    if (sinkConnection.isFlightSql())
+      Some("an Arrow Flight SQL connection commits each statement on the server")
+    else if (sinkConnection.isQuackClient())
+      Some("a Quack attachment commits each statement on the server")
+    else if ((engine == "mysql" || engine == "mariadb") && !createsTable)
+      // A table that the run creates is dropped instead
+      queryValue(
+        "SELECT GROUP_CONCAT(DISTINCT UPPER(ENGINE)) FROM information_schema.TABLES " +
+        "WHERE LOWER(TABLE_SCHEMA) = LOWER(?) AND LOWER(TABLE_NAME) = LOWER(?)",
+        List(taskDesc.domain, taskDesc.table),
+        sqlConnection
+      ) match {
+        case Success(Some(engines))
+            if engines.split(',').forall(Set("INNODB", "NDBCLUSTER", "ROCKSDB").contains) =>
+          None
+        case Success(engines) =>
+          Some(
+            s"its table has the storage engine ${engines.getOrElse("unknown")}, whose writes a " +
+            "rollback may not undo"
+          )
+        case Failure(e) =>
+          Some(s"the storage engine of its table cannot be read (${e.getMessage})")
+      }
+    else None
+
+  /** How the rollback undoes the write, when the write checks its expectations before its commit
+    * (#1976). None when it has none to check, or when a rollback could not undo the write: its
+    * connection, its engine or its table does not roll back, a statement of the write or of its
+    * postsql commits on its own, the task has presql, postsql or SQL that its write strategy does
+    * not generate on an engine whose statements may commit on their own, or a statement cannot be
+    * read. The expectations then run after the write, with a warning.
+    */
+  private def rollbackPlan(
+    alters: List[String],
+    main: List[String],
+    createsTable: Boolean,
+    createdBeforeWrite: Boolean,
+    sqlConnection: Option[Connection]
+  ): Option[ImplicitCommits.Checkable] =
+    if (expectationsBeforeCommit.isEmpty) None
+    else {
+      val (engine, implicitCommits) = implicitCommitsOfSink(sqlConnection)
+      val planned = rollbackUnsupported(engine, createsTable, sqlConnection) match {
+        case Some(reason) => Left(reason)
+        case None =>
+          ImplicitCommits.plan(
+            engine = engine,
+            implicitCommits = implicitCommits,
+            // DuckDB runs them before the transaction
+            autocommitBeforeMain = sinkConnection.isDuckDb(),
+            presql = preSql,
+            beforeMain = alters,
+            main = main,
+            postsql = postSql,
+            table = fullTableName,
+            createsTable = createsTable,
+            createdBeforeWrite = createdBeforeWrite,
+            generated = taskDesc.parseSQL.getOrElse(true)
+          )
+      }
+      planned match {
+        case Right(plan) => Some(plan)
+        case Left(reason) =>
+          logger.warn(
+            s"The expectations of $fullTableName run after its write, which a rollback could not " +
+            s"undo: $reason"
+          )
+          None
+      }
+    }
+
+  /** Rolls back the write whose expectations failed before its commit, and drops the table that the
+    * run created when its creation committed. The rows of the write are then gone, even when its
+    * presql or ALTER statements stay. A rolled-back write whose presql statements stay, which may
+    * have written the table, keeps it marked as written.
+    *
+    * @return
+    *   what became of the write, and the error that left it in place, if any
+    */
+  private def undo(
+    conn: Connection,
+    plan: ImplicitCommits.Checkable
+  ): (String, Option[Throwable]) = {
+    val presql = if (plan.presqlCommitted) " Its presql statements stay committed." else ""
+    Try(conn.rollback()) match {
+      case Failure(e) =>
+        ("The rollback failed: the write may be committed.", Some(e))
+      case Success(_) if plan.dropsCreatedTable =>
+        Try {
+          JdbcDbUtils.executeUpdate(s"DROP TABLE IF EXISTS $fullTableName", conn).get
+          conn.commit()
+        } match {
+          case Success(_) =>
+            markTargetNotWritten()
+            (s"The table that this run created is dropped.$presql", None)
+          case Failure(e) =>
+            (
+              "The table that this run created could not be dropped: it keeps the rows that " +
+              "failed the expectations.",
+              Some(e)
+            )
+        }
+      case Success(_) =>
+        if (!plan.presqlCommitted) markTargetNotWritten()
+        val committed = List(
+          Option.when(plan.presqlCommitted)("its presql statements"),
+          Option.when(plan.altersCommitted)(
+            "the ALTER statements that aligned the schema of its table"
+          )
+        ).flatten
+        val stay =
+          if (committed.isEmpty) ""
+          else s" ${committed.mkString(" and ").capitalize} stay committed."
+        (s"The write is rolled back.$stay", None)
+    }
+  }
+
+  /** Runs the expectations checked before the commit (#1976) on the connection of the write, in its
+    * transaction. A query that fails aborts the transaction on some engines, DuckDB and PostgreSQL
+    * among them: the next expectations do not run.
+    *
+    * @return
+    *   the expectations with their reports
+    */
+  private def checkBeforeCommit(conn: Connection): List[(ExpectationItem, ExpectationReport)] =
+    if (expectationsBeforeCommit.isEmpty) Nil
+    else {
+      markCheckedBeforeCommit(expectationsBeforeCommit)
+      val handler = new SQLConnectionExpectationAssertionHandler(conn)
+      val job = expectationJob(expectationsBeforeCommit, handler, interactive = false)
+      var failedQuery: Option[String] = None
+      expectationsBeforeCommit.map { expectation =>
+        val sql = job.renderQuery(expectation)
+        val result = failedQuery match {
+          case Some(failed) =>
+            Failure(
+              new Exception(
+                s"Not run: the query of the expectation $failed failed in the transaction of the write"
+              )
+            )
+          case None =>
+            sql.flatMap { query =>
+              logger.info(
+                s"Applying expectation before the commit: ${expectation.expect} with request $query"
+              )
+              val result = Try(handler.handle(query))
+              if (result.isFailure) failedQuery = Some(expectation.expect)
+              result
+            }
+        }
+        expectation -> job.report(expectation, sql.toOption, result)
+      }
+    }
+
   /** On a first run the target table is created by the main SQL statement, but presql statements
     * such as "DELETE FROM <target> ..." legitimately reference it (idempotency / partition-refresh
     * patterns). Pre-create the target empty from the main SELECT so presql can run against it. On
     * any failure (e.g. a SELECT referencing its own target) fall back to the previous behavior.
+    *
+    * @return
+    *   true when it created the table
     */
-  private def createEmptyTargetForPresql(sqlConnection: Option[java.sql.Connection]): Unit = {
+  private def createEmptyTargetForPresql(sqlConnection: Option[java.sql.Connection]): Boolean = {
+    // Set once its CREATE TABLE, which fails on an existing table, has run: a failed check drops
+    // the table that this run created (#1976)
+    var created = false
     Try {
       if (!tableExists) {
         val select = buildSelectStatement()
@@ -410,20 +695,27 @@ class JdbcAutoTask(
           runSqls(
             conn,
             List(
-              s"CREATE TABLE IF NOT EXISTS $fullTableName AS SELECT * FROM ($select) AS SL_PRESQL_SELECT WHERE 1 = 0"
+              s"CREATE TABLE $fullTableName AS SELECT * FROM ($select) AS SL_PRESQL_SELECT WHERE 1 = 0"
             ),
             "CreateTargetForPresql"
           )
+          created = true
           addSCD2Columns(conn, sinkConnection.getJdbcEngineName())
         }
       }
     } match {
       case Success(_) =>
+      case Failure(e) if created =>
+        logger.warn(
+          s"Pre-created target table $fullTableName before presql, but could not complete it: " +
+          e.getMessage
+        )
       case Failure(e) =>
         logger.warn(
           s"Could not pre-create target table $fullTableName before presql: ${e.getMessage}"
         )
     }
+    created
   }
 
   override protected def expectationAssertionHandler: ExpectationAssertionHandler =

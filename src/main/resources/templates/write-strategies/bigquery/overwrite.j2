@@ -50,6 +50,12 @@ INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }}
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
 {% endif %}
 
+{#- The expectations declared failOnError, under expectations.beforeCommit: they read the new
+    content of the table, and a failure rolls it back (#1976) #}
+{% if expectationsBeforeCommit is defined %}
+{{ expectationsBeforeCommit }}
+{% endif %}
+
 COMMIT TRANSACTION;
 EXCEPTION WHEN ERROR THEN
   -- The transaction may be over already, after a failed COMMIT for example
