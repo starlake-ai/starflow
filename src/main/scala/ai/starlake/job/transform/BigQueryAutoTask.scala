@@ -1341,11 +1341,14 @@ object BigQueryAutoTask {
     else if (createsTable)
       Some(
         List(
-          // The terminator on a line of its own, after statements that may end with a comment
-          mainSql,
+          // The terminator on a line of its own, after statements that may end with a comment, and
+          // without theirs: BigQuery rejects an empty statement
+          withoutTerminator(mainSql),
           ";",
           "BEGIN",
+          // In the enclosing block: an EXCEPTION handler cannot see the variables of its own block
           "DECLARE sl_error STRING;",
+          "BEGIN",
           check,
           "EXCEPTION WHEN ERROR THEN",
           "  SET sl_error = @@error.message;",
@@ -1357,6 +1360,7 @@ object BigQueryAutoTask {
           "  END;",
           "  -- The error of the check, as it was raised",
           "  RAISE;",
+          "END;",
           "END"
         ).mkString("\n")
       )
@@ -1364,13 +1368,14 @@ object BigQueryAutoTask {
       Some(
         List(
           "BEGIN",
+          // In the enclosing block: an EXCEPTION handler cannot see the variables of its own block
           "DECLARE sl_rollback_failed BOOL DEFAULT FALSE;",
           "DECLARE sl_error STRING;",
           "BEGIN",
           "BEGIN TRANSACTION;",
           // A block of its own: the statements may start with a DECLARE
           "BEGIN",
-          mainSql,
+          withoutTerminator(mainSql),
           ";",
           "END;",
           check,
