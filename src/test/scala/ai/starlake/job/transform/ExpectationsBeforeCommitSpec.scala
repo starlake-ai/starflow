@@ -74,7 +74,7 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
         """{% macro at_least_rows(n) %}SELECT CASE WHEN COUNT(*) >= {{ n }} THEN 0 ELSE 1 END FROM sl_this{% endmacro %}
           |{% macro without_id(id) %}SELECT COUNT(*) FROM sl_this WHERE id = {{ id }}{% endmacro %}
           |{% macro always_fails() %}SELECT 1{% endmacro %}
-          |{% macro load_counts(n) %}SELECT CASE WHEN {{ sl_input_count }} = {{ n }} AND {{ sl_accepted_count }} = {{ n }} AND {{ sl_rejected_count }} = -1 THEN 0 ELSE 1 END{% endmacro %}
+          |{% macro load_counts(n) %}SELECT CASE WHEN {{ sl_input_count }} = {{ n }} AND {{ sl_accepted_count }} = {{ n }} AND {{ sl_rejected_count }} = 0 THEN 0 ELSE 1 END{% endmacro %}
           |{% macro all_rejected() %}SELECT CASE WHEN {{ sl_rejected_count }} > 0 AND {{ sl_accepted_count }} = 0 THEN 1 ELSE 0 END{% endmacro %}
           |{% macro unknown_column() %}SELECT COUNT(no_such_column) FROM sl_this{% endmacro %}
           |""".stripMargin,
@@ -404,7 +404,8 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       )
       deliver("counted", "id\n1\n2\n", "1")
       load("counted").isSuccess shouldBe true
-      // A variable that a macro lacks would make its query fail
+      // A variable that a macro lacks would make its query fail. The DuckDB loader of master
+      // captures the rejected lines of a CSV file: none here, where 1.7 counted -1
       expectationResults(domainName, "counted") shouldBe List("true", "true")
     }
 
