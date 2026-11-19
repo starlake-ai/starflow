@@ -1181,6 +1181,7 @@ object YamlConfigGenerators {
       quote           <- arbitrary[String]
       preActions      <- arbitrary[Option[String]]
       strategyBuilder <- arbitrary[String]
+      implicitCommits <- Gen.option(arbitrary[List[String]])
     } yield JdbcEngine(
       tables = tables,
       partitionBy = partitionBy,
@@ -1188,7 +1189,8 @@ object YamlConfigGenerators {
       quote = quote,
       viewPrefix = viewPrefix,
       preActions = preActions,
-      strategyBuilder = strategyBuilder
+      strategyBuilder = strategyBuilder,
+      implicitCommits = implicitCommits
     )
   }
 
@@ -1249,10 +1251,11 @@ object YamlConfigGenerators {
 
   implicit val expectations: Arbitrary[ExpectationsConfig] = Arbitrary {
     for {
-      path        <- arbitrary[String]
-      active      <- arbitrary[Boolean]
-      failOnError <- arbitrary[Boolean]
-    } yield ExpectationsConfig(path, active, failOnError)
+      path         <- arbitrary[String]
+      active       <- arbitrary[Boolean]
+      failOnError  <- arbitrary[Boolean]
+      beforeCommit <- arbitrary[Boolean]
+    } yield ExpectationsConfig(path, active, failOnError, beforeCommit)
   }
 
   implicit val kafkaTopicConfig: Arbitrary[KafkaTopicConfig] = Arbitrary {
