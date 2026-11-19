@@ -10,7 +10,8 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 /** OVERWRITE_BY_PARTITION transforms on BigQuery (#1875): the SELECT of a task may read the
-  * partitions it replaces, and the NULL partition is replaced like the others.
+  * partitions it replaces, and the NULL partition is replaced like the others. The DELETE scans
+  * only the partitions it replaces (#1979).
   */
 class OverwriteByPartitionBQIntegrationSpec extends IntegrationTestBase {
   private val dataset = "starlake_it_overwrite_by_partition"
@@ -60,6 +61,61 @@ class OverwriteByPartitionBQIntegrationSpec extends IntegrationTestBase {
         )
       )
       .toList
+
+  /** The rows, and the sum of the values, of each partition */
+  private def partitions(): List[(Option[String], Long, Long)] =
+    run(s"SELECT CAST(p AS STRING), COUNT(*), SUM(v) FROM `$dataset.$table` GROUP BY 1 ORDER BY 1")
+      .iterateAll()
+      .asScala
+      .map(row =>
+        (
+          Option(row.get(0).getValue).map(_.toString),
+          row.get(1).getLongValue,
+          row.get(2).getLongValue
+        )
+      )
+      .toList
+
+  /** @return
+    *   the DELETE statements of the scripts created since `since` that hold `marker`, with the
+    *   bytes that each processed. A script lists its statements as its child jobs.
+    */
+  private def deletes(since: Long, marker: String): List[(String, Long)] = {
+    val scripts = bigquery
+      .listJobs(BigQuery.JobListOption.minCreationTime(since))
+      .iterateAll()
+      .asScala
+      .toList
+      .flatMap(job => Option(bigquery.getJob(job.getJobId)))
+      .filter { job =>
+        job.getConfiguration[JobConfiguration]() match {
+          case query: QueryJobConfiguration =>
+            val sql = query.getQuery
+            sql.contains(s"$dataset.$table") && sql.contains("BEGIN TRANSACTION") &&
+            sql.contains(marker)
+          case _ => false
+        }
+      }
+    scripts.flatMap { script =>
+      bigquery
+        .listJobs(BigQuery.JobListOption.parentJobId(script.getJobId.getJob))
+        .iterateAll()
+        .asScala
+        .toList
+        .flatMap(child => Option(bigquery.getJob(child.getJobId)))
+        .flatMap { child =>
+          Option(child.getStatistics[JobStatistics.QueryStatistics]())
+            .filter(statistics =>
+              Option(statistics.getStatementType)
+                .contains(JobStatistics.QueryStatistics.StatementType.DELETE)
+            )
+            .map(statistics =>
+              child.getConfiguration[QueryJobConfiguration]().getQuery ->
+              Option(statistics.getTotalBytesProcessed).map(_.longValue).getOrElse(0L)
+            )
+        }
+    }
+  }
 
   /** Runs the task of this SELECT, which replaces the partitions of the table */
   private def transform(sql: String): Boolean = {
@@ -111,6 +167,45 @@ class OverwriteByPartitionBQIntegrationSpec extends IntegrationTestBase {
           (Some("2026-10-02"), 4L, 400L, Some("d")),
           (None, 9L, 901L, Some("f"))
         )
+      }
+    }
+
+    it should "scan only the partitions that it replaces (#1979)" in {
+      withEnvs("SL_ROOT" -> project.pathAsString) {
+        setup()
+        // A partition that the task does not replace. A DELETE processes the columns that it reads
+        // in the partitions that it scans: 800 KB of its partition column unpruned
+        run(s"""INSERT INTO `$dataset.$table`
+               |SELECT DATE '2026-09-01', k, k, 'x'
+               |FROM UNNEST(GENERATE_ARRAY(1, 100000)) AS k""".stripMargin)
+        val since = System.currentTimeMillis() - 60000
+        assert(
+          transform(
+            s"SELECT p, k, v + 1 AS v, note FROM $dataset.$table WHERE p = DATE '2026-10-02'"
+          )
+        )
+        partitions() shouldBe List(
+          (None, 1L, 900L),
+          (Some("2026-09-01"), 100000L, 5000050000L),
+          (Some("2026-10-01"), 3L, 600L),
+          (Some("2026-10-02"), 1L, 401L)
+        )
+        // The jobs of a script may be listed a little after it ends
+        val statements = (1 to 6).iterator
+          .map { attempt =>
+            if (attempt > 1) Thread.sleep(2000)
+            deletes(since, "2026-10-02")
+          }
+          .find(_.nonEmpty)
+          .getOrElse(Nil)
+        statements.foreach { case (sql, bytes) => info(s"$bytes bytes processed by: $sql") }
+        // No row replaces the NULL partition: its DELETE does not run
+        statements.map(_._1).filter(_.contains("IS NULL")) shouldBe empty
+        statements should have size 1
+        // Without pruning, the DELETE reads the 800 KB of the partition column of 2026-09-01
+        statements.foreach { case (sql, bytes) =>
+          withClue(sql) { bytes should be < 10000L }
+        }
       }
     }
   }
