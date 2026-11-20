@@ -10,6 +10,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore
 import com.typesafe.scalalogging.LazyLogging
 
 import scala.collection.mutable.ListBuffer
+import scala.util.{Failure, Success, Try}
 
 /*
 https://medium.com/hibob-engineering/from-list-to-immutable-hierarchy-tree-with-scala-c9e16a63cb89
@@ -25,6 +26,21 @@ object TaskViewDependency extends LazyLogging {
   val UNKNOWN_TYPE: String = "unknown"
 
   case class SimpleEntry(name: String, typ: String, parentRefs: List[String])
+
+  /** The domains of metadata/external, such as the tables that another project loads (#1984). A
+    * file that cannot be read leaves them out, with a warning: the commands that build dependencies
+    * did not read them before.
+    */
+  def externalDomains(schemaHandler: SchemaHandler): List[DomainInfo] =
+    Try(schemaHandler.externals()) match {
+      case Success(domains) => domains
+      case Failure(e) =>
+        logger.warn(
+          s"The tables declared in metadata/external are left out of the dependencies: ${e.getMessage}"
+        )
+        Nil
+    }
+
   def taskDependencies(taskName: String, tasks: List[AutoTask])(implicit
     settings: Settings,
     schemaHandler: SchemaHandler
@@ -86,8 +102,14 @@ object TaskViewDependency extends LazyLogging {
 
     val allTasks = schemaHandler.tasks()
 
+    // The tables that a task may read: those that the project loads, then those that it declares
+    // in metadata/external, such as the tables that another project loads (#1984). Both give a
+    // dependency on the dataset <domain>.<table>.
+    val loadDomains: List[DomainInfo] = schemaHandler.domains()
+    val tableDomains: List[DomainInfo] = loadDomains ++ externalDomains(schemaHandler)
+
     def tableSchedule(tableName: String): Option[String] = {
-      val domains = schemaHandler.domains()
+      val domains = tableDomains
       val parts = tableName.split('.')
       parts.length match {
         case 1 =>
@@ -116,15 +138,14 @@ object TaskViewDependency extends LazyLogging {
                 .map(t => (d, t))
             )
             .nextOption()
-          theDomainAndTable
-            .flatMap { case (_, t) => t.metadata }
-            .flatMap(_.schedule)
-            .orElse(
-              theDomainAndTable
-                .flatMap { case (d, _) => d.metadata }
-                .flatMap(_.schedule)
-            )
-            .orElse(matchingDomains.headOption.flatMap(_.metadata).flatMap(_.schedule))
+          theDomainAndTable match {
+            // An external domain may have the name of a loaded one: only the domain of the table
+            // gives its schedule
+            case Some((d, t)) =>
+              t.metadata.flatMap(_.schedule).orElse(d.metadata.flatMap(_.schedule))
+            case None =>
+              matchingDomains.headOption.flatMap(_.metadata).flatMap(_.schedule)
+          }
         case _ =>
           None
       }
@@ -221,7 +242,7 @@ object TaskViewDependency extends LazyLogging {
               } else result
             case None =>
               // is it a table ?
-              val domains = schemaHandler.domains()
+              val domains = tableDomains
               val parentTable = parts.length match {
                 case 1 =>
                   val tablePart = parts.last // == 0
@@ -293,8 +314,7 @@ object TaskViewDependency extends LazyLogging {
         val tableNameOnly = tableComponents.last
         val domainNameOnly = tableComponents.dropRight(1).last
         val matchingDomains =
-          schemaHandler
-            .domains()
+          tableDomains
             .filter(_.finalName.toLowerCase() == domainNameOnly.toLowerCase())
         val domainAndTable = matchingDomains.iterator
           .flatMap(d =>
@@ -317,6 +337,8 @@ object TaskViewDependency extends LazyLogging {
         val tableFreshness = domainAndTable
           .flatMap { case (_, t) => t.metadata }
           .flatMap(_.freshness.map(_.acceptability()))
+        // A table that the project does not load: the DAG must not load it
+        val external = domainAndTable.exists { case (d, _) => !loadDomains.exists(_ eq d) }
         TaskViewDependency(
           tableName,
           TABLE_TYPE,
@@ -327,7 +349,8 @@ object TaskViewDependency extends LazyLogging {
           dataset_triggering_strategy = None,
           sink = Some(tableName),
           cron = cron,
-          freshness = tableFreshness.orElse(domainFreshness).getOrElse(0L)
+          freshness = tableFreshness.orElse(domainFreshness).getOrElse(0L),
+          external = external
         )
       }
     }
@@ -363,7 +386,9 @@ case class TaskViewDependency(
   dataset_triggering_strategy: Option[String],
   sink: Option[String] = None,
   cron: Option[String] = None,
-  freshness: Long = 0
+  freshness: Long = 0,
+  // A table declared in metadata/external, that another project or tool loads (#1984)
+  external: Boolean = false
 ) {
 
   @JsonIgnore
