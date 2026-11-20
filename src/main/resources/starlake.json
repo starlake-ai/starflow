@@ -930,6 +930,10 @@
           "description": "Treat empty columns as null in DSV files. Default to false",
           "type": "boolean"
         },
+        "archive": {
+          "description": "Move the files of a successful load to the archive area (true) or delete them (false). Default to the archive setting of the application (SL_ARCHIVE)",
+          "type": "boolean"
+        },
         "dagRef": {
           "$ref": "#/definitions/ConvertibleToString",
           "description": "Cron expression to use for this domain/table"
@@ -969,7 +973,7 @@
         },
         "archive": {
           "$ref": "#/definitions/ConvertibleToString",
-          "description": "Files that have been ingested are moved to this folder if SL_ARCHIVE is set to true."
+          "description": "Files that have been ingested are moved to this folder when they are archived: see SL_ARCHIVE and the archive key of the metadata of their domain or table."
         },
         "ingesting": {
           "$ref": "#/definitions/ConvertibleToString",
@@ -2450,7 +2454,7 @@
         },
         "archive": {
           "type": "boolean",
-          "description": "Should ingested files be archived after ingestion ?"
+          "description": "Should ingested files be archived after ingestion ? The archive key of the metadata of a domain or a table overrides it for the files of that domain or table."
         },
         "sinkReplayToFile": {
           "type": "boolean",

@@ -327,7 +327,8 @@ object Settings extends LazyLogging {
     * @param audit
     *   : Absolute path, location where all log are stored
     * @param archive
-    *   : Should we backup the ingested datasets ? true by default
+    *   : Should we backup the ingested datasets ? true by default. The `archive` key of the
+    *   metadata of a domain or a table overrides it for the files of that domain or table
     * @param defaultWriteFormat
     *   : Choose between parquet, orc ... Default is parquet
     * @param defaultRejectedWriteFormat

@@ -53,7 +53,7 @@ This document lists all environment variables that can be used to configure Star
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SL_ARCHIVE` | Archive file after load | `true` |
+| `SL_ARCHIVE` | Archive file after load, unless the `archive` key of the metadata of its domain or table says otherwise | `true` |
 | `SL_ARCHIVE_TABLE` | Archive table name after load | `false` |
 
 ## Write Format Configuration
