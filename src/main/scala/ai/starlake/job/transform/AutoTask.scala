@@ -423,9 +423,10 @@ abstract class AutoTask(
   private val taskSQL = SQLUtils.stripComments(taskDesc.getSql())
 
   /** Builds the task's main SELECT statement with macros instantiated, refs substituted and
-    * transpiled to the target dialect when needed (test mode / transpile dialect).
+    * transpiled to the target dialect when needed (test mode / transpile dialect). The native
+    * DuckDB loader counts the rows of its second step with it (#1980).
     */
-  protected def buildSelectStatement(): String = {
+  private[starlake] def buildSelectStatement(): String = {
     val inputSQL =
       SQLUtils.instantiateMacrosInSql(
         taskSQL,
