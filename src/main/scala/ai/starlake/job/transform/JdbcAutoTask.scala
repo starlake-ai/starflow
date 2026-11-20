@@ -97,10 +97,10 @@ class JdbcAutoTask(
     ) {
 
   def applyJdbcAcl(connection: Connection, forceApply: Boolean): Try[Unit] =
-    AccessControlEntry.applyJdbcAcl(connection, aclSQL(), forceApply)
+    Try(aclSQL(forceApply)).flatMap(AccessControlEntry.applyJdbcAcl(connection, _, forceApply))
 
   def applyJdbcAcl(jdbcConnection: Settings.ConnectionInfo, forceApply: Boolean): Try[Unit] =
-    AccessControlEntry.applyJdbcAcl(jdbcConnection, aclSQL(), forceApply)
+    Try(aclSQL(forceApply)).flatMap(AccessControlEntry.applyJdbcAcl(jdbcConnection, _, forceApply))
 
   override def run(): Try[JobResult] = {
     runJDBC(None, this.conn)
@@ -389,41 +389,48 @@ class JdbcAutoTask(
               }
           }
 
-          JdbcDbUtils.withJDBCConnection(
+          // A grant that fails fails the task, as on BigQuery, once the SCD2 columns, the
+          // expectations and the schema export are done; SL_ACCESS_POLICIES_APPLY=false turns the
+          // grants off (#1985)
+          val granted: Try[Unit] = JdbcDbUtils.withJDBCConnection(
             this.schemaHandler.dataBranch(),
             sinkOptions,
             sqlConnection
           ) { conn =>
-            Try {
-              if (!test) applyJdbcAcl(conn, forceApply = true)
-              addSCD2Columns(conn, sinkConnection.getJdbcEngineName())
-            } match {
-              case Success(_) =>
-              case Failure(e) =>
-                JdbcDbUtils.rollbackQuietly(conn)
-                throw e
-            }
+            addSCD2Columns(conn, sinkConnection.getJdbcEngineName())
+            val applied = if (test) Success(()) else applyJdbcAcl(conn, forceApply = false)
+            // In autocommit mode, as on DuckDB, no transaction is left to roll back
+            applied.failed.foreach(_ => JdbcDbUtils.rollbackQuietly(conn))
+            applied
           }
 
-          checkExpectations(checkedBeforeCommit)
-          if (settings.appConfig.autoExportSchema) {
-            val isTableInAuditDomain =
-              taskDesc.domain == settings.appConfig.audit.getDomain()
-            if (isTableInAuditDomain)
-              logger.info(
-                s"Table ${taskDesc.domain}.${taskDesc.table} is in audit domain, skipping schema extraction"
-              )
-            else {
-              val config = ExtractSchemaConfig(
-                external = true,
-                outputDir = Some(DatasetArea.external.toString),
-                tables = s"${taskDesc.domain}.${taskDesc.table}" :: Nil,
-                connectionRef = Some(sinkConnectionRef),
-                accessToken = accessToken
-              )
-              ExtractSchemaCmd.run(config, schemaHandler)
+          Try {
+            checkExpectations(checkedBeforeCommit)
+            if (settings.appConfig.autoExportSchema) {
+              val isTableInAuditDomain =
+                taskDesc.domain == settings.appConfig.audit.getDomain()
+              if (isTableInAuditDomain)
+                logger.info(
+                  s"Table ${taskDesc.domain}.${taskDesc.table} is in audit domain, skipping schema extraction"
+                )
+              else {
+                val config = ExtractSchemaConfig(
+                  external = true,
+                  outputDir = Some(DatasetArea.external.toString),
+                  tables = s"${taskDesc.domain}.${taskDesc.table}" :: Nil,
+                  connectionRef = Some(sinkConnectionRef),
+                  accessToken = accessToken
+                )
+                ExtractSchemaCmd.run(config, schemaHandler)
+              }
             }
+          } match {
+            case Failure(e) =>
+              granted.failed.foreach(e.addSuppressed)
+              throw e
+            case Success(_) =>
           }
+          granted.get
           JdbcJobResult(Nil)
       }
     }

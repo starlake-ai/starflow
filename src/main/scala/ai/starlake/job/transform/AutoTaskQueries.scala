@@ -13,12 +13,18 @@ case class AutoTaskQueries(
 )
 
 object AutoTaskQueries {
-  def apply(task: AutoTask)(implicit settings: Settings): AutoTaskQueries = {
+
+  /** @param databricks
+    *   the statements run on Databricks, as those of the databricks orchestrator (#1985)
+    */
+  def apply(task: AutoTask, databricks: Boolean = false)(implicit
+    settings: Settings
+  ): AutoTaskQueries = {
     AutoTaskQueries(
       task.buildListOfSQLStatements(),
       task.expectationStatements(),
       task.auditStatements(),
-      task.aclSQL(),
+      task.aclSQL(databricks = databricks),
       task.buildConnection()
     )
   }
