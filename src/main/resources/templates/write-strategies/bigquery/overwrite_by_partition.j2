@@ -1,8 +1,9 @@
 {%- set partition = sinkPartition | first -%}
-{#- The DELETE selects its partitions through a subquery: a partition filter that the table requires
-    is turned off around the transaction, and turned on again on every path, the error path included
-    (#1880). Whether the table requires one is read before the run; without it, the sink tells. The
-    sink's requirePartitionFilter, when set, is the state of the table after a successful run -#}
+{#- A partition filter that the table requires is turned off around the transaction, and turned on
+    again on every path, the error path included (#1880): the SELECT of the task, and the creation
+    of SL_INCOMING, may read the table without one. Whether the table requires one is read before the run;
+    without it, the sink tells. The sink's requirePartitionFilter, when set, is the state of the
+    table after a successful run -#}
 {%- set partitionFilter = (tableRequirePartitionFilter == 'true') if tableRequirePartitionFilter is defined else (sinkRequirePartitionFilter == 'true') -%}
 BEGIN
 DECLARE sl_rollback_failed BOOL DEFAULT FALSE;
@@ -17,8 +18,19 @@ BEGIN TRANSACTION;
 {% if partition | upper in ['_PARTITIONTIME', '_PARTITIONDATE'] %}
 {# A table cannot hold the pseudo-columns of a table partitioned by ingestion time: the SELECT is
    evaluated twice, after the DELETE, and the NULL partition is not replaced #}
-DELETE FROM {{ tableFullName }}
-WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM ({{ selectStatement }}));
+{#- The partitions to replace go through a variable, which BigQuery reads as a constant: it scans only
+    these partitions, while a filter that reads a table scans them all (#1979, see below). The values
+    of a pseudo-column are partitions, which a job modifies 4,000 at most: the variable stays small.
+    The DECLARE comes first in a block of its own #}
+BEGIN
+DECLARE sl_incoming_partitions DEFAULT (
+  SELECT ARRAY_AGG(DISTINCT {{ partition }} IGNORE NULLS) FROM ({{ selectStatement }}));
+
+IF sl_incoming_partitions IS NOT NULL THEN
+  DELETE FROM {{ tableFullName }}
+  WHERE {{ partition }} IN UNNEST(sl_incoming_partitions);
+END IF;
+END;
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) {{ selectStatement }};
 
@@ -36,11 +48,32 @@ CREATE TEMP TABLE SL_INCOMING AS SELECT {{ tableColumnsCsv }} FROM {{ tableFullN
 
 INSERT INTO SL_INCOMING({{ tableColumnsCsv }}) {{ selectStatement }};
 
-DELETE FROM {{ tableFullName }}
-WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM SL_INCOMING WHERE {{ partition }} IS NOT NULL);
+{#- The partitions to replace go through a variable, which BigQuery reads as a constant: it scans only
+    these partitions, while a filter that reads a table, even SL_INCOMING, scans them all (#1979).
+    https://docs.cloud.google.com/bigquery/docs/querying-partitioned-tables (a constant filter
+    expression) and https://docs.cloud.google.com/bigquery/docs/using-dml-with-partitioned-tables
+    (a DELETE filtered by a variable in a transaction).
+    A variable holds 1 MB at most: more values than the 4,000 partitions that a job may modify are
+    finer than the partitions, such as the timestamps of a table partitioned by day, and keep the
+    subquery, which scans every partition. A DELETE runs only when rows replace partitions: a
+    statement that deletes nothing is paid for too. The DECLAREs come first in a block of their own #}
+BEGIN
+DECLARE sl_incoming_partitions DEFAULT (
+  SELECT ARRAY_AGG(DISTINCT {{ partition }} IGNORE NULLS LIMIT 4001) FROM SL_INCOMING);
+DECLARE sl_incoming_null DEFAULT (SELECT LOGICAL_OR({{ partition }} IS NULL) FROM SL_INCOMING);
 
-DELETE FROM {{ tableFullName }}
-WHERE {{ partition }} IS NULL AND EXISTS (SELECT 1 FROM SL_INCOMING WHERE {{ partition }} IS NULL);
+IF ARRAY_LENGTH(sl_incoming_partitions) <= 4000 THEN
+  DELETE FROM {{ tableFullName }}
+  WHERE {{ partition }} IN UNNEST(sl_incoming_partitions);
+ELSEIF ARRAY_LENGTH(sl_incoming_partitions) > 4000 THEN
+  DELETE FROM {{ tableFullName }}
+  WHERE {{ partition }} IN (SELECT DISTINCT {{ partition }} FROM SL_INCOMING WHERE {{ partition }} IS NOT NULL);
+END IF;
+
+IF sl_incoming_null THEN
+  DELETE FROM {{ tableFullName }} WHERE {{ partition }} IS NULL;
+END IF;
+END;
 
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
 

@@ -16,6 +16,12 @@ __Improvement__:
   - **Still after the write**: the expectations declared `failOnError: false`, which do not run when the write is rolled back, and those of JDBC writes that a rollback cannot undo, Snowflake loads that purge the files of their stage, Spark writes, native DuckDB loads in one step (`VARIANT` tables), sharded BigQuery tables, BigQuery views and materialized views, BigQuery tasks with `parseSQL: false`, and transforms run in test mode.
   - A project that overrides the BigQuery `overwrite.j2` or `overwrite_by_partition.j2` template must render `expectationsBeforeCommit` in its transaction, before its `COMMIT TRANSACTION`: otherwise, the expectations run after the write, with a warning.
 
+__Bug fix__:
+- **The BigQuery `OVERWRITE_BY_PARTITION` strategy scans only the partitions it replaces** (#1979): its `DELETE` read the partitions to replace from the incoming rows, through a subquery, and BigQuery prunes partitions only on a constant filter: the `DELETE` scanned every partition of the table, at every run. A daily task that replaced one partition of a table kept 100 days was billed, or charged in slots, for the 100 partitions. The template now collects the incoming partitions into a script variable and deletes with `IN UNNEST(...)`, which BigQuery reads as a constant ([Query partitioned tables](https://docs.cloud.google.com/bigquery/docs/querying-partitioned-tables); [Update partitioned table data using DML](https://docs.cloud.google.com/bigquery/docs/using-dml-with-partitioned-tables) filters a `DELETE` with a variable in a transaction). This applies to the transforms and to the second step of the native loads declared with this strategy, and to the tables partitioned by ingestion time (`_PARTITIONTIME`, `_PARTITIONDATE`).
+  - A variable holds 1 MB at most. More than 4,000 distinct values, the partitions that a job may modify, are finer than the partitions, such as the timestamps of a table partitioned by day: their `DELETE` keeps the subquery and scans every partition, as before.
+  - The `DELETE` statements run only when incoming rows replace partitions, the NULL one included: a run no longer pays for a statement that deletes nothing.
+  - A project that overrides `overwrite_by_partition.j2` keeps its own `DELETE`: to get the fix, collect the partitions into a variable as the template now does.
+
 # 1.7.9:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
 - **BigQuery permissions**:

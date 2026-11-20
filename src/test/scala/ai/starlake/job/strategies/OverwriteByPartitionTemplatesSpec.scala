@@ -61,7 +61,11 @@ class OverwriteByPartitionTemplatesSpec extends TestHelper {
           // The SELECT is materialized: a view would evaluate it again after the DELETE
           sql should not include "VIEW"
           if (strategyBuilder == "mysql") sql should include("<=>")
-          else sql should include("WHERE p IS NULL AND EXISTS")
+          else if (strategyBuilder == "bigquery") {
+            // Deleted only when rows replace it (#1979)
+            sql should include("IF sl_incoming_null THEN")
+            sql should include("WHERE p IS NULL;")
+          } else sql should include("WHERE p IS NULL AND EXISTS")
         }
       }
       // Spark overwrites the partitions with one INSERT
@@ -97,6 +101,35 @@ class OverwriteByPartitionTemplatesSpec extends TestHelper {
       render("snowflake", "snowflake", domain = "") should include(
         "CREATE OR REPLACE TEMPORARY TABLE SL_INCOMING AS"
       )
+    }
+
+    it should "give the partitions that a BigQuery DELETE replaces through a variable (#1979)" in {
+      val sql = render("bigquery", "bigquery")
+      sql should not include "EXISTS"
+      // The DECLAREs come first in a block of their own, once SL_INCOMING is filled. A variable
+      // holds 1 MB at most: 4,001 values at most
+      sql should include(
+        "BEGIN\nDECLARE sl_incoming_partitions DEFAULT (\n  SELECT ARRAY_AGG(DISTINCT p IGNORE NULLS LIMIT 4001) FROM SL_INCOMING);\n" +
+        "DECLARE sl_incoming_null DEFAULT (SELECT LOGICAL_OR(p IS NULL) FROM SL_INCOMING);"
+      )
+      // A filter that reads a table, even SL_INCOMING, scans every partition of the target: only
+      // for more values than a job modifies partitions, which are finer than the partitions
+      occurrences(sql, "IN (SELECT") shouldBe 1
+      val positions = List(
+        "INSERT INTO SL_INCOMING",
+        "DECLARE sl_incoming_partitions",
+        "IF ARRAY_LENGTH(sl_incoming_partitions) <= 4000 THEN",
+        "WHERE p IN UNNEST(sl_incoming_partitions);",
+        "ELSEIF ARRAY_LENGTH(sl_incoming_partitions) > 4000 THEN",
+        "WHERE p IN (SELECT DISTINCT p FROM SL_INCOMING WHERE p IS NOT NULL);",
+        "IF sl_incoming_null THEN",
+        "WHERE p IS NULL;",
+        "END IF;\nEND;",
+        "FROM SL_INCOMING;",
+        "COMMIT TRANSACTION"
+      ).map(sql.indexOf)
+      positions.foreach(_ should be >= 0)
+      positions shouldBe positions.sorted
     }
 
     it should "disable the partition filter of a BigQuery table around the transaction" in {
@@ -179,9 +212,19 @@ class OverwriteByPartitionTemplatesSpec extends TestHelper {
         sink = AllSinks(partition = Some(List("_PARTITIONTIME"))).getSink()
       )
       sql should not include "SL_INCOMING"
+      // Its partitions go through a variable too (#1979)
       sql should include(
-        s"WHERE _PARTITIONTIME IN (SELECT DISTINCT _PARTITIONTIME FROM ($select));"
+        s"SELECT ARRAY_AGG(DISTINCT _PARTITIONTIME IGNORE NULLS) FROM ($select));"
       )
+      sql should include("IF sl_incoming_partitions IS NOT NULL THEN\n  DELETE FROM")
+      sql should include("WHERE _PARTITIONTIME IN UNNEST(sl_incoming_partitions);")
+      sql should not include "IN (SELECT"
+      render(
+        "bigquery",
+        "bigquery",
+        columns = List("_PARTITIONDATE", "k", "v"),
+        sink = AllSinks(partition = Some(List("_PARTITIONDATE"))).getSink()
+      ) should include("WHERE _PARTITIONDATE IN UNNEST(sl_incoming_partitions);")
     }
 
     it should "refuse a SELECT that does not return the partition column" in {
