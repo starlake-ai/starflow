@@ -4,6 +4,7 @@ import ai.starlake.config.Settings
 import ai.starlake.job.transform.AutoTask
 import ai.starlake.lineage.AutoTaskDependencies.{Column, Diagram, Item}
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
+import ai.starlake.schema.model.DomainInfo
 import ai.starlake.utils.{JsonSerializer, Utils}
 import com.typesafe.scalalogging.LazyLogging
 
@@ -20,6 +21,9 @@ class AutoTaskDependencies(
   schemaHandler: SchemaHandler,
   storageHandler: StorageHandler
 ) extends LazyLogging {
+
+  private lazy val externalDomains: List[DomainInfo] =
+    TaskViewDependency.externalDomains(schemaHandler)
 
   def run(config: AutoTaskDependenciesConfig): Try[Unit] = Try {
     val allDependencies: List[DependencyContext] = tasks(config)
@@ -201,24 +205,26 @@ class AutoTaskDependencies(
     val parts = item.id.split("\\.", 2)
     if (parts.length < 2) return item
     val (domainName, tableName) = (parts(0), parts(1))
-    // Try load tables first, then transform tasks
-    val columns = schemaHandler
-      .domains()
-      .filter(_.finalName.equalsIgnoreCase(domainName))
-      .flatMap(_.tables.find(_.finalName.equalsIgnoreCase(tableName)))
-      .headOption
-      .map { schema =>
-        schema.attributes.map { attr =>
-          Column(
-            s"${item.id}.${attr.getFinalName()}",
-            attr.getFinalName(),
-            attr.`type`,
-            attr.comment,
-            schema.isPrimaryKey(attr.getFinalName()),
-            attr.deepForeignKey().isDefined
-          )
+    def tableColumns(domains: List[DomainInfo]): Option[List[Column]] =
+      domains
+        .filter(_.finalName.equalsIgnoreCase(domainName))
+        .flatMap(_.tables.find(_.finalName.equalsIgnoreCase(tableName)))
+        .headOption
+        .map { schema =>
+          schema.attributes.map { attr =>
+            Column(
+              s"${item.id}.${attr.getFinalName()}",
+              attr.getFinalName(),
+              attr.`type`,
+              attr.comment,
+              schema.isPrimaryKey(attr.getFinalName()),
+              attr.deepForeignKey().isDefined
+            )
+          }
         }
-      }
+    // Try load tables first, then transform tasks, then external tables (#1984): autoExportSchema
+    // writes the tables of the tasks into metadata/external
+    val columns = tableColumns(schemaHandler.domains())
       .orElse {
         schemaHandler
           .tasks()
@@ -236,6 +242,7 @@ class AutoTaskDependencies(
             }
           }
       }
+      .orElse(tableColumns(externalDomains))
       .getOrElse(Nil)
     item.copy(columns = columns)
   }
