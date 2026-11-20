@@ -752,7 +752,8 @@ class IngestionWorkflow(
       case Success(Success(jobResult)) =>
         if (test) {
           logger.info(s"Test mode enabled, no file will be deleted")
-        } else if (settings.appConfig.archive) {
+        } else if (metadata.archive.getOrElse(settings.appConfig.archive)) {
+          // A domain or a table may keep or delete its files whatever the application does (#1986)
           val now = System.currentTimeMillis()
           ParUtils.runInParallel(ingestingPaths, Some(settings.appConfig.maxParCopy)) {
             ingestingPath =>

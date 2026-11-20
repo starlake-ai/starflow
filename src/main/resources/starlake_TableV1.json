@@ -161,6 +161,10 @@
           "description": "Treat empty columns as null in DSV files. Default to false",
           "type": "boolean"
         },
+        "archive": {
+          "description": "Move the files of a successful load to the archive area (true) or delete them (false). Default to the archive setting of the application (SL_ARCHIVE)",
+          "type": "boolean"
+        },
         "dagRef": {
           "$ref": "#/definitions/ConvertibleToString",
           "description": "Cron expression to use for this domain/table"

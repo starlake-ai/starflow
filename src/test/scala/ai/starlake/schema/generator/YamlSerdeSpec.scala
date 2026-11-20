@@ -875,6 +875,7 @@ object YamlConfigGenerators {
       freshness     <- Gen.option(arbitrary[Freshness])
       nullValue     <- Gen.option(arbitrary[String])
       schedule      <- Gen.option(arbitrary[String])
+      archive       <- Gen.option(arbitrary[Boolean])
     } yield {
       val metadataInstance = Metadata(
         format = format,
@@ -895,7 +896,8 @@ object YamlConfigGenerators {
         freshness = freshness,
         nullValue = nullValue,
         schedule = schedule,
-        writeStrategy = writeStrategy
+        writeStrategy = writeStrategy,
+        archive = archive
       )
       // Instantiate with serialized default value otherwise comparison in round-trip would fail
       metadataInstance
