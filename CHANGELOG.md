@@ -2,6 +2,12 @@
 # Release notes
 
 # 1.7.10:
+__Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
+- **Transform DAGs**: a task that reads a table declared in `metadata/external` now depends on it, as on a table of `metadata/load` (#1984). `extract-bq-schema`, for one, writes such declarations for the tables of BigQuery. After `dag-generate`, a DAG without cron, triggered by datasets:
+  - is also triggered by the dataset of that table, under the default `dataset_triggering_strategy: "any"`;
+  - waits for it under `"all"`, and on Airflow before 2.9, where a list of datasets means all of them: it no longer runs while no DAG of the same Airflow publishes that dataset, as for a table that another tool loads;
+  - no longer passes a date window to its transforms when that table has no `schedule`: the window needs a schedule on every dataset.
+
 __Improvement__:
 - **Installing Spark no longer takes about 20 minutes** (#1974): since Spark 3.5.9 came out, the CDN of Apache no longer has 3.5.8, so the installer got its 410 MB from `archive.apache.org`, at under 1 MB/s: the Docker image of v1.7.9 spent 23 minutes on it, against 37 seconds for v1.7.8. The installer now gets it from a copy in our GitHub releases (`spark-3.5.8`), as on `master` since #1920. A `SPARK_VERSION` that we did not publish still comes from Apache.
   - The tarball is now checked against the SHA-512 of Apache, wherever it comes from. A `SPARK_VERSION` without a pinned checksum is not checked, as before.
@@ -25,6 +31,12 @@ __Bug fix__:
   - A load in two steps (Parquet files, transformed or filtered attributes, write strategies other than `APPEND` and `OVERWRITE`...) now counts the rows that its second step reads, before its write, without the rows that the `filter` of the table drops, as a native BigQuery load counts them: the rows that an `UPSERT` updates are accepted rows. The expectations of #1976 already read these counts through `sl_accepted_count`.
   - A load in one step (`VARIANT` tables) counts the rows of the table after an `OVERWRITE`, and the rows added to it by an `APPEND`.
   - The rows that a load in two steps reads are counted once more, before the write.
+- **A transform depends on the tables declared in `metadata/external`** (#1984): `dag-generate` looked for the tables that a task reads among the tasks and the tables of `metadata/load` only. A table that another project loads, declared in `metadata/external` to be read, was an unknown dependency: the DAG had no dataset for it, so its load never triggered the transform, and the DAG did not check its freshness.
+  - Such a table is now a dependency on the dataset `<domain>.<table>`, the one that the load of the other project publishes, with the `schedule` and the `freshness` of its declaration, or of its domain. It is marked `"external": true` in the dependencies of the DAG. See the changes for the DAGs triggered by datasets in __Before upgrading__.
+  - A task, then a table of `metadata/load`, of the same name comes first.
+  - A DAG whose options set `run_dependencies_first: "true"` leaves these tables out, since it would load them.
+  - A file of `metadata/external` that cannot be read leaves all these tables out, with a warning, instead of failing the command.
+  - The lineage diagrams show these tables as tables, with their columns. A task keeps its own columns when `metadata/external` declares its table.
 
 # 1.7.9:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
