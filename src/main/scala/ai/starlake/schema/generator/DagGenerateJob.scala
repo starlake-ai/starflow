@@ -228,7 +228,8 @@ class DagGenerateJob(schemaHandler: SchemaHandler) extends LazyLogging {
               )(settings, settings.storageHandler(), schemaHandler)
               val task = transformContext.toTask(taskDep.getRunEngine())
               Try {
-                AutoTaskQueries(task)
+                // The databricks orchestrator runs them on Databricks, in its syntax (#1985)
+                AutoTaskQueries(task, databricks = orchestratorName == "databricks")
               } match {
                 case scala.util.Success(value) => value
                 case scala.util.Failure(exception) =>

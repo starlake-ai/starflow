@@ -122,8 +122,8 @@ class SparkAutoTask(
     result
   }
 
-  def applyHiveTableAcl(): Try[Unit] =
-    Try {
+  def applyHiveTableAcl(): Try[Unit] = {
+    val applied = Try {
       val isGrantSupported =
         if (SparkSessionBuilder.isSparkConnectActive) true
         else
@@ -146,6 +146,10 @@ class SparkAutoTask(
         )
       }
     }
+    // A Spark task goes on without its acl: the reason is logged at least (#1985)
+    applied.failed.foreach(e => logger.error(s"The acl of $fullTableName is not applied", e))
+    applied
+  }
 
   val fullTableName = s"${taskDesc.domain}.${taskDesc.table}"
 
