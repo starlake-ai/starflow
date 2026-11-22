@@ -1551,6 +1551,25 @@ with_sl_version() {
   [[ "$(last_java)" == *"--add-opens=java.base/sun.security.action=ALL-UNNAMED"* ]]
 }
 
+@test "SL_RUN_MODE=main allows sun.misc.Unsafe memory access only on JDK 24 and newer" {
+  export SL_SKIP_JDK_CHECK=1
+  for version in 17.0.9 21.0.11 23.0.2; do
+    set_java_version "$version"
+    main validate
+    [[ "$(last_java)" != *"--sun-misc-unsafe-memory-access"* ]]
+  done
+  for version in 24.0.2 25.0.5 27-ea; do
+    set_java_version "$version"
+    main validate
+    [[ "$(last_java)" == *"--sun-misc-unsafe-memory-access=allow"* ]]
+  done
+}
+
+@test "a JDK without a version gets no sun.misc.Unsafe flag, which a JDK before 23 refuses" {
+  main validate
+  [[ "$(last_java)" != *"--sun-misc-unsafe-memory-access"* ]]
+}
+
 @test "the JDK check finds the java on the PATH when JAVA_HOME is not set" {
   set_java_version 21.0.11
   mv "$INSTALL/jdk" "$BATS_TEST_TMPDIR/path-jdk"

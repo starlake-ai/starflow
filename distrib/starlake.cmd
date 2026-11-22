@@ -704,12 +704,17 @@ rem to start no JVM. Both are left undefined when the JDK has none.
 
 rem The packages that Spark opens, in _module_flags, for the JVMs started without spark-submit.
 rem JDK 24 removed sun.security.action, and opening it there prints a warning on every command.
+rem From JDK 24 on, Netty stops using sun.misc.Unsafe unless its memory access is allowed, and
+rem Arrow's allocator then fails (NoClassDefFoundError on RootAllocator), so every Arrow Flight
+rem SQL JDBC call fails. spark-submit passes --sun-misc-unsafe-memory-access=allow; a JDK older
+rem than 23 refuses that flag, hence the guard.
 :java_module_flags
     set "_module_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
     call :jdk_major
     set "_open_security_action=1"
     if defined _jdk_major_number if !_jdk_major_number! GEQ 24 set "_open_security_action="
     if defined _open_security_action set "_module_flags=!_module_flags! --add-opens=java.base/sun.security.action=ALL-UNNAMED"
+    if defined _jdk_major_number if !_jdk_major_number! GEQ 24 set "_module_flags=!_module_flags! --sun-misc-unsafe-memory-access=allow"
     exit /b 0
 
 rem Starflow 1.9 and later is Java 25 bytecode on Spark 4.3, whose Hadoop 3.5 runs on JDK 24+:
