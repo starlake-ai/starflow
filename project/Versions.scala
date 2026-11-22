@@ -21,7 +21,7 @@ object Versions {
   val scalaLogging = "3.9.6"
   val hive = "3.1.0"
   val log4s = "1.3.3"
-  val swaggerParser = "2.1.48"
+  val swaggerParser = "2.1.49"
   val betterFiles = "3.9.2"
   val jacksonForSpark4 = "2.21.2" // exactly what Spark 4.3.0 ships via jackson-bom
   // jackson-annotations dropped patch versioning at jackson-bom 2.20 (kept as "2.21", not "2.21.2");
