@@ -1159,6 +1159,15 @@ case "$1" in
     build_appcds_archive
     ;;
   serve)
+    # The server takes no arguments: without this, --help started it.
+    case "$2" in
+      -h|--help|help)
+        echo "Usage: starlake.sh serve"
+        echo "Starts the Starflow API and web UI on port ${SL_API_HTTP_PORT:-9900} (SL_API_HTTP_PORT). Takes no arguments."
+        echo "SL_API_DEBUG=1 makes the JVM wait for a debugger on port 5005."
+        exit 0
+        ;;
+    esac
     chmod +x $SCRIPT_DIR/bin/api/git/*.sh
     chmod +x $SCRIPT_DIR/bin/api/bin/*
     JAVA_OPTS="$(java_module_flags)$JAVA_OPTS"
