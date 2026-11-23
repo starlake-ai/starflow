@@ -98,4 +98,33 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
     val res = LineageBuilder.build(nodes, Map.empty, Map(revenue.id -> lineage))
     res.columnEdges shouldBe Nil
   }
+
+  private def aliasLineage(table: String) = ColLineage.Lineage(
+    Nil,
+    List(
+      ColLineage.Relation(
+        ColLineage.Column("", table, "rate"),
+        ColLineage.Column("kpi", "revenue", "amount"),
+        None
+      )
+    )
+  )
+
+  it should "drop relations from an unresolved alias with an empty domain" in {
+    val res = LineageBuilder.build(nodes, Map.empty, Map(revenue.id -> aliasLineage("fx")))
+    res.columnEdges shouldBe Nil
+    res.nodes.contains("external:fx") shouldBe false
+  }
+
+  it should "map an empty-domain source to an external node registered by the table pass" in {
+    val res = LineageBuilder.build(
+      nodes,
+      Map(revenue.id -> List("refdata.fx_rates")),
+      Map(revenue.id -> aliasLineage("fx_rates"))
+    )
+    res.columnEdges shouldBe List(
+      SiteColumnEdge("external:refdata.fx_rates#rate", "transform:kpi.revenue#amount", revenue.id)
+    )
+    res.nodes.contains("external:fx_rates") shouldBe false
+  }
 }

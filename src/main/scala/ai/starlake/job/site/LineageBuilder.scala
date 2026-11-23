@@ -99,14 +99,29 @@ object LineageBuilder {
       val outputs = taskNode.toList.flatMap(n => List(n.table.toLowerCase, n.name.toLowerCase))
       lineage.relations
         .filter(r => outputs.contains(clean(r.to.table)))
-        .map { r =>
+        .flatMap { r =>
           val ref = s"${r.from.domain}.${r.from.table}"
-          val fromId = producers(finalNodes.values, ref, None).headOption.map(_.id).getOrElse {
-            val ext = externalNode(ref)
-            if (!finalNodes.contains(ext.id)) finalNodes = finalNodes + (ext.id -> ext)
-            ext.id
-          }
-          SiteColumnEdge(s"$fromId#${r.from.column}", s"$taskId#${r.to.column}", taskId)
+          val table = clean(r.from.table)
+          val domain = clean(r.from.domain)
+          val fromId: Option[String] =
+            producers(finalNodes.values, ref, None).headOption.map(_.id).orElse {
+              finalNodes.values
+                .find(n =>
+                  n.kind == "external" && n.table.toLowerCase == table &&
+                  (domain.isEmpty || n.domain.toLowerCase == domain)
+                )
+                .map(_.id)
+                .orElse {
+                  if (domain.isEmpty) None
+                  else {
+                    val ext = externalNode(ref)
+                    if (!finalNodes.contains(ext.id)) finalNodes = finalNodes + (ext.id -> ext)
+                    Some(ext.id)
+                  }
+                }
+            }
+          fromId
+            .map(id => SiteColumnEdge(s"$id#${r.from.column}", s"$taskId#${r.to.column}", taskId))
         }
     }
 
