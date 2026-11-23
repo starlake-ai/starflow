@@ -28,6 +28,11 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
   override def pageKeywords: Seq[String] =
     Seq("starlake impact", "change impact", "breaking change", "column lineage", "CI")
 
+  /** `impact` only reads the project: Main must not create folders in it, and its stdout must hold
+    * the report only.
+    */
+  override def readOnly: Boolean = true
+
   private val formats = Set("text", "json", "markdown", "html")
   private val failOns = Set("breaking", "non-breaking")
 

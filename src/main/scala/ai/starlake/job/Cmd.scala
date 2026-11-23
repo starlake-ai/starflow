@@ -32,6 +32,11 @@ trait Cmd[T <: ReportFormatConfig] extends CliConfig[T] {
     */
   def onParseFailure(): Try[JobResult] = Failure(new IllegalArgumentException(usage()))
 
+  /** A read-only command neither writes to the project nor prints anything but its own output: Main
+    * skips the creation of the metadata folders and the validate-on-load check for it.
+    */
+  def readOnly: Boolean = false
+
   def run(config: T, schemaHandler: SchemaHandler)(implicit settings: Settings): Try[JobResult]
 
   def workflow(schemaHandler: SchemaHandler)(implicit settings: Settings): IngestionWorkflow =

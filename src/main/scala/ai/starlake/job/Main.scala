@@ -62,6 +62,10 @@ object Main extends LazyLogging {
     * FailedJobResult and an empty PreLoadJobResult are soft failures: the command did not throw but
     * did not succeed either, so they must not report 0.
     */
+  /** True when the command named by the first argument is read-only (see Cmd.readOnly). */
+  def isReadOnly(args: List[String]): Boolean =
+    args.headOption.exists(name => commands.exists(c => c.command == name && c.readOnly))
+
   def exitCodeOf(result: Try[Any]): Int =
     result match {
       case Success(r: ExitCodeJobResult)           => r.exitCode
@@ -229,7 +233,7 @@ class Main extends LazyLogging {
       StarlakeConnectionPool.preloadDuckDb()
 
     import settings.storageHandler
-    DatasetArea.initMetadata(storageHandler())
+    if (!Main.isReadOnly(argList)) DatasetArea.initMetadata(storageHandler())
 
     // extract any env var passed as --options argument
     val cliEnv = CliEnvConfig.parse(args.drop(1).toIndexedSeq) match {
@@ -319,7 +323,9 @@ class Main extends LazyLogging {
           Failure(new IllegalArgumentException(s"Unknown command $command"))
         case Some(cmd) =>
           Main.currentCommand = cmd.command
-          if (cmd.command != BootstrapCmd.command && settings.appConfig.validateOnLoad) {
+          if (
+            cmd.command != BootstrapCmd.command && !cmd.readOnly && settings.appConfig.validateOnLoad
+          ) {
             val checkResult = schemaHandler.checkValidity()
             checkResult match {
               case Failure(e) =>
