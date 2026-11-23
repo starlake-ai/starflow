@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Starflow docs</title>
+  <!--sl-data-->
+</head>
+<body>
+  <h1 id="title">Starflow docs</h1>
+  <p>The documentation UI is not bundled in this build. The project model is available in
+    <a href="sl-model.json">sl-model.json</a>.</p>
+  <ul id="counts"></ul>
+  <script>
+    const el = document.getElementById('sl-model');
+    if (el) {
+      const model = JSON.parse(el.textContent);
+      document.getElementById('title').textContent = model.project.name + ' docs';
+      const counts = {};
+      Object.values(model.nodes).forEach(n => { counts[n.kind] = (counts[n.kind] || 0) + 1; });
+      const ul = document.getElementById('counts');
+      Object.entries(counts).forEach(([k, v]) => {
+        const li = document.createElement('li');
+        li.textContent = k + ': ' + v;
+        ul.appendChild(li);
+      });
+    }
+  </script>
+</body>
+</html>
