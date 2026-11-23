@@ -42,6 +42,7 @@ class PostgresStatsSpec extends TestHelper {
 
       val res = new JdbcStatsCollector(JdbcDialectStats.Postgres)
         .collect("test-pg", conn, List(t1, v1, mv1, p1, missing))
+        .tables
 
       res(t1).exists shouldBe true
       res(t1).tableType shouldBe Some("TABLE")

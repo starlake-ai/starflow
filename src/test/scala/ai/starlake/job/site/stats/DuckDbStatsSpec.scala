@@ -33,6 +33,7 @@ class DuckDbStatsSpec extends TestHelper {
 
       val res = new JdbcStatsCollector(JdbcDialectStats.DuckDb)
         .collect("duckdb", conn, List(orders, view, missing))
+        .tables
 
       res(orders).exists shouldBe true
       res(orders).tableType shouldBe Some("TABLE")
@@ -74,7 +75,7 @@ class DuckDbStatsSpec extends TestHelper {
 
       val collector = new GenericJdbcStatsCollector("duckdb")
       collector.connectionStatus shouldBe "unsupported"
-      val res = collector.collect("duckdb", conn, List(orders, view, missing, noSchema))
+      val res = collector.collect("duckdb", conn, List(orders, view, missing, noSchema)).tables
 
       res(orders).exists shouldBe true
       res(orders).tableType shouldBe Some("TABLE")
@@ -89,6 +90,62 @@ class DuckDbStatsSpec extends TestHelper {
       res(missing) shouldBe RawTableStats.Missing
       // "_" is a LIKE wildcard in DatabaseMetaData patterns: it must not match salesxstats
       res(noSchema) shouldBe RawTableStats.Missing
+      dir.delete(swallowIOExceptions = true)
+    }
+  }
+
+  "JdbcStatsCollector on DuckDB" should "isolate a failing schema and a failing stats query" in {
+    new WithSettings() {
+      val dir = File.newTemporaryDirectory("sl-site-duckdb-isolation-")
+      val url = s"jdbc:duckdb:${(dir / "stats.db").pathAsString}"
+      Using.resource(DriverManager.getConnection(url)) { c =>
+        Using.resource(c.createStatement()) { st =>
+          st.execute("CREATE SCHEMA sales")
+          st.execute("CREATE TABLE sales.orders (id BIGINT NOT NULL, amount DECIMAL(18,2))")
+          st.execute("CREATE SCHEMA hr")
+          st.execute("CREATE TABLE hr.staff (name VARCHAR)")
+        }
+      }
+      val conn = ConnectionInfo(
+        ConnectionType.JDBC,
+        options = Map("url" -> url, "driver" -> "org.duckdb.DuckDBDriver")
+      )
+      // real DuckDB SQL, except: every query on schema "broken" and the stats query on "hr" hit a
+      // table function that does not exist, so DuckDB itself raises the errors
+      val failing = new JdbcDialectStats {
+        private val d = JdbcDialectStats.DuckDb
+        private val bad = "SELECT * FROM no_such_catalog_function()"
+        val engine = d.engine
+        val rowCountEstimated = d.rowCountEstimated
+        def tablesSql(db: Option[String], schema: String) =
+          if (schema == "broken") bad else d.tablesSql(db, schema)
+        def statsSql(db: Option[String], schema: String) =
+          if (schema == "hr") Some(bad) else d.statsSql(db, schema)
+        def columnsSql(db: Option[String], schema: String) = d.columnsSql(db, schema)
+      }
+      val orders = PhysicalTable(None, "sales", "orders")
+      val staff = PhysicalTable(None, "hr", "staff")
+      val broken = PhysicalTable(None, "broken", "t")
+      val ghost = PhysicalTable(None, "ghost", "t") // schema does not exist: Missing, no failure
+
+      val res = new JdbcStatsCollector(failing)
+        .collect("duckdb", conn, List(orders, staff, broken, ghost))
+
+      res.tables(orders).exists shouldBe true
+      res.tables(orders).rowCount.isDefined shouldBe true
+      res.tables(staff).exists shouldBe true
+      res.tables(staff).rowCount shouldBe None
+      res.tables(staff).columns shouldBe List(ColumnStat("name", "VARCHAR", nullable = true))
+      res.tables(ghost) shouldBe RawTableStats.Missing
+      res.tables.contains(broken) shouldBe false
+      res.failures.size shouldBe 2
+      res.failures.exists(f =>
+        f.startsWith("broken: ") && f.contains("no_such_catalog_function")
+      ) shouldBe true
+      res.failures.exists(f =>
+        f.startsWith("hr stats: ") && f.contains("no_such_catalog_function")
+      ) shouldBe true
+      ConnectionStatus.from("duckdb", res, 1L).status shouldBe "ok"
       dir.delete(swallowIOExceptions = true)
     }
   }

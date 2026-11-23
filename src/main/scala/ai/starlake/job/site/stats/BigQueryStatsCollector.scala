@@ -120,30 +120,52 @@ class BigQueryStatsCollector extends StatsCollector with LazyLogging {
 
   def collect(connectionRef: String, connection: ConnectionInfo, tables: List[PhysicalTable])(
     implicit settings: Settings
-  ): Map[PhysicalTable, RawTableStats] = {
+  ): CollectResult = {
     val bq =
       BigQueryJobBase.bigquery(Some(connectionRef), None, tables.flatMap(_.database).headOption)
-    tables
-      .groupBy(t => (t.database, t.schema))
-      .toList
-      .flatMap { case ((db, dataset), ts) =>
-        val project =
-          db.orElse(connection.options.get("projectId")).getOrElse(bq.getOptions.getProjectId)
-        Try(
-          BigQuerySql.merge(
-            BigQueryRows.query(bq, BigQuerySql.tablesSql(project, dataset)),
-            BigQueryRows.query(bq, BigQuerySql.columnsSql(project, dataset))
-          )
-        ) match {
-          case Success(merged) =>
-            ts.map(t => t -> merged.getOrElse(t.table.toLowerCase, RawTableStats.Missing))
-          case Failure(e) =>
-            logger.warn(
-              s"__TABLES__ query failed on $project.$dataset, using the API: ${e.getMessage}"
-            )
-            ts.map(t => t -> apiStats(bq, project, dataset, t.table))
-        }
-      }
-      .toMap
+    // BigQuery dataset names are case sensitive
+    StatsCollector.isolate(StatsCollector.bySchema(tables, caseSensitive = true)) { g =>
+      val project =
+        g.database.orElse(connection.options.get("projectId")).getOrElse(bq.getOptions.getProjectId)
+      BigQueryStatsCollector.collectDataset(
+        project,
+        g,
+        BigQueryRows.query(bq, _),
+        apiStats(bq, project, g.schema, _)
+      )
+    }
+  }
+}
+
+object BigQueryStatsCollector extends LazyLogging {
+
+  /** `__TABLES__` and INFORMATION_SCHEMA.COLUMNS, or the API per table when that SQL fails. Throws
+    * (failing the dataset group) only when the API fails too.
+    */
+  private[stats] def collectDataset(
+    project: String,
+    group: SchemaGroup,
+    query: String => List[Row],
+    api: String => RawTableStats
+  ): GroupResult = {
+    val dataset = group.schema
+    Try(
+      BigQuerySql.merge(
+        query(BigQuerySql.tablesSql(project, dataset)),
+        query(BigQuerySql.columnsSql(project, dataset))
+      )
+    ) match {
+      case Success(merged) =>
+        GroupResult(
+          group.tables
+            .map(t => t -> merged.getOrElse(t.table.toLowerCase, RawTableStats.Missing))
+            .toMap
+        )
+      case Failure(e) =>
+        logger.warn(
+          s"__TABLES__ query failed on $project.$dataset, using the API: ${StatsCollector.message(e)}"
+        )
+        GroupResult(group.tables.map(t => t -> api(t.table)).toMap)
+    }
   }
 }
