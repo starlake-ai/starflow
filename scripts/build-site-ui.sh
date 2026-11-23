@@ -7,6 +7,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UI="$ROOT/site-ui"
 OUT="$ROOT/src/main/resources/site-ui"
 
+WANT="$(tr -d '[:space:]' < "$UI/.nvmrc")"
+HAVE="$(node -v | sed 's/^v//; s/\..*//')"
+if [ "$HAVE" != "${WANT#v}" ]; then
+  echo "ERROR: Use Node $WANT (see site-ui/.nvmrc), found $(node -v)" >&2
+  exit 1
+fi
+
 cd "$UI"
 npm ci
 npm test

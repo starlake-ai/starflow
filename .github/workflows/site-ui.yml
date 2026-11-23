@@ -15,6 +15,9 @@ on:
       - "scripts/build-site-ui.sh"
       - ".github/workflows/site-ui.yml"
 
+permissions:
+  contents: read
+
 jobs:
   bundle:
     runs-on: ubuntu-latest
@@ -22,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: site-ui/.nvmrc
           cache: npm
           cache-dependency-path: site-ui/package-lock.json
       - name: Build and test the site UI
