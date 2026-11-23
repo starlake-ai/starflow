@@ -765,13 +765,13 @@ rem to be downloaded by every install and upgrade.
 
     if defined SL_LOG_LEVEL (
         if /i not "%SL_LOG_LEVEL%" == "error" (
-            echo - JAVA_HOME=%JAVA_HOME%
-            echo - SL_ROOT=%SL_ROOT%
+            >&2 echo - JAVA_HOME=%JAVA_HOME%
+            >&2 echo - SL_ROOT=%SL_ROOT%
         )
     )
 
     if defined SL_ENV (
-        echo - SL_ENV=%SL_ENV%
+        >&2 echo - SL_ENV=%SL_ENV%
     )
 
     if defined SL_DEBUG (
