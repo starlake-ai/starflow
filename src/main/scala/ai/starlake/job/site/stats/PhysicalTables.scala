@@ -43,7 +43,9 @@ object PhysicalTables {
     }
 
   /** Where the node lives, or None for external nodes and nodes without a connection. A connection
-    * that cannot be read keeps the declared database: the runner reports that connection's error.
+    * that cannot be read is treated as an unknown type: a load takes its declared database, else
+    * the default one, a transform its declared database. The runner reports that connection's
+    * error.
     */
   def locate(
     n: SiteNode,

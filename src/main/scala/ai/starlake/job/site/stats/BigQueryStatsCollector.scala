@@ -143,7 +143,7 @@ object BigQueryStatsCollector extends LazyLogging {
   /** `__TABLES__` and INFORMATION_SCHEMA.COLUMNS, or the API per table when that SQL fails. The
     * fallback adds the non-fatal note `<label>: used the API (__TABLES__ failed: <message>)`; a
     * table the API fails on is left out and adds `<label>.<table>: <message>`, the other tables are
-    * kept.
+    * kept. The per-table failures come before the note, so the first failure is a real error.
     */
   private[stats] def collectDataset(
     project: String,
@@ -177,11 +177,10 @@ object BigQueryStatsCollector extends LazyLogging {
               Left(s"$label: ${StatsCollector.message(apiError)}")
           }
         }
+        // per-table errors first: the published message is the first failure, the note is not one
         GroupResult(
           results.collect { case Right(r) => r }.toMap,
-          note :: results.collect { case Left(f) =>
-            f
-          }
+          results.collect { case Left(f) => f } :+ note
         )
     }
   }

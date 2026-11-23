@@ -119,8 +119,8 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     )
     res.tables shouldBe Map(ok -> found)
     res.failures shouldBe List(
-      "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
-      "p.ds.locked: Access Denied: Table p:ds.locked"
+      "p.ds.locked: Access Denied: Table p:ds.locked",
+      "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)"
     )
   }
 
@@ -141,8 +141,8 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     res.tables shouldBe Map(ok -> found)
     res.failures shouldBe List(
       "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
-      "p.secret: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
-      "p.secret.orders: Access Denied: Dataset p:secret"
+      "p.secret.orders: Access Denied: Dataset p:secret",
+      "p.secret: used the API (__TABLES__ failed: Access Denied: __TABLES__)"
     )
     res.allFailed shouldBe false
     ConnectionStatus.from("bigquery", res, 1L).status shouldBe "ok"
@@ -159,7 +159,9 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
       )
     }
     res.tables shouldBe empty
-    ConnectionStatus.from("bigquery", res, 1L).status shouldBe "error"
+    val status = ConnectionStatus.from("bigquery", res, 1L)
+    status.status shouldBe "error"
+    status.error shouldBe Some("p.ds.orders: Access Denied: Table p:ds.orders (+1 more)")
   }
 
   it should "fail its group visibly, without the API fallback, on an unsafe dataset name" in {

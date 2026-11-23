@@ -103,11 +103,21 @@ class PhysicalTablesSpec extends AnyFlatSpec with Matchers {
     Some(Some("own"))
   }
 
-  it should "keep the declared database when the connection cannot be read" in {
+  it should "resolve the database without the connection when it cannot be read" in {
     val n = node("load", "a", "b", Some("missing"), Some("db"))
-    PhysicalTables.locate(n, _ => throw new IllegalStateException("boom"), None) shouldBe Some(
+    val unreadable: String => Option[ConnectionInfo] = _ => throw new IllegalStateException("boom")
+    PhysicalTables.locate(n, unreadable, None) shouldBe Some(
       PhysicalLocation("missing", PhysicalTable(Some("db"), "a", "b"))
     )
+    // a load without a declared database takes the default one, a transform none
+    PhysicalTables.locate(n.copy(database = None), unreadable, Some("dflt")) shouldBe Some(
+      PhysicalLocation("missing", PhysicalTable(Some("dflt"), "a", "b"))
+    )
+    PhysicalTables.locate(
+      n.copy(kind = "transform", database = None),
+      unreadable,
+      Some("dflt")
+    ) shouldBe Some(PhysicalLocation("missing", PhysicalTable(None, "a", "b")))
     PhysicalTables.locate(n.copy(connectionRef = None), connections.get, None) shouldBe None
     PhysicalTables.locate(n.copy(kind = "external"), connections.get, None) shouldBe None
   }

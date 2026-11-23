@@ -134,35 +134,37 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
 
   it should "type the columns of a transform on its sink connection engine" in {
     val root = File.newTemporaryDirectory("sl-site-sink-")
-    File("src/test/resources/site/fixture").copyTo(root)(File.CopyOptions(overwrite = true))
-    val app = root / "metadata" / "application.sl.yml"
-    app.overwrite(
-      app.contentAsString + "    pg:\n      type: jdbc\n      options:\n" +
-      "        url: \"jdbc:postgresql://localhost:5432/db\"\n" +
-      "        driver: \"org.postgresql.Driver\"\n"
-    )
-    val dir = (root / "metadata" / "transform" / "sinkpg").createDirectories()
-    (dir / "sunk.sl.yml").overwrite(
-      """version: 1
-        |task:
-        |  domain: "sinkpg"
-        |  sink:
-        |    connectionRef: "pg"
-        |  attributes:
-        |    - name: "id"
-        |      type: "long"
-        |    - name: "label"
-        |      type: "string"
-        |""".stripMargin
-    )
-    (dir / "sunk.sql").overwrite("SELECT 1 AS id, 'a' AS label")
-    withEnvs("SL_ROOT" -> root.pathAsString, "SL_ENV" -> "") {
-      val node = build()(settings).nodes("transform:sinkpg.sunk")
-      node.engine shouldBe Some("duckdb")
-      node.connectionRef shouldBe Some("duckdb")
-      node.columns.map(c => c.name -> c.sqlType) shouldBe
-      List("id" -> Some("BIGINT"), "label" -> Some("TEXT"))
-    }
+    try {
+      File("src/test/resources/site/fixture").copyTo(root)(File.CopyOptions(overwrite = true))
+      val app = root / "metadata" / "application.sl.yml"
+      app.overwrite(
+        app.contentAsString + "    pg:\n      type: jdbc\n      options:\n" +
+        "        url: \"jdbc:postgresql://localhost:5432/db\"\n" +
+        "        driver: \"org.postgresql.Driver\"\n"
+      )
+      val dir = (root / "metadata" / "transform" / "sinkpg").createDirectories()
+      (dir / "sunk.sl.yml").overwrite(
+        """version: 1
+          |task:
+          |  domain: "sinkpg"
+          |  sink:
+          |    connectionRef: "pg"
+          |  attributes:
+          |    - name: "id"
+          |      type: "long"
+          |    - name: "label"
+          |      type: "string"
+          |""".stripMargin
+      )
+      (dir / "sunk.sql").overwrite("SELECT 1 AS id, 'a' AS label")
+      withEnvs("SL_ROOT" -> root.pathAsString, "SL_ENV" -> "") {
+        val node = build()(settings).nodes("transform:sinkpg.sunk")
+        node.engine shouldBe Some("duckdb")
+        node.connectionRef shouldBe Some("duckdb")
+        node.columns.map(c => c.name -> c.sqlType) shouldBe
+        List("id" -> Some("BIGINT"), "label" -> Some("TEXT"))
+      }
+    } finally root.delete(swallowIOExceptions = true)
   }
 
   it should "turn a task that cannot be built into a table lineage warning" in withFixture {
