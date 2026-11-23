@@ -9,6 +9,7 @@ import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import scopt.{DefaultOEffectSetup, OEffectSetup, OParser}
 
+import java.time.LocalDateTime
 import scala.util.{Failure, Success, Try}
 
 /** Result of `starlake impact`. `report` is empty and `error` set when the analysis could not run
@@ -125,10 +126,12 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
 
   def analyze(oldDir: File, newDir: File, oldLabel: String, newLabel: String, env: Option[String])(
     implicit settings: Settings
-  ): Try[ImpactReport] =
+  ): Try[ImpactReport] = {
+    // one instant for both sides: SQL using {{sl_datetime}} must render the same on each
+    val dateVars = SchemaHandler.slDateVars(LocalDateTime.now)
     for {
-      oldView <- ProjectSnapshot.load(oldDir, oldLabel, env)
-      newView <- ProjectSnapshot.load(newDir, newLabel, env)
+      oldView <- ProjectSnapshot.load(oldDir, oldLabel, env, dateVars)
+      newView <- ProjectSnapshot.load(newDir, newLabel, env, dateVars)
     } yield {
       val direct = ChangeDetector.detect(oldView, newView)
       val (impacted, unresolved) = ImpactPropagator.propagate(direct, newView)
@@ -141,6 +144,7 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
         ChangeDetector.otherChanges(oldView, newView, direct)
       )
     }
+  }
 
   private final case class Side(dir: File, label: String, checkout: Option[ProjectCheckout]) {
     def cleanup(): Unit = checkout.foreach(_.cleanup())

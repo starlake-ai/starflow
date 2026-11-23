@@ -238,6 +238,26 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "render the sl_ date variables the same on both sides" in {
+    new WithSettings() {
+      val dated = Map(
+        "metadata/env.sl.yml" -> "version: 1\nenv:\n  stamp: \"{{sl_epoch_milli}}\"\n",
+        "metadata/transform/kpi/revenue.sql" ->
+        ("SELECT s.id, s.amount * 2 AS total, '{{sl_epoch_milli}}' AS at_milli, " +
+        "'{{sl_datetime}}' AS at_second, '{{stamp}}' AS stamp FROM stg.orders s\n")
+      )
+      val oldDir = ImpactFixtures.writeProject(File.newTemporaryDirectory("impact-old-"), dated)
+      val newDir = ImpactFixtures.writeProject(File.newTemporaryDirectory("impact-new-"), dated)
+      deleting(oldDir, newDir) {
+        // the loads are a few hundred milliseconds apart: sl_epoch_milli differs between them
+        // unless one set of date variables serves both
+        val report = ImpactCmd.analyze(oldDir, newDir, "old", "new", None).get
+        report.direct shouldBe empty
+        report.otherChanges shouldBe empty
+      }
+    }
+  }
+
   it should "return exit code 2 on usage errors" in {
     new WithSettings() {
       val usageErrors = List(

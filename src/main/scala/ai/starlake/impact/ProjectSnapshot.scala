@@ -10,6 +10,7 @@ import ai.starlake.schema.model.{
   SchemaInfo,
   TableAttribute
 }
+import ai.starlake.serve.CaffeineSettingsManager
 import ai.starlake.utils.{Utils, YamlSerde}
 import better.files.File
 import com.hubspot.jinjava.interpret.FatalTemplateErrorsException
@@ -17,6 +18,7 @@ import org.apache.hadoop.fs.Path
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.LocalDateTime
 import java.util.regex.{Matcher, Pattern}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -43,9 +45,21 @@ object ProjectSnapshot {
     *
     * The Jinja engine is a singleton that resolves `{% include %}` against the metadata folder of
     * the settings it was first used with: it is reset before, so that includes resolve against the
-    * copy, and after, so that the caller gets an engine built from its own settings again.
+    * copy, and after, so that the caller gets an engine built from its own settings again. That
+    * engine is global: two loads must not run concurrently in one JVM.
+    *
+    * @param dateVars
+    *   the `sl_*` date variables the YAML and SQL are rendered with. Both sides of a comparison
+    *   must get the same map, otherwise SQL using `{{sl_datetime}}` changes between the two loads.
+    *   They replace the date variables of the schema handler everywhere, env files included; an env
+    *   file that defines one of them still wins, as in a run.
     */
-  def load(projectDir: File, label: String, env: Option[String])(implicit
+  def load(
+    projectDir: File,
+    label: String,
+    env: Option[String],
+    dateVars: Map[String, String] = SchemaHandler.slDateVars(LocalDateTime.now)
+  )(implicit
     settings: Settings
   ): Try[SnapshotView] =
     Try {
@@ -62,7 +76,7 @@ object ProjectSnapshot {
         val defaultEnv = workDir / "metadata" / "env.sl.yml"
         if (!defaultEnv.exists) defaultEnv.createFile()
         val local = localSettings(workDir, env)
-        val handler = local.schemaHandler(reload = true)
+        val handler = schemaHandler(dateVars)(local)
         build(projectDir, workDir, label, env, handler)(local)
       } finally {
         Utils.resetJinjaClassLoader()
@@ -80,6 +94,23 @@ object ProjectSnapshot {
           e
         )
     }
+
+  /** A schema handler for the work copy whose date variables are `dateVars`, registered like the
+    * one `Settings.schemaHandler(reload = true)` builds, for the code that looks it up.
+    */
+  private def schemaHandler(dateVars: Map[String, String])(implicit
+    settings: Settings
+  ): SchemaHandler = {
+    val handler = new SchemaHandler(settings.storageHandler()) {
+      override lazy val slDateVars: Map[String, String] = dateVars
+    }
+    CaffeineSettingsManager.setSchemaHandler(
+      settings.appConfig.root,
+      Option(settings.appConfig.env),
+      handler
+    )
+    handler
+  }
 
   /** Every path of the work copy, not only root and metadata: types, macros, DAGs, strategies,
     * datasets and the areas would point at the current project otherwise, which the snapshot must
