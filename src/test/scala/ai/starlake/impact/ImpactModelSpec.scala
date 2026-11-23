@@ -32,10 +32,25 @@ class ImpactModelSpec extends AnyFlatSpec with Matchers {
 
   "ImpactReport.summary" should "flag breaking and non metadata changes" in {
     val direct = List(
-      DirectChange(NodeRef("a", "t"), NodeKind.Task, Metadata, Cols(Set.empty), Nil, List("comment"))
+      DirectChange(
+        NodeRef("a", "t"),
+        NodeKind.Task,
+        Metadata,
+        Cols(Set.empty),
+        Nil,
+        List("comment")
+      )
     )
     val impacted = List(
-      ImpactedNode(NodeRef("b", "u"), NodeKind.Task, Breaking, AllColumns, List("a.t", "b.u"), likelyFailure = true, viaUnresolvedEdge = false)
+      ImpactedNode(
+        NodeRef("b", "u"),
+        NodeKind.Task,
+        Breaking,
+        AllColumns,
+        List("a.t", "b.u"),
+        likelyFailure = true,
+        viaUnresolvedEdge = false
+      )
     )
     val s = ImpactReport("old", "new", direct, impacted, Nil, Nil).summary
     s.hasBreaking shouldBe true

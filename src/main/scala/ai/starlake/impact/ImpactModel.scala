@@ -75,7 +75,8 @@ final case class TypeChanged(column: String, from: String, to: String) extends C
 }
 
 /** One changed node. `columns` are the columns whose values changed (AllColumns for row-level
-  * changes). `reasons` are human readable, for example "row-level: WHERE / JOIN / GROUP BY changed".
+  * changes). `reasons` are human readable, for example "row-level: WHERE / JOIN / GROUP BY
+  * changed".
   */
 final case class DirectChange(
   node: NodeRef,
