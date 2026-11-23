@@ -92,6 +92,7 @@ pre.hljs { background: var(--panel); border: 1px solid var(--border); border-rad
 .graph-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .graph-bar input[type="text"], .graph-bar input:not([type]) { min-width: 240px; }
 .graph .react-flow { flex: 1; background: var(--bg); }
+.graph-status { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--muted); }
 .react-flow__edge-path { stroke: var(--muted); }
 .react-flow__controls button { background: var(--panel); color: var(--fg); border-color: var(--border); }
 .gnode { width: 240px; background: var(--bg); border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 4px; font-size: 12px; }

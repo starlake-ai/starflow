@@ -9,8 +9,9 @@ const nodes: SiteNode[] = [
     id: 'load:sales.customers', kind: 'load', name: 'customers', domain: 'sales', table: 'customers',
     tags: ['pii'], engine: 'duckdb', connectionRef: 'duckdb', dag: 'airflow_load',
     description: 'Customers master data',
+    filePath: 'load/sales/customers.sl.yml',
     columns: [
-      { name: 'id', type: 'long', required: true, primaryKey: true },
+      { name: 'id', type: 'long', sqlType: 'BIGINT', required: true, primaryKey: true },
       { name: 'email', type: 'string', required: false, primaryKey: false, description: 'Customer email' },
     ],
   }),
@@ -30,6 +31,7 @@ const nodes: SiteNode[] = [
   node({
     id: 'transform:kpi.revenue', kind: 'transform', name: 'revenue', domain: 'kpi', table: 'revenue',
     tags: ['finance'], engine: 'bigquery', connectionRef: 'bq', dag: 'airflow_transform',
+    filePath: 'transform/kpi/revenue.sql',
     sql: {
       raw: 'SELECT c.id, SUM(o.amount) FROM sales.orders o JOIN sales.customers c ON o.customer_id = c.id',
     },

@@ -9,6 +9,7 @@ import { SearchDialog } from './SearchDialog';
 import { Overview } from './Overview';
 import { NodePage } from './NodePage';
 import { GraphView } from './GraphView';
+import { ErrorBoundary } from './ErrorBoundary';
 
 export function App({ data }: { data: SiteData }) {
   const { model, stats } = data;
@@ -48,7 +49,9 @@ export function App({ data }: { data: SiteData }) {
       <TopBar model={model} stats={stats} onSearch={() => setSearchOpen(true)} />
       <div className="body">
         <Sidebar model={model} currentId={route.page === 'node' ? route.id : undefined} />
-        <main className="main">{page}</main>
+        <main className="main">
+          <ErrorBoundary resetKey={JSON.stringify(route)}>{page}</ErrorBoundary>
+        </main>
       </div>
       {searchOpen && <SearchDialog index={index} onClose={() => setSearchOpen(false)} />}
     </div>

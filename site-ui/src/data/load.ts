@@ -16,13 +16,8 @@ async function fetched<T>(fetcher: Fetcher, url: string): Promise<T | null> {
   }
 }
 
-export async function loadData(
-  doc: Document = document,
-  fetcher: Fetcher = (url) => fetch(url),
-): Promise<SiteData> {
-  const model = inline<SiteModel>(doc, 'sl-model') ?? (await fetched<SiteModel>(fetcher, './sl-model.json'));
-  if (!model) throw new Error('No project model found: sl-model.json is missing');
-  // The serializer drops empty values: default the optional top-level fields once.
+/** Defaults what the serializer drops when empty (NON_EMPTY), in place, and returns the model. */
+export function normalizeModel(model: SiteModel): SiteModel {
   model.nodes ??= {};
   model.edges ??= [];
   model.columnEdges ??= [];
@@ -32,6 +27,20 @@ export async function loadData(
   for (const list of [model.groups.domains, model.groups.jobs, model.groups.dags]) {
     for (const g of list ?? []) g.nodes ??= [];
   }
-  const stats = inline<SiteStats>(doc, 'sl-stats') ?? (await fetched<SiteStats>(fetcher, './sl-stats.json'));
+  return model;
+}
+
+export async function loadData(
+  doc: Document = document,
+  fetcher: Fetcher = (url) => fetch(url),
+): Promise<SiteData> {
+  const inlineModel = inline<SiteModel>(doc, 'sl-model');
+  const model = inlineModel ?? (await fetched<SiteModel>(fetcher, './sl-model.json'));
+  if (!model) throw new Error('No project model found: sl-model.json is missing');
+  normalizeModel(model);
+  // An inline model means a generated site: its stats, if any, are inline too, so never fetch
+  // (a file:// page would only log a failed request). A fetched model is the dev server layout.
+  const inlineStats = inline<SiteStats>(doc, 'sl-stats');
+  const stats = inlineStats ?? (inlineModel ? null : await fetched<SiteStats>(fetcher, './sl-stats.json'));
   return { model, stats };
 }

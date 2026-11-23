@@ -50,3 +50,5 @@ export const MAX_DEFAULT = 500;
 
 export const columnsAllowed = (selected: number): boolean => selected <= MAX_COLUMNS;
 export const needsSelectorPrompt = (total: number): boolean => total > MAX_DEFAULT;
+/** Any selection above MAX_DEFAULT nodes waits for an explicit "render anyway". */
+export const needsSizePrompt = (selected: number, confirmed: boolean): boolean => !confirmed && selected > MAX_DEFAULT;

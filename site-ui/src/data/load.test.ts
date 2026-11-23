@@ -22,6 +22,21 @@ describe('loadData', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it('does not fetch stats when the model is inline and stats are not', async () => {
+    document.head.innerHTML = block('sl-model', JSON.stringify(model));
+    const fetcher = okFetch({ './sl-stats.json': stats });
+    const data = await loadData(document, fetcher);
+    expect(data.stats).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('fetches stats only after fetching the model', async () => {
+    const fetcher = okFetch({ './sl-model.json': model, './sl-stats.json': stats });
+    const data = await loadData(document, fetcher);
+    expect(data.stats?.connections?.duckdb?.status).toBe('ok');
+    expect(vi.mocked(fetcher).mock.calls.map(([u]) => u)).toEqual(['./sl-model.json', './sl-stats.json']);
+  });
+
   it('parses blocks where every less-than sign is a JSON unicode escape', async () => {
     const m = { ...model, project: { ...model.project, overview: 'a </script> b' } };
     document.head.innerHTML = block('sl-model', JSON.stringify(m).replace(/</g, '\\u003c'));

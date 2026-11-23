@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { model } from '../test/fixture';
 import { columnsByNode } from './graph';
-import { columnFlowEdges, columnsAllowed, layoutInput, lineageEdges, needsSelectorPrompt } from './flow';
+import { columnFlowEdges, columnsAllowed, layoutInput, lineageEdges, needsSelectorPrompt, needsSizePrompt } from './flow';
 
 describe('flow helpers', () => {
   const ids = Object.keys(model.nodes).sort();
@@ -67,5 +67,12 @@ describe('graph size limits', () => {
   it('asks for a selector above 500 nodes on the whole graph', () => {
     expect(needsSelectorPrompt(500)).toBe(false);
     expect(needsSelectorPrompt(501)).toBe(true);
+  });
+  it('asks before rendering any selection above 500 nodes until confirmed', () => {
+    expect(needsSizePrompt(500, false)).toBe(false);
+    expect(needsSizePrompt(501, false)).toBe(true);
+    expect(needsSizePrompt(5000, false)).toBe(true);
+    expect(needsSizePrompt(501, true)).toBe(false);
+    expect(needsSizePrompt(0, false)).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ import type { SiteModel, SiteNode } from '../types';
 import { ancestors, columnsByNode, descendants, type Graph } from '../graph/graph';
 import { selectWithExclude } from '../graph/selectors';
 import { groupId, layout } from '../graph/layout';
-import { columnFlowEdges, columnsAllowed as allowColumns, layoutInput, lineageEdges, MAX_COLUMNS, needsSelectorPrompt } from '../graph/flow';
+import { columnFlowEdges, columnsAllowed as allowColumns, layoutInput, lineageEdges, MAX_COLUMNS, needsSizePrompt } from '../graph/flow';
 import { graphHref, nodeHref } from '../router';
 
 type SlData = { node: SiteNode; columns: string[]; showColumns: boolean; dim: boolean; focus: boolean };
@@ -72,6 +72,11 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+  // The selection the user agreed to render although it is above the size limit.
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
+  // The layout request whose result is on screen; any other request is still pending.
+  const [laidOut, setLaidOut] = useState<object | null>(null);
 
   useEffect(() => {
     setSelText(select);
@@ -79,15 +84,16 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
   }, [select, exclude]);
   useEffect(() => setHighlightId(focusId), [focusId]);
 
-  const needsPrompt = !compact && !select.trim() && needsSelectorPrompt(total);
-  const result = useMemo(
-    () => (needsPrompt ? { ids: new Set<string>(), errors: [] } : selectWithExclude(model, graph, select, exclude)),
-    [model, graph, select, exclude, needsPrompt],
-  );
+  const result = useMemo(() => selectWithExclude(model, graph, select, exclude), [model, graph, select, exclude]);
+  const selectionKey = `${select}\n${exclude}`;
+  const needsPrompt = needsSizePrompt(result.ids.size, confirmedFor === selectionKey);
   const columnsAllowed = allowColumns(result.ids.size);
   const cols = showColumns && columnsAllowed;
+  const request = useMemo(() => ({ result, cols, groupByDomain }), [result, cols, groupByDomain]);
+  const laying = !needsPrompt && laidOut !== request;
 
   useEffect(() => {
+    if (needsPrompt) return;
     let cancelled = false;
     const ids = [...result.ids].sort();
     const colsByNode = columnsByNode(model, ids);
@@ -112,12 +118,18 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
         : lineage.map((e) => ({ id: `${e.source}->${e.target}`, source: e.source, target: e.target }));
       setNodes([...groupNodes, ...flowNodes]);
       setEdges(flowEdges);
+      setLayoutError(null);
+      setLaidOut(request);
       requestAnimationFrame(() => flow.fitView({ padding: 0.1 }));
+    }).catch((err: unknown) => {
+      if (cancelled) return;
+      setLayoutError(`Layout failed: ${err instanceof Error ? err.message : String(err)}`);
+      setLaidOut(request);
     });
     return () => {
       cancelled = true;
     };
-  }, [model, result, cols, groupByDomain, flow]);
+  }, [model, request, result, cols, groupByDomain, flow, needsPrompt]);
 
   const lit = useMemo(
     () => (highlightId ? new Set([highlightId, ...ancestors(graph, [highlightId]), ...descendants(graph, [highlightId])]) : null),
@@ -191,6 +203,7 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
         </form>
       )}
       {exportError && <div className="warnings" role="alert">{exportError}</div>}
+      {layoutError && <div className="warnings" role="alert">{layoutError}</div>}
       {result.errors.length > 0 && (
         <ul className="warnings">
           {result.errors.map((e) => (
@@ -200,7 +213,14 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
       )}
       {needsPrompt ? (
         <div className="empty">
-          This project has {total} nodes. Enter a selector, for example <code>+orders+</code> or <code>domain:sales</code>.
+          {!compact && !select.trim() && (
+            <p>
+              This project has {total} nodes. Enter a selector, for example <code>+orders+</code> or <code>domain:sales</code>.
+            </p>
+          )}
+          <button type="button" onClick={() => setConfirmedFor(selectionKey)}>
+            {`${result.ids.size} nodes selected, render anyway`}
+          </button>
         </div>
       ) : (
         <ReactFlow
@@ -209,6 +229,7 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
           nodeTypes={nodeTypes}
           nodesDraggable={false}
           nodesConnectable={false}
+          onlyRenderVisibleElements
           minZoom={0.05}
           onNodeClick={(_, n) => n.type === 'sl' && setHighlightId((cur) => (cur === n.id ? undefined : n.id))}
           onNodeDoubleClick={(_, n) => {
@@ -218,6 +239,11 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
         >
           <Background />
           <Controls showInteractive={false} />
+          {laying && (
+            <div className="graph-status" role="status">
+              Laying out...
+            </div>
+          )}
         </ReactFlow>
       )}
     </div>
