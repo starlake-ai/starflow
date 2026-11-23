@@ -1563,6 +1563,22 @@ with_sl_version() {
   [[ "$(last_java)" == *"--add-opens=java.base/sun.security.action=ALL-UNNAMED"* ]]
 }
 
+@test "serve --help prints its usage and does not start the server" {
+  mkdir -p "$INSTALL/bin/api/bin" "$INSTALL/bin/api/git"
+  touch "$INSTALL/bin/api/git/stub.sh"
+  printf '#!/usr/bin/env bash\necho SERVE >>"$STUB_LOG"\n' >"$INSTALL/bin/api/bin/local-run-api"
+  chmod +x "$INSTALL/bin/api/bin/local-run-api"
+  for flag in --help -h help; do
+    SL_API_HTTP_PORT=9911 run "$INSTALL/starlake.sh" serve "$flag"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Usage: starlake.sh serve"* ]]
+    [[ "$output" == *"port 9911"* ]]
+  done
+  [ "$(grep -c '^SERVE' "$STUB_LOG")" -eq 0 ]
+  run "$INSTALL/starlake.sh" serve
+  [ "$(grep -c '^SERVE' "$STUB_LOG")" -eq 1 ]
+}
+
 @test "the JDK check finds the java on the PATH when JAVA_HOME is not set" {
   set_java_version 21.0.11
   mv "$INSTALL/jdk" "$BATS_TEST_TMPDIR/path-jdk"

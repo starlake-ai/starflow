@@ -1042,6 +1042,10 @@ goto :eof
     exit /b %errorlevel%
 
 :serve_command
+    rem The server takes no arguments: without this, --help started it.
+    if /i "%~2" == "-h" goto :serve_help
+    if /i "%~2" == "--help" goto :serve_help
+    if /i "%~2" == "help" goto :serve_help
     call :java_module_flags
     if defined SL_API_DEBUG (
         set "JAVA_OPTS=!_module_flags! %JAVA_OPTS% -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
@@ -1050,6 +1054,14 @@ goto :eof
     )
     call "%SCRIPT_DIR%bin\api\bin\local-run-api.bat" "%SCRIPT_DIR%" dummy
     exit /b %errorlevel%
+
+:serve_help
+    set "_serve_port=9900"
+    if defined SL_API_HTTP_PORT set "_serve_port=%SL_API_HTTP_PORT%"
+    echo Usage: starlake.cmd serve
+    echo Starts the Starflow API and web UI on port %_serve_port% (SL_API_HTTP_PORT). Takes no arguments.
+    echo SL_API_DEBUG=1 makes the JVM wait for a debugger on port 5005.
+    exit /b 0
 
 :default_command
     if not defined SL_HTTP_PORT (
