@@ -7,9 +7,11 @@ import ai.starlake.lineage.ColLineage
 import ai.starlake.schema.handlers.{SchemaHandler, TableWithNameAndType}
 import ai.starlake.schema.model._
 import ai.starlake.sql.SQLUtils
+import ai.starlake.utils.SparkUtils
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils
 
 import java.time.Instant
 import scala.collection.immutable.TreeMap
@@ -99,11 +101,7 @@ class ModelBuilder(
     )
 
   private def sqlTypeOf(attr: TableAttribute, engine: Option[String]): Option[String] =
-    engine.flatMap { key =>
-      Try(attr.ddlMapping(isPrimaryKey = false, key, schemaHandler)).toOption.collect {
-        case leaf: DDLLeaf => leaf.tpe
-      }
-    }
+    engine.flatMap(ModelBuilder.declaredSqlType(attr, _, schemaHandler))
 
   private def column(
     attr: TableAttribute,
@@ -295,6 +293,42 @@ class ModelBuilder(
 }
 
 object ModelBuilder {
+
+  /** The SQL type core gives the column of a declared leaf attribute on this engine.
+    *   - postgresql, redshift: like SparkUtils.sqlSchema, the ddlMapping of the attribute's own
+    *     type under the engine name (the url subprotocol), else the type that the Spark JDBC
+    *     dialect gives its Spark type. The built-in types only map `postgres`, so they take the
+    *     dialect type.
+    *   - spark: the Spark SQL type, as SparkAutoTask writes it (`dataType.sql`).
+    *   - any other engine: the engine's ddlMapping (TableAttribute.ddlMapping).
+    */
+  private[site] def declaredSqlType(
+    attr: TableAttribute,
+    engine: String,
+    schemaHandler: SchemaHandler
+  ): Option[String] =
+    engine match {
+      case "spark" => Try(attr.sparkType(schemaHandler).sql).toOption
+      case "postgresql" | "redshift" =>
+        Try {
+          attr
+            .`type`(schemaHandler)
+            .flatMap(_.ddlMapping)
+            .flatMap(_.get(engine))
+            .getOrElse(
+              JdbcUtils
+                .getJdbcType(
+                  attr.sparkType(schemaHandler),
+                  SparkUtils.dialectForUrl(s"jdbc:$engine:")
+                )
+                .databaseTypeDefinition
+            )
+        }.toOption
+      case _ =>
+        Try(attr.ddlMapping(isPrimaryKey = false, engine, schemaHandler)).toOption.collect {
+          case leaf: DDLLeaf => leaf.tpe
+        }
+    }
 
   /** Splits per-task dependency results into the dependency map and per-node warnings. */
   private[site] def extractTaskDeps(

@@ -3,7 +3,7 @@ package ai.starlake.job.site
 import ai.starlake.config.Settings
 import ai.starlake.integration.IntegrationTestBase
 
-import ai.starlake.schema.model.AutoTaskInfo
+import ai.starlake.schema.model.{AutoTaskInfo, TableAttribute}
 
 import scala.util.{Failure, Success, Try}
 
@@ -160,5 +160,44 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     model.nodes.keySet should not contain "external:fx"
     model.nodes.keySet should contain("external:refdata.fx_rates")
     model.columnEdges.exists(_.to.startsWith("transform:kpi.revenue#")) shouldBe true
+  }
+
+  "declaredSqlType" should "use the Spark JDBC dialect type on postgresql and redshift" in withFixture {
+    implicit settings =>
+      val sh = settings.schemaHandler()
+      def sqlType(tpe: String, engine: String) =
+        ModelBuilder.declaredSqlType(TableAttribute("c", tpe), engine, sh)
+      // The built-in types map `postgres`, not `postgresql`: core falls back to Spark's dialect
+      sqlType("long", "postgresql") shouldBe Some("BIGINT")
+      sqlType("int", "postgresql") shouldBe Some("BIGINT")
+      sqlType("string", "postgresql") shouldBe Some("TEXT")
+      sqlType("decimal", "postgresql") shouldBe Some("NUMERIC(38,9)")
+      sqlType("double", "postgresql") shouldBe Some("FLOAT8")
+      sqlType("boolean", "postgresql") shouldBe Some("BOOLEAN")
+      sqlType("date", "postgresql") shouldBe Some("DATE")
+      sqlType("timestamp", "postgresql") shouldBe Some("TIMESTAMP WITH TIME ZONE")
+      sqlType("long", "redshift") shouldBe Some("BIGINT")
+      sqlType("string", "redshift") shouldBe Some("TEXT")
+  }
+
+  it should "use the Spark SQL type on spark" in withFixture { implicit settings =>
+    val sh = settings.schemaHandler()
+    def sqlType(tpe: String) = ModelBuilder.declaredSqlType(TableAttribute("c", tpe), "spark", sh)
+    sqlType("long") shouldBe Some("BIGINT")
+    sqlType("string") shouldBe Some("STRING")
+    sqlType("decimal") shouldBe Some("DECIMAL(38,9)")
+    sqlType("timestamp") shouldBe Some("TIMESTAMP")
+    sqlType("date") shouldBe Some("DATE")
+  }
+
+  it should "keep the ddlMapping of the engine on duckdb, bigquery and snowflake" in withFixture {
+    implicit settings =>
+      val sh = settings.schemaHandler()
+      def sqlType(tpe: String, engine: String) =
+        ModelBuilder.declaredSqlType(TableAttribute("c", tpe), engine, sh)
+      sqlType("long", "duckdb") shouldBe Some("BIGINT")
+      sqlType("decimal", "duckdb") shouldBe Some("DECIMAL")
+      sqlType("long", "bigquery") shouldBe Some("INT64")
+      sqlType("string", "snowflake") shouldBe Some("STRING")
   }
 }
