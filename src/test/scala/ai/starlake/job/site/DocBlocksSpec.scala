@@ -51,6 +51,11 @@ class DocBlocksSpec extends AnyFlatSpec with Matchers {
     blocks.resolve("See <!--sl-doc:customers_desc-->.") shouldBe
     ("See **Customers** master data..", Nil)
     DocBlocks.Empty.resolve("x <!--sl-doc:x-->") shouldBe
-    ("x <!--sl-doc:x-->", List("Unknown doc block 'x'"))
+    ("x {{ doc(\"x\") }}", List("Unknown doc block 'x'"))
+  }
+
+  it should "keep unknown markers visible as doc calls" in {
+    DocBlocks.Empty.resolve("x <!--sl-doc:missing-->") shouldBe
+    ("""x {{ doc("missing") }}""", List("Unknown doc block 'missing'"))
   }
 }

@@ -80,4 +80,23 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     model.project.overview shouldBe Some("# Fixture project")
     model.project.defaultConnection shouldBe "duckdb"
   }
+
+  it should "turn failed table lineage into warnings" in {
+    val (deps, warnings) = ModelBuilder.extractTaskDeps(
+      List(
+        "transform:a.ok"  -> Success(List("load:x.y")),
+        "transform:a.bad" -> Failure(new Exception("kaboom"))
+      )
+    )
+    deps shouldBe Map("transform:a.ok" -> List("load:x.y"))
+    warnings shouldBe Map("transform:a.bad" -> List("Table lineage failed: kaboom"))
+  }
+
+  it should "build with the production defaults" in withFixture { implicit settings =>
+    val model = ModelBuilder(settings.schemaHandler()).build()
+    model.nodes.keySet should contain("transform:kpi.revenue")
+    model.nodes.keySet should not contain "external:fx"
+    model.nodes.keySet should contain("external:refdata.fx_rates")
+    model.columnEdges.exists(_.to.startsWith("transform:kpi.revenue#")) shouldBe true
+  }
 }

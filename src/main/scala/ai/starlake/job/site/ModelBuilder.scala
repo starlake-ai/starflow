@@ -39,10 +39,15 @@ class ModelBuilder(
     val autoTasks = Try(
       ai.starlake.job.transform.AutoTask
         .unauthenticatedTasks(reload = false)(settings, storage, schemaHandler)
-    ).getOrElse(Nil)
-    val taskDeps: Map[String, List[String]] = autoTasks.flatMap { at =>
-      Try(at.dependencies(streams)).toOption.map(NodeId.transform(at.taskDesc.fullName()) -> _)
-    }.toMap
+    ) match {
+      case Success(tasks) => tasks
+      case Failure(e) =>
+        logger.warn(s"Table lineage unavailable, could not load tasks: ${e.getMessage}")
+        Nil
+    }
+    val (taskDeps, depWarnings) = ModelBuilder.extractTaskDeps(
+      autoTasks.map(at => NodeId.transform(at.taskDesc.fullName()) -> Try(at.dependencies(streams)))
+    )
 
     val lineageWarnings = scala.collection.mutable.Map.empty[String, List[String]]
     val colLineages: Map[String, ColLineage.Lineage] = tasks.flatMap { case (_, t) =>
@@ -58,7 +63,9 @@ class ModelBuilder(
 
     val lineage = LineageBuilder.build(declared, taskDeps, colLineages)
     val nodes = lineage.nodes.map { case (id, n) =>
-      id -> n.copy(warnings = n.warnings ++ lineageWarnings.getOrElse(id, Nil))
+      id -> n.copy(warnings =
+        n.warnings ++ depWarnings.getOrElse(id, Nil) ++ lineageWarnings.getOrElse(id, Nil)
+      )
     }
 
     SiteModel(
@@ -69,7 +76,11 @@ class ModelBuilder(
         name = new Path(settings.appConfig.root).getName,
         env = settings.appConfig.env,
         defaultConnection = settings.appConfig.connectionRef,
-        overview = docBlocks.blocks.get("__overview__").map(b => docBlocks.resolve(b)._1)
+        overview = docBlocks.blocks.get("__overview__").map { b =>
+          val (text, ws) = docBlocks.resolve(b)
+          ws.foreach(w => logger.warn(w))
+          text
+        }
       ),
       nodes = nodes,
       edges = lineage.edges.sortBy(e => (e.kind, e.from, e.to)),
@@ -263,6 +274,17 @@ class ModelBuilder(
 }
 
 object ModelBuilder {
+
+  /** Splits per-task dependency results into the dependency map and per-node warnings. */
+  private[site] def extractTaskDeps(
+    results: List[(String, Try[List[String]])]
+  ): (Map[String, List[String]], Map[String, List[String]]) = {
+    val deps = results.collect { case (id, Success(d)) => id -> d }.toMap
+    val warnings = results.collect { case (id, Failure(e)) =>
+      id -> List(s"Table lineage failed: ${e.getMessage}")
+    }.toMap
+    (deps, warnings)
+  }
 
   def defaultCompiler(
     schemaHandler: SchemaHandler

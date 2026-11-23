@@ -19,20 +19,22 @@ final case class DocBlocks(blocks: Map[String, String]) {
       text,
       m => {
         val name = DocBlocks.refName(m)
+        val literal =
+          if (m.group(1) != null) s"""{{ doc("$name") }}""" else m.matched
         val replacement =
           if (visiting.contains(name)) {
             warnings += s"Cyclic doc block reference '$name'"
-            m.matched
+            literal
           } else
             blocks.get(name) match {
               case None =>
                 warnings += s"Unknown doc block '$name'"
-                m.matched
+                literal
               case Some(body) =>
                 val (resolved, nested) = resolve(body, visiting + name)
                 if (nested.exists(_.startsWith("Cyclic"))) {
                   warnings ++= nested
-                  m.matched
+                  literal
                 } else {
                   warnings ++= nested
                   resolved
