@@ -76,13 +76,12 @@ object StatsCollector extends LazyLogging {
     JdbcDbUtils.withJDBCConnection(branch, connection.options)(f)
   }
 
+  /** The publishable form of an exception message (see [[Sanitize.message]]), or the class name. */
   def message(e: Throwable): String =
     Option(e.getMessage)
-      .map(_.replaceAll("\\s+", " ").trim)
+      .map(Sanitize.message)
       .filter(_.nonEmpty)
-      .getOrElse(
-        e.getClass.getName
-      )
+      .getOrElse(e.getClass.getName)
 
   private[stats] def bySchema(
     tables: List[PhysicalTable],
