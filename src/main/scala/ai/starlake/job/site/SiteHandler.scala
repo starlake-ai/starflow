@@ -38,5 +38,17 @@ class SiteHandler(config: SiteConfig, schemaHandler: SchemaHandler)(implicit val
       failed.map(n => s", $n connections failed").getOrElse("")
     logger.info(summary)
     if (Main.cliMode) println(summary)
+
+    if (config.serve) {
+      val server = new SiteServer(config.outputPath, config.port)
+      val bound = server.start()
+      val latch = new java.util.concurrent.CountDownLatch(1)
+      sys.addShutdownHook {
+        server.stop()
+        latch.countDown()
+      }
+      println(s"Serving the site on http://127.0.0.1:$bound/ (Ctrl-C to stop)")
+      latch.await()
+    }
   }
 }

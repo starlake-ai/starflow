@@ -7,6 +7,8 @@ import com.typesafe.scalalogging.LazyLogging
 import java.net.{InetSocketAddress, URLDecoder}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
+import java.util.concurrent.{ExecutorService, Executors, ThreadFactory}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.util.Try
 
 /** Serves the generated site folder on 127.0.0.1. Read-only, no directory listing. */
@@ -14,6 +16,7 @@ class SiteServer(root: File, port: Int) extends LazyLogging {
 
   private val rootPath: Path = root.path.toAbsolutePath.normalize()
   private var server: Option[HttpServer] = None
+  private var pool: Option[ExecutorService] = None
 
   private val contentTypes = Map(
     "html"  -> "text/html; charset=utf-8",
@@ -29,8 +32,9 @@ class SiteServer(root: File, port: Int) extends LazyLogging {
 
   private def contentType(p: Path): String = {
     val name = p.getFileName.toString
-    val ext = name.substring(name.lastIndexOf('.') + 1).toLowerCase
-    contentTypes.getOrElse(ext, "application/octet-stream")
+    val dot = name.lastIndexOf('.')
+    if (dot < 0) "application/octet-stream"
+    else contentTypes.getOrElse(name.substring(dot + 1).toLowerCase, "application/octet-stream")
   }
 
   /** Resolves the request path to a regular file strictly inside the root, following symlinks
@@ -62,6 +66,20 @@ class SiteServer(root: File, port: Int) extends LazyLogging {
     }
   }
 
+  /** Sends a file: the size comes from the file system, the body is streamed, HEAD reads nothing.
+    */
+  private def respondFile(exchange: HttpExchange, file: Path): Unit = {
+    val size = Files.size(file)
+    exchange.getResponseHeaders.set("X-Content-Type-Options", "nosniff")
+    if (exchange.getRequestMethod == "HEAD") {
+      exchange.getResponseHeaders.set("Content-Length", size.toString)
+      exchange.sendResponseHeaders(200, -1)
+    } else {
+      exchange.sendResponseHeaders(200, size)
+      Files.copy(file, exchange.getResponseBody)
+    }
+  }
+
   private def handle(exchange: HttpExchange): Unit =
     try {
       exchange.getRequestMethod match {
@@ -70,7 +88,7 @@ class SiteServer(root: File, port: Int) extends LazyLogging {
             case Some(file) =>
               exchange.getResponseHeaders.set("Content-Type", contentType(file))
               exchange.getResponseHeaders.set("Cache-Control", "no-cache")
-              respond(exchange, 200, Files.readAllBytes(file))
+              respondFile(exchange, file)
             case None =>
               exchange.getResponseHeaders.set("Content-Type", "text/plain; charset=utf-8")
               respond(exchange, 404, "Not found".getBytes(StandardCharsets.UTF_8))
@@ -87,9 +105,22 @@ class SiteServer(root: File, port: Int) extends LazyLogging {
   def start(): Int = {
     val s = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0)
     s.createContext("/", (e: HttpExchange) => handle(e))
+    val bound = s.getAddress.getPort
+    val counter = new AtomicInteger(0)
+    val executor = Executors.newFixedThreadPool(
+      4,
+      new ThreadFactory {
+        def newThread(r: Runnable): Thread = {
+          val t = new Thread(r, s"sl-site-server-$bound-${counter.incrementAndGet()}")
+          t.setDaemon(true)
+          t
+        }
+      }
+    )
+    s.setExecutor(executor)
     s.start()
     server = Some(s)
-    val bound = s.getAddress.getPort
+    pool = Some(executor)
     logger.info(s"Serving $rootPath on http://127.0.0.1:$bound/")
     bound
   }
@@ -97,5 +128,7 @@ class SiteServer(root: File, port: Int) extends LazyLogging {
   def stop(): Unit = {
     server.foreach(_.stop(0))
     server = None
+    pool.foreach(_.shutdown())
+    pool = None
   }
 }

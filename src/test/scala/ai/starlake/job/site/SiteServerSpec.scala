@@ -16,6 +16,8 @@ class SiteServerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
   (root / "assets").createDirectories()
   (root / "assets" / "app.js").overwrite("console.log(1)")
   private val secret = File.newTemporaryFile("sl-secret-", ".txt").overwrite("secret")
+  (root / "json").overwrite("not json")
+  (root / "big.txt").overwrite("x" * 100000)
   Files.createSymbolicLink((root / "link.txt").path, secret.path)
 
   private val server = new SiteServer(root, 0)
@@ -70,11 +72,40 @@ class SiteServerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     val head = request("HEAD", "/")
     head.statusCode() shouldBe 200
     head.body() shouldBe ""
+    head.headers().firstValue("Content-Length").get() shouldBe "17"
+    request("HEAD", "/big.txt").headers().firstValue("Content-Length").get() shouldBe "100000"
+    get("/big.txt").body().length shouldBe 100000
     request("POST", "/").statusCode() shouldBe 405
     request("DELETE", "/index.html").statusCode() shouldBe 405
   }
 
   it should "return 404 on an encoded NUL byte" in {
     get("/%00").statusCode() shouldBe 404
+  }
+
+  it should "give a file name without a dot the octet-stream type" in {
+    get("/json").headers().firstValue("Content-Type").get() shouldBe "application/octet-stream"
+  }
+
+  it should "serve on daemon pool threads and release them on stop" in {
+    val own = new SiteServer(root, 0)
+    val p = own.start()
+    def poolThreads =
+      scala.jdk.CollectionConverters
+        .SetHasAsScala(Thread.getAllStackTraces.keySet())
+        .asScala
+        .filter(_.getName.startsWith(s"sl-site-server-$p-"))
+        .toSeq
+    val r = client.send(
+      HttpRequest.newBuilder(URI.create(s"http://127.0.0.1:$p/")).build(),
+      HttpResponse.BodyHandlers.ofString()
+    )
+    r.statusCode() shouldBe 200
+    poolThreads should not be empty
+    all(poolThreads.map(_.isDaemon)) shouldBe true
+    own.stop()
+    val deadline = System.currentTimeMillis() + 5000
+    while (poolThreads.nonEmpty && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    poolThreads shouldBe empty
   }
 }

@@ -16,7 +16,23 @@ class SiteHandlerSpec extends IntegrationTestBase with SiteFixture {
     (out / "load").exists shouldBe false
   }
 
-  "SiteCmd" should "reject removed options" in {
+  "SiteCmd" should "parse --serve and --port" in {
+    val c = SiteCmd.parse(Seq("--serve", "--port", "9090")).get
+    c.serve shouldBe true
+    c.port shouldBe 9090
+    SiteCmd.parse(Seq()).get.serve shouldBe false
+    SiteCmd.parse(Seq()).get.port shouldBe 8080
+  }
+
+  it should "reject a --port outside 1..65535" in {
+    SiteCmd.parse(Seq("--serve", "--port", "0")) shouldBe None
+    SiteCmd.parse(Seq("--serve", "--port", "65536")) shouldBe None
+    SiteCmd.parse(Seq("--serve", "--port", "-1")) shouldBe None
+    SiteCmd.parse(Seq("--port", "65535")).get.port shouldBe 65535
+    SiteCmd.parse(Seq("--port", "1")).get.port shouldBe 1
+  }
+
+  it should "reject removed options" in {
     SiteCmd.parse(Seq("--template", "standalone")) shouldBe None
     SiteCmd.parse(Seq("--json")) shouldBe None
   }
