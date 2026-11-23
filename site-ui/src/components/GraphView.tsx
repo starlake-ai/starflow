@@ -9,11 +9,8 @@ import type { SiteModel, SiteNode } from '../types';
 import { ancestors, columnsByNode, descendants, type Graph } from '../graph/graph';
 import { selectWithExclude } from '../graph/selectors';
 import { groupId, layout } from '../graph/layout';
-import { columnFlowEdges, layoutInput, lineageEdges } from '../graph/flow';
+import { columnFlowEdges, columnsAllowed as allowColumns, layoutInput, lineageEdges, MAX_COLUMNS, needsSelectorPrompt } from '../graph/flow';
 import { graphHref, nodeHref } from '../router';
-
-const MAX_DEFAULT = 500;
-const MAX_COLUMNS = 300;
 
 type SlData = { node: SiteNode; columns: string[]; showColumns: boolean; dim: boolean; focus: boolean };
 type DomainData = { label: string };
@@ -74,6 +71,7 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
   const [highlightId, setHighlightId] = useState<string | undefined>(focusId);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelText(select);
@@ -81,12 +79,12 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
   }, [select, exclude]);
   useEffect(() => setHighlightId(focusId), [focusId]);
 
-  const needsPrompt = !compact && !select.trim() && total > MAX_DEFAULT;
+  const needsPrompt = !compact && !select.trim() && needsSelectorPrompt(total);
   const result = useMemo(
     () => (needsPrompt ? { ids: new Set<string>(), errors: [] } : selectWithExclude(model, graph, select, exclude)),
     [model, graph, select, exclude, needsPrompt],
   );
-  const columnsAllowed = result.ids.size <= MAX_COLUMNS;
+  const columnsAllowed = allowColumns(result.ids.size);
   const cols = showColumns && columnsAllowed;
 
   useEffect(() => {
@@ -107,7 +105,7 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
         type: 'sl',
         position: positions.get(id) ?? { x: 0, y: 0 },
         ...(groupByDomain ? { parentId: groupId(group(id)), extent: 'parent' as const } : {}),
-        data: { node: model.nodes[id], columns: colsByNode.get(id) ?? [], showColumns: cols, dim: false, focus: id === focusId },
+        data: { node: model.nodes[id], columns: colsByNode.get(id) ?? [], showColumns: cols, dim: false, focus: false },
       }));
       const flowEdges: Edge[] = cols
         ? columnFlowEdges(model, result.ids)
@@ -119,15 +117,15 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
     return () => {
       cancelled = true;
     };
-  }, [model, result, cols, groupByDomain, focusId, flow]);
+  }, [model, result, cols, groupByDomain, flow]);
 
   const lit = useMemo(
     () => (highlightId ? new Set([highlightId, ...ancestors(graph, [highlightId]), ...descendants(graph, [highlightId])]) : null),
     [graph, highlightId],
   );
   const shownNodes = useMemo(
-    () => nodes.map((n) => (n.type === 'sl' ? { ...n, data: { ...n.data, dim: lit ? !lit.has(n.id) : false } } : n)),
-    [nodes, lit],
+    () => nodes.map((n) => (n.type === 'sl' ? { ...n, data: { ...n.data, dim: lit ? !lit.has(n.id) : false, focus: n.id === focusId } } : n)),
+    [nodes, lit, focusId],
   );
   const shownEdges = useMemo(
     () =>
@@ -144,6 +142,15 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
   };
 
   const exportImage = async (format: 'png' | 'svg') => {
+    setExportError(null);
+    try {
+      await doExport(format);
+    } catch (err) {
+      setExportError(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const doExport = async (format: 'png' | 'svg') => {
     const viewport = wrapper.current?.querySelector<HTMLElement>('.react-flow__viewport');
     if (!viewport) return;
     const bounds = getNodesBounds(flow.getNodes());
@@ -183,6 +190,7 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
           <span className="muted">{result.ids.size} nodes</span>
         </form>
       )}
+      {exportError && <div className="warnings" role="alert">{exportError}</div>}
       {result.errors.length > 0 && (
         <ul className="warnings">
           {result.errors.map((e) => (

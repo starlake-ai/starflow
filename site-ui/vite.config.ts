@@ -25,6 +25,9 @@ export default defineConfig({
     emptyOutDir: true,
     cssCodeSplit: false,
     modulePreload: false,
+    // The UI ships as a single classic script (file:// cannot load modules or split chunks), so the
+    // bundle is one large file by design; the limit sits just above its current size.
+    chunkSizeWarningLimit: 2100,
     rollupOptions: {
       output: {
         format: 'iife',
@@ -36,6 +39,6 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

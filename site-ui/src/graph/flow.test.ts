@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { model } from '../test/fixture';
 import { columnsByNode } from './graph';
-import { columnFlowEdges, layoutInput, lineageEdges } from './flow';
+import { columnFlowEdges, columnsAllowed, layoutInput, lineageEdges, needsSelectorPrompt } from './flow';
 
 describe('flow helpers', () => {
   const ids = Object.keys(model.nodes).sort();
@@ -56,5 +56,16 @@ describe('flow helpers', () => {
     const handles = new Set(cols.get('b')!.map((c) => `t-${c.toLowerCase()}`));
     expect(handles.has(edge.targetHandle!)).toBe(true);
     expect(cols.get('a')).toEqual(['ID']);
+  });
+});
+
+describe('graph size limits', () => {
+  it('allows the columns toggle up to 300 nodes', () => {
+    expect(columnsAllowed(300)).toBe(true);
+    expect(columnsAllowed(301)).toBe(false);
+  });
+  it('asks for a selector above 500 nodes on the whole graph', () => {
+    expect(needsSelectorPrompt(500)).toBe(false);
+    expect(needsSelectorPrompt(501)).toBe(true);
   });
 });

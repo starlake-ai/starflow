@@ -22,11 +22,11 @@ export function ColumnsTable({ columns, diff, highlight, hasStats }: Props) {
         </tr>
       </thead>
       <tbody>
-        {columns.map((c) => (
-          <ColumnRow key={c.name} col={c} depth={0} diffBy={diffBy} highlight={highlight} hasStats={hasStats} />
+        {columns.map((c, i) => (
+          <ColumnRow key={`${i}-${c.name}`} col={c} depth={0} diffBy={diffBy} highlight={highlight} hasStats={hasStats} />
         ))}
-        {extra.map((d) => (
-          <tr key={`extra-${d.name}`} className="extra">
+        {extra.map((d, i) => (
+          <tr key={`extra-${i}-${d.name}`} className="extra">
             <td>{d.name}</td>
             <td />
             {hasStats && (
@@ -114,8 +114,8 @@ function ColumnRow({ col, depth, diffBy, highlight, hasStats }: RowProps) {
         </td>
       </tr>
       {open &&
-        children.map((c) => (
-          <ColumnRow key={c.name} col={c} depth={depth + 1} diffBy={diffBy} highlight={highlight} hasStats={hasStats} />
+        children.map((c, i) => (
+          <ColumnRow key={`${i}-${c.name}`} col={c} depth={depth + 1} diffBy={diffBy} highlight={highlight} hasStats={hasStats} />
         ))}
     </>
   );

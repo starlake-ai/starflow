@@ -42,3 +42,11 @@ export function columnFlowEdges(model: SiteModel, ids: Set<string>): FlowEdge[] 
       targetHandle: `t-${colOf(e.to).toLowerCase()}`,
     }));
 }
+
+/** Column mode is only offered up to this many selected nodes. */
+export const MAX_COLUMNS = 300;
+/** A whole-graph view above this many nodes asks for a selector first. */
+export const MAX_DEFAULT = 500;
+
+export const columnsAllowed = (selected: number): boolean => selected <= MAX_COLUMNS;
+export const needsSelectorPrompt = (total: number): boolean => total > MAX_DEFAULT;

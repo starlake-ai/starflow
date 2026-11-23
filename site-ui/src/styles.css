@@ -26,6 +26,7 @@ button.active { border-color: var(--accent); color: var(--accent); }
 .topbar .brand { font-weight: 700; color: var(--fg); }
 .topbar .project { font-weight: 600; }
 .topbar .spacer { flex: 1; }
+.topbar .nav { color: var(--fg); font-weight: 500; }
 .search-btn { min-width: 220px; text-align: left; color: var(--muted); }
 .search-btn kbd { float: right; }
 .icon { border: none; background: none; font-size: 16px; }

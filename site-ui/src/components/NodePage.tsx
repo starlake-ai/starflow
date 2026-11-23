@@ -40,6 +40,7 @@ function Details({ node, t, conn, hasStats }: { node: SiteNode; t?: TableStats; 
   ];
   if (hasStats) {
     if (conn?.status === 'error') rows.push(['Stats', <span className="warn">stats unavailable: {conn.error}</span>]);
+    else if (conn?.status === 'unsupported') rows.push(['Stats', <span className="muted">stats not supported for this engine</span>]);
     else if (t)
       rows.push(
         ['In warehouse', t.exists ? 'yes' : <span className="warn">missing</span>],
@@ -138,8 +139,8 @@ export function NodePage({ model, stats, graph, node, column }: Props) {
               </tr>
             </thead>
             <tbody>
-              {expectations.map((e) => (
-                <tr key={e.expect}>
+              {expectations.map((e, i) => (
+                <tr key={`${i}-${e.expect}`}>
                   <td>
                     <code>{e.expect}</code>
                   </td>
