@@ -208,6 +208,26 @@ class SanitizeSpec extends AnyFlatSpec with Matchers {
     Sanitize.message("Secret Manager access denied") shouldBe "Secret Manager access denied"
   }
 
+  it should "match short secret words only as whole key segments" in {
+    List("Assignment: done", "design: v2", "signal=3", "upwdx=1").foreach { s =>
+      Sanitize.message(s) shouldBe s
+    }
+    List(
+      "sig=abc",
+      "url_sig=abc",
+      "X-Amz-Signature=abc",
+      "PWD=x",
+      "db.pwd: y",
+      "x-amz-sig=abc"
+    ).foreach { s =>
+      val msg = Sanitize.message(s)
+      msg should include("=<redacted>")
+      msg should not include "abc"
+      msg should not include "=x"
+      msg should not include " y"
+    }
+  }
+
   it should "redact a parser token (accepted false positive)" in {
     // JSqlParser reports `token: "FROM"`; the key/value rule cannot tell it from a token pair
     Sanitize.message("""Encountered unexpected token: "FROM" at line 1""") shouldBe

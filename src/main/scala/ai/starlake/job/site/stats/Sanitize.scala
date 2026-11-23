@@ -16,7 +16,6 @@ object Sanitize {
   private val secretWords = List(
     "password",
     "passwd",
-    "pwd",
     "secret",
     "token",
     "private_key",
@@ -28,15 +27,23 @@ object Sanitize {
     "account_key",
     "accountkey",
     "signature",
-    "credential",
-    "sig"
+    "credential"
   )
+
+  /** Too short to match inside a word (`design`, `signal`, `assignment`): they count only as the
+    * whole key or a whole segment of it (`sig`, `url_sig`, `x-amz-sig`, `db.pwd`).
+    */
+  private val shortSecretWords = List("sig", "pwd")
+
+  private val secretWordPattern =
+    secretWords.mkString("|") + "|(?<![A-Za-z0-9])(?:" + shortSecretWords.mkString("|") +
+    ")(?![A-Za-z0-9])"
 
   // A key token: word characters, dots and dashes (sfPassword, PGPASSWORD, private_key_file_pwd,
   // x-amz-signature, spark.hadoop.fs.s3a.secret.key), starting at a token boundary. The bounded
   // repetitions keep a long token cheap: no key is longer.
   private val keyToken =
-    """(?<![\w.-])([\w.-]{0,64}?(?:""" + secretWords.mkString("|") + """)[\w.-]{0,64})"""
+    """(?<![\w.-])([\w.-]{0,64}?(?:""" + secretWordPattern + """)[\w.-]{0,64})"""
 
   // The separator follows the key directly, after an optional closing quote and whitespace, so
   // `Column private_key not found: x` is not a pair. `%3D` and `%3A` are URL encoded `=` and `:`.
