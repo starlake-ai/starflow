@@ -134,6 +134,17 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     deps.failed.get.getMessage shouldBe "no engine"
   }
 
+  it should "read column lineage inputs from declared tables only" in withFixture {
+    implicit settings =>
+      val tables = ModelBuilder.declaredTablesWithColumns(
+        settings.schemaHandler(),
+        List("sales.orders", "refdata.fx_rates", "customers")
+      )
+      tables.map { case (domain, t) => s"$domain.${t.name}" } shouldBe
+      List("sales.orders", ".customers")
+      tables.head._2.attrs.map(_._1) shouldBe List("amount", "customer_id", "id")
+  }
+
   it should "build with the production defaults" in withFixture { implicit settings =>
     val model = ModelBuilder(settings.schemaHandler()).build()
     model.nodes.keySet should contain("transform:kpi.revenue")

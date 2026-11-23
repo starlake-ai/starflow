@@ -4,8 +4,9 @@ import ai.starlake.buildinfo.BuildInfo
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.job.transform.{AutoTask, TransformContext}
 import ai.starlake.lineage.ColLineage
-import ai.starlake.schema.handlers.SchemaHandler
+import ai.starlake.schema.handlers.{SchemaHandler, TableWithNameAndType}
 import ai.starlake.schema.model._
+import ai.starlake.sql.SQLUtils
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -356,19 +357,36 @@ object ModelBuilder {
       context.toTask(taskDesc.getRunEngine()).buildAllSQLQueriesMerged(None, Some(true))
     }
 
+  /** Columns of the referenced tables, read from the declared project only. */
+  private[site] def declaredTablesWithColumns(
+    schemaHandler: SchemaHandler,
+    tableNames: List[String]
+  ): List[(String, TableWithNameAndType)] =
+    schemaHandler.getTablesWithColumnNames(tableNames, None, declaredOnly = true)
+
+  /** Same steps as ColLineage.sqlColLineage, with the referenced tables read from the declared
+    * project only: site generation never queries the warehouse.
+    */
   def defaultColLineage(
     schemaHandler: SchemaHandler
   )(implicit settings: Settings): AutoTaskInfo => Try[Option[ColLineage.Lineage]] = taskDesc =>
     Try {
       taskDesc.sql.flatMap { sql =>
-        new ColLineage(settings, schemaHandler).sqlColLineage(
-          None,
-          sql,
-          taskDesc.domain,
-          taskDesc.name,
-          taskDesc.getRunConnection(),
-          None
-        )
+        val sqlSubst = schemaHandler.substituteRefTaskMainSQL(sql, taskDesc.getRunConnection())
+        if (sqlSubst.isEmpty) None
+        else {
+          val tableNames =
+            SQLUtils.extractTableNames(sqlSubst).map(SQLUtils.quoteFreeTableName)
+          Some(
+            new ColLineage(settings, schemaHandler).colLineage(
+              None,
+              taskDesc.domain,
+              taskDesc.name,
+              sqlSubst,
+              declaredTablesWithColumns(schemaHandler, tableNames)
+            )
+          )
+        }
       }
     }
 
