@@ -136,6 +136,64 @@ class ChangeDetectorSpec extends AnyFlatSpec with Matchers {
     c.unresolved.isDefined shouldBe true
   }
 
+  private val transform =
+    "SELECT TRANSFORM(o.order_id) USING 'cat' AS (a) FROM starbake.orders o WHERE o.amount > 1"
+
+  it should "ignore whitespace-only edits of unparseable SQL" in {
+    val reindented = transform.replace(" FROM ", "\n    FROM ").replace(" WHERE ", "\n    WHERE ")
+    detect(task(transform), task(reindented)) shouldBe empty
+    val c = detect(task(transform), task(reindented.replace("'cat'", "'tac'"))).head
+    c.changeClass shouldBe Breaking
+    c.columns shouldBe AllColumns
+    c.unresolved.isDefined shouldBe true
+  }
+
+  it should "give the new side's reason when the SQL becomes unparseable" in {
+    val c = detect(task(sql), task(transform)).head
+    c.changeClass shouldBe Breaking
+    c.reasons.head should startWith("SQL could not be analyzed")
+    c.reasons.head should not include "\n"
+    c.unresolved shouldBe task(transform).shape.get.unresolved
+  }
+
+  it should "say the SQL is now analyzable when only the old side was unresolved" in {
+    val c = detect(task(transform), task(sql)).head
+    c.changeClass shouldBe Breaking
+    c.columns shouldBe AllColumns
+    c.reasons.head should startWith("SQL now analyzable (previously: SQL parse failed")
+    c.reasons.head should not include "\n"
+    c.reasons.head should not include "could not be analyzed"
+  }
+
+  it should "classify a task write strategy change as BREAKING on all columns" in {
+    val c = detect(task(sql), task(sql, structural = "UPSERT_BY_KEY(order_id)")).head
+    c.changeClass shouldBe Breaking
+    c.columns shouldBe AllColumns
+  }
+
+  it should "classify a source table swap as BREAKING on all columns" in {
+    val c = detect(task(sql), task(sql.replace("starbake.orders", "starbake.orders_v2"))).head
+    c.changeClass shouldBe Breaking
+    c.columns shouldBe AllColumns
+  }
+
+  it should "let a column change win over a metadata change" in {
+    val c =
+      detect(task(sql), task(sql.replace("o.amount * 2", "o.amount * 3"), metadata = "tag=x")).head
+    c.changeClass shouldBe Breaking
+    c.details shouldBe List(ExpressionChanged("total"))
+  }
+
+  it should "report both a load rename and a type change" in {
+    val changed = List(baseAttrs.head, AttributeView("amount", "amount_eur", "double"))
+    val c = detect(load(baseAttrs), load(changed)).head
+    c.changeClass shouldBe Breaking
+    c.details shouldBe List(
+      ColumnRenamed("amount", "amount_eur"),
+      TypeChanged("amount", "decimal", "double")
+    )
+  }
+
   it should "classify a numeric-only change of an unresolved UNION ALL as BREAKING" in {
     val union =
       "SELECT order_id FROM starbake.orders WHERE amount > 1 " +

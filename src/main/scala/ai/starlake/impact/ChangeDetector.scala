@@ -33,14 +33,18 @@ object ChangeDetector {
   }
 
   private def compare(o: NodeView, n: NodeView): Option[DirectChange] = {
-    val unresolvedReason = n.shape.flatMap(_.unresolved).orElse(o.shape.flatMap(_.unresolved))
+    val oldReason = o.shape.flatMap(_.unresolved)
+    val newReason = n.shape.flatMap(_.unresolved)
+    val unresolvedReason = newReason.orElse(oldReason)
     val sqlChanged = (o.shape, n.shape) match {
       case (Some(a), Some(b)) =>
         a.rowFingerprint != b.rowFingerprint || a.allIdentifiers != b.allIdentifiers ||
         a.columns.map(c => (c.name, c.fingerprint)) != b.columns.map(c =>
           (c.name, c.fingerprint)
         ) ||
-        a.unresolved != b.unresolved
+        // the reasons themselves are not compared: a parse error message embeds raw SQL text,
+        // and the whole normalized SQL in rowFingerprint already catches every real edit
+        a.unresolved.isDefined != b.unresolved.isDefined
       case (None, None) => false
       case _            => true
     }
@@ -64,7 +68,11 @@ object ChangeDetector {
           Breaking,
           AllColumns,
           Nil,
-          List("SQL could not be analyzed"),
+          List(newReason match {
+            case Some(r) => s"SQL could not be analyzed: ${firstLine(r)}"
+            case None =>
+              s"SQL now analyzable (previously: ${oldReason.map(firstLine).getOrElse("")})"
+          }),
           unresolved = unresolvedReason
         )
       )
@@ -117,6 +125,9 @@ object ChangeDetector {
       } else None
     }
   }
+
+  private def firstLine(text: String): String =
+    text.linesIterator.map(_.trim).find(_.nonEmpty).getOrElse("")
 
   private def rowLevelChanged(o: NodeView, n: NodeView): Boolean =
     (o.shape, n.shape) match {
