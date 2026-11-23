@@ -44,9 +44,34 @@ class PhysicalTablesSpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  it should "skip an external node even when it carries a connection" in {
-    val ext = SiteNode("external:a.b", "external", "b", "a", "b", connectionRef = Some("pg"))
-    PhysicalTables.group(List(ext)) shouldBe empty
+  it should "skip an undeclared external, collect a declared one like a load" in {
+    val bare = SiteNode(
+      "external:a.b",
+      "external",
+      "b",
+      "a",
+      "b",
+      connectionRef = Some("pg"),
+      undeclared = Some(true)
+    )
+    val declared =
+      SiteNode("external:ref.fx", "external", "fx", "ref", "fx", connectionRef = Some("pg"))
+    PhysicalTables.group(List(bare)) shouldBe empty
+    PhysicalTables.group(List(bare, declared)) shouldBe Map(
+      "pg" -> List(PhysicalTable(None, "ref", "fx") -> List("external:ref.fx"))
+    )
+  }
+
+  it should "locate a declared external where a load of the same domain would live" in {
+    val ext = SiteNode("external:ref.fx", "external", "fx", "ref", "fx")
+    def at(ref: String, db: Option[String], defaultDb: Option[String]) =
+      locate(ext.copy(connectionRef = Some(ref), database = db), defaultDb).map(_.table.database)
+    at("duck", None, Some("lake")) shouldBe Some(Some("lake"))
+    at("duck", Some("own"), Some("lake")) shouldBe Some(Some("own"))
+    at("bq", None, Some("default-db")) shouldBe Some(Some("default-db"))
+    at("bq", None, None) shouldBe Some(Some("conn-project"))
+    at("spark", Some("catalog"), Some("lake")) shouldBe Some(None)
+    locate(ext, Some("lake")) shouldBe None
   }
 
   it should "collect a transform on its sink connection, not its run connection" in {
@@ -119,7 +144,16 @@ class PhysicalTablesSpec extends AnyFlatSpec with Matchers {
       Some("dflt")
     ) shouldBe Some(PhysicalLocation("missing", PhysicalTable(None, "a", "b")))
     PhysicalTables.locate(n.copy(connectionRef = None), connections.get, None) shouldBe None
-    PhysicalTables.locate(n.copy(kind = "external"), connections.get, None) shouldBe None
+    PhysicalTables.locate(
+      n.copy(kind = "external", undeclared = Some(true)),
+      connections.get,
+      None
+    ) shouldBe None
+    PhysicalTables.locate(
+      n.copy(kind = "external", database = None),
+      unreadable,
+      Some("dflt")
+    ) shouldBe Some(PhysicalLocation("missing", PhysicalTable(Some("dflt"), "a", "b")))
   }
 
   it should "group with the resolved databases" in {

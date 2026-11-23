@@ -33,6 +33,10 @@ class SiteStatsCliSpec extends SiteFixture {
         st.execute(
           "CREATE OR REPLACE TABLE sales.customers (id BIGINT, email VARCHAR, extra VARCHAR)"
         )
+        st.execute("CREATE SCHEMA IF NOT EXISTS refdata")
+        st.execute(
+          "CREATE OR REPLACE TABLE refdata.fx_rates (currency VARCHAR, rate DECIMAL(38,9))"
+        )
       }
     }
     val out = fixtureRoot / "site-stats-out"
@@ -54,6 +58,18 @@ class SiteStatsCliSpec extends SiteFixture {
     ) should contain("extra" -> "extraInWarehouse")
 
     stats.get("tables").get("load:sales.orders").get("exists").asBoolean() shouldBe false
+
+    val fx = stats.get("tables").get("external:refdata.fx_rates")
+    fx.get("exists").asBoolean() shouldBe true
+    fx.get("connectionRef").asText() shouldBe "duckdb"
+    val fxDiff = fx.get("columnDiff")
+    (0 until fxDiff.size()).map(i =>
+      fxDiff.get(i).get("name").asText() -> fxDiff.get(i).get("status").asText()
+    ) shouldBe List(
+      "currency"  -> "match",
+      "rate"      -> "match",
+      "rate_date" -> "missingInWarehouse"
+    )
     (out / "index.html").contentAsString should include("""id="sl-stats"""")
   }
 

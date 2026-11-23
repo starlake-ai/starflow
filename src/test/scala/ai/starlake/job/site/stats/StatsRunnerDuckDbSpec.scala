@@ -20,6 +20,11 @@ class StatsRunnerDuckDbSpec extends IntegrationTestBase with SiteFixture {
             "CREATE OR REPLACE TABLE sales.orders " +
             "(id BIGINT, customer_id BIGINT, amount DECIMAL(38,9), note VARCHAR)"
           )
+          st.execute("CREATE SCHEMA IF NOT EXISTS refdata")
+          st.execute(
+            "CREATE OR REPLACE TABLE refdata.fx_rates " +
+            "(currency VARCHAR, rate DECIMAL(38,9), rate_date DATE)"
+          )
         }
       }
       val model = ModelBuilder(settings.schemaHandler()).build()
@@ -38,6 +43,16 @@ class StatsRunnerDuckDbSpec extends IntegrationTestBase with SiteFixture {
       )
       stats.tables("load:sales.customers").exists shouldBe false
       stats.tables("load:sales.customers").columnDiff shouldBe Nil
-      stats.tables.keySet.exists(_.startsWith("external:")) shouldBe false
+      val fx = stats.tables("external:refdata.fx_rates")
+      fx.exists shouldBe true
+      fx.connectionRef shouldBe "duckdb"
+      fx.columnDiff.map(d => d.name -> d.status) shouldBe List(
+        "currency"  -> "match",
+        "rate"      -> "match",
+        "rate_date" -> "match"
+      )
+      stats.tables.keySet.filter(_.startsWith("external:")) shouldBe Set(
+        "external:refdata.fx_rates"
+      )
   }
 }

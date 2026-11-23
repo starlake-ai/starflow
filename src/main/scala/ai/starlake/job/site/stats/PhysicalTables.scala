@@ -23,8 +23,10 @@ object PhysicalTables {
     *   - BigQuery: the node's database, else the default database (SL_DATABASE), else the
     *     connection projectId (AutoTaskInfo.getDatabase, SchemaHandler.getDatabase,
     *     BigQueryAutoTask target table id);
-    *   - JDBC loads: the domain database, else the default database (SchemaHandler.getDatabase,
-    *     used by the native loaders and the Spark ingestion pipeline);
+    *   - JDBC loads and declared externals: the domain database, else the default database
+    *     (SchemaHandler.getDatabase, used by the native loaders and the Spark ingestion pipeline).
+    *     A declared external is a load-format table that Starlake reads, so it lives where a load
+    *     of the same domain would;
     *   - JDBC transforms: the task database only (AutoTask.fullDomainName).
     */
   def databaseOf(
@@ -38,21 +40,21 @@ object PhysicalTables {
         n.database
           .orElse(defaultDatabase)
           .orElse(connection.flatMap(_.options.get("projectId")).filter(_.nonEmpty))
-      case _ if n.kind == "load" => n.database.orElse(defaultDatabase)
-      case _                     => n.database
+      case _ if n.kind == "load" || n.kind == "external" => n.database.orElse(defaultDatabase)
+      case _                                             => n.database
     }
 
-  /** Where the node lives, or None for external nodes and nodes without a connection. A connection
-    * that cannot be read is treated as an unknown type: a load takes its declared database, else
-    * the default one, a transform its declared database. The runner reports that connection's
-    * error.
+  /** Where the node lives, or None for undeclared externals (bare SQL references, which have no
+    * connection) and nodes without a connection. A connection that cannot be read is treated as an
+    * unknown type: a load or declared external takes its declared database, else the default one, a
+    * transform its declared database. The runner reports that connection's error.
     */
   def locate(
     n: SiteNode,
     connections: String => Option[ConnectionInfo],
     defaultDatabase: Option[String]
   ): Option[PhysicalLocation] =
-    if (n.kind == "external") None
+    if (n.kind == "external" && n.undeclared.contains(true)) None
     else
       connectionRefOf(n).map { ref =>
         val connection = Try(connections(ref)).toOption.flatten
@@ -63,7 +65,7 @@ object PhysicalTables {
       }
 
   /** connectionRef -> physical tables (sorted by key), each with the sorted ids of the nodes that
-    * point at it. External nodes and nodes without a connection are skipped.
+    * point at it. Undeclared externals and nodes without a connection are skipped.
     */
   def group(
     nodes: Iterable[SiteNode],
