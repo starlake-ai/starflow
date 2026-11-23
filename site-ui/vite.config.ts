@@ -7,6 +7,7 @@ function classicScript(): Plugin {
   return {
     name: 'sl-classic-script',
     enforce: 'post',
+    apply: 'build',
     transformIndexHtml(html) {
       return html
         .replace(/<script type="module" crossorigin/g, '<script defer')
