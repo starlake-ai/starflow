@@ -27,7 +27,7 @@ __Before upgrading__: the changes that can affect an existing project, detailed 
   - They read the columns on the connection of the task, from a dry run on BigQuery: the next sync may change attributes, `timestamp` becoming `datetime` for a `DATETIME` column, a repeated column getting `array: true`, a `STRUCT` column its fields (#1950).
   - `--sync-apply` adds the descriptions inherited through column lineage to the attributes that have none (#1948).
 - **`starlake site`** generates a new documentation site:
-  - `--template`, `--format` and `--json` are removed, and so are the per-table HTML pages. The output is `index.html`, `sl-model.json` and, with `--stats`, `sl-stats.json`. `sl-model.json` is a new single-file format: tools that read the former JSON output, such as the separate `starlake-site-builder` portal, must be adapted, and that portal has no data source until then.
+  - `--template`, `--format` and `--json` are removed, and so are the per-table HTML pages. The output is `index.html`, `sl-model.json` and, with `--stats`, `sl-stats.json`. `sl-model.json` is a new single-file format: tools that read the former JSON output must be adapted. The separate `starlake-site-builder` portal, which read it, is archived: the new site replaces it.
   - **Upgrade note**: `--template`, `--format` and `--json` now fail as unknown options: remove them from scripts.
   - A `{{ doc("name") }}` reference in a `comment` is now resolved from the doc blocks under `metadata/docs/`. Warehouse descriptions that a load or a transform writes from such a comment get the marker `<!--sl-doc:name-->` instead of the reference.
 
