@@ -134,7 +134,9 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
       newView <- ProjectSnapshot.load(newDir, newLabel, env, dateVars)
     } yield {
       val direct = ChangeDetector.detect(oldView, newView)
-      val (impacted, unresolved) = ImpactPropagator.propagate(direct, newView)
+      val (impacted, edges) = ImpactPropagator.propagate(direct, newView)
+      val unresolved = (edges ++ ImpactPropagator.collisions(oldView, newView)).distinct
+        .sortBy(e => (e.from.name, e.to.name))
       ImpactReport(
         oldLabel,
         newLabel,

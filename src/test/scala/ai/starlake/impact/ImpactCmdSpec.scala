@@ -258,6 +258,79 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "flag a consumer of a deleted table read by its table name only" in {
+    new WithSettings() {
+      val customers = Map(
+        "metadata/load/raw/customers.sl.yml" ->
+        ImpactFixtures
+          .baseFiles("metadata/load/raw/orders.sl.yml")
+          .replace("name: orders", "name: customers")
+          .replace("orders.*.csv", "customers.*.csv"),
+        "metadata/transform/kpi/active.sl.yml" ->
+        "version: 1\ntask:\n  name: active\n  domain: kpi\n  table: active\n",
+        "metadata/transform/kpi/active.sql" -> "SELECT c.id FROM customers c\n"
+      )
+      val oldDir = ImpactFixtures.writeProject(File.newTemporaryDirectory("impact-old-"), customers)
+      val newDir = ImpactFixtures.writeProject(
+        File.newTemporaryDirectory("impact-new-"),
+        customers,
+        Set("metadata/load/raw/customers.sl.yml")
+      )
+      deleting(oldDir, newDir) {
+        val report = ImpactCmd.analyze(oldDir, newDir, "old", "new", None).get
+        report.direct.find(_.node.name == "raw.customers").get.deleted shouldBe true
+        report.impacted.find(_.node.name == "kpi.active").get.likelyFailure shouldBe true
+        report.unresolved should contain(
+          UnresolvedEdge(
+            NodeRef("raw", "customers"),
+            NodeRef("kpi", "active"),
+            "ambiguous or unknown reference 'customers'"
+          )
+        )
+      }
+    }
+  }
+
+  it should "list a node defined more than once as unresolved" in {
+    new WithSettings() {
+      val duplicates = Map(
+        // a second task writing stg.orders, from another transform folder
+        "metadata/transform/stg2/_config.sl.yml" -> "version: 1\ntransform:\n  name: stg2\n",
+        "metadata/transform/stg2/orders.sl.yml" ->
+        "version: 1\ntask:\n  name: orders\n  domain: stg\n  table: orders\n",
+        "metadata/transform/stg2/orders.sql" -> "SELECT o.id FROM raw.orders o\n",
+        // a task writing the load table raw.orders
+        "metadata/transform/stg2/raw_orders.sl.yml" ->
+        "version: 1\ntask:\n  name: raw_orders\n  domain: raw\n  table: orders\n",
+        "metadata/transform/stg2/raw_orders.sql" -> "SELECT 1 AS id\n"
+      )
+      withProjects(duplicates ++ removeAmountFromStg) { (o, n) =>
+        ImpactFixtures.writeProject(o, duplicates)
+        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        report.unresolved should contain allOf (
+          UnresolvedEdge(
+            NodeRef("raw", "orders"),
+            NodeRef("raw", "orders"),
+            "defined more than once (load table and task), only one is analyzed"
+          ),
+          UnresolvedEdge(
+            NodeRef("stg", "orders"),
+            NodeRef("stg", "orders"),
+            "defined more than once (two tasks), only one is analyzed"
+          )
+        )
+        val twoTasks = "defined more than once (two tasks), only one is analyzed"
+        ImpactRenderer.render(report, "text", None) should include(s"  stg.orders: $twoTasks\n")
+        ImpactRenderer.render(report, "markdown", None) should include(
+          s"- `stg.orders`: $twoTasks\n"
+        )
+        ImpactRenderer.render(report, "html", None) should include(
+          s"<li>stg.orders: $twoTasks</li>"
+        )
+      }
+    }
+  }
+
   it should "return exit code 2 on usage errors" in {
     new WithSettings() {
       val usageErrors = List(

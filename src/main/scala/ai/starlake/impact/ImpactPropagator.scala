@@ -27,6 +27,19 @@ object ImpactPropagator {
       )
   }
 
+  /** The upstream of an edge that may come from any node. */
+  val AnyNode: NodeRef = NodeRef("", "(any)")
+
+  /** One self edge per node defined more than once on either side: only one definition is analyzed.
+    */
+  def collisions(views: SnapshotView*): List[UnresolvedEdge] =
+    views.toList
+      .flatMap(_.collisions)
+      .distinct
+      .map { case (ref, what) =>
+        UnresolvedEdge(ref, ref, s"defined more than once ($what), only one is analyzed")
+      }
+
   private def step(ref: NodeRef, columns: Columns): String = columns match {
     case AllColumns => ref.name
     case Cols(cs)   => s"${ref.name}[${cs.toList.sorted.mkString(", ")}]"
@@ -72,6 +85,15 @@ object ImpactPropagator {
       }
     }
 
+    // a python task reads tables nobody can tell offline: any breaking change may reach it
+    val pythonEdges =
+      if (direct.exists(_.changeClass == Breaking))
+        view.nodes.values.toList
+          .filter(_.shape.exists(_.unresolved.contains(TaskShape.PythonTask)))
+          .map(n => UnresolvedEdge(AnyNode, n.ref, "python task, inputs unknown, not traced"))
+      else Nil
+    edges ++= pythonEdges
+
     val nodes = states.toList
       .map { case (ref, s) =>
         ImpactedNode(
@@ -98,7 +120,10 @@ object ImpactPropagator {
   ): Option[State] = {
     // consumersOf only returns nodes with a shape
     consumer.shape.flatMap { shape =>
-      val tableLevel = shape.unresolved.orElse(shape.unresolvedInputs.get(up))
+      // not read by name and domain: by a single-part name, ambiguous or whose table is gone
+      val tableLevel =
+        if (shape.inputs.contains(up)) shape.unresolved.orElse(shape.unresolvedInputs.get(up))
+        else Some(s"ambiguous or unknown reference '${up.table}'")
       // identifiers and sources in a TaskShape are lower case, attribute names may not be
       val mentionsGone = gone.exists(shape.allIdentifiers.contains)
       def all(cls: ChangeClass, failure: Boolean = false, unresolved: Boolean = false) =

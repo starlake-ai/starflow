@@ -294,4 +294,71 @@ class ImpactPropagatorSpec extends AnyFlatSpec with Matchers {
       stg
     ).likelyFailure shouldBe true
   }
+
+  it should "match an ambiguous or unknown single-part input by table name and record the edge" in {
+    val rawCustomers = NodeRef("raw", "customers")
+    val stgCustomers = NodeRef("stg", "customers")
+    val reader = NodeRef("kpi", "customers")
+    // FROM customers: two tables have that name, the input keeps no domain
+    val byName = NodeRef("", "customers")
+    val view = SnapshotView(
+      "new",
+      List(
+        NodeView(
+          rawCustomers,
+          NodeKind.LoadTable,
+          List(AttributeView("id", "id", "long")),
+          None,
+          "",
+          ""
+        ),
+        taskNode(stgCustomers, Set(rawCustomers), List(col("id", rawCustomers -> "id"))),
+        taskNode(
+          reader,
+          Set(byName),
+          List(col("id", byName -> "id")),
+          unresolvedInputs = Map(byName -> "columns unknown")
+        )
+      ).map(n => n.ref -> n).toMap,
+      Map.empty
+    )
+    view.consumersOf(rawCustomers).map(_.ref) shouldBe List(reader, stgCustomers)
+    val deleted =
+      DirectChange(rawCustomers, NodeKind.LoadTable, Breaking, AllColumns, Nil, Nil, deleted = true)
+    val (nodes, edges) = ImpactPropagator.propagate(List(deleted), view)
+    val r = nodes.map(n => n.node -> n).toMap
+    r(reader).likelyFailure shouldBe true
+    r(reader).viaUnresolvedEdge shouldBe true
+    edges should contain(
+      UnresolvedEdge(rawCustomers, reader, "ambiguous or unknown reference 'customers'")
+    )
+  }
+
+  it should "list every python task as not traced when a change is breaking" in {
+    val py = NodeRef("kpi", "py")
+    val python = NodeView(
+      py,
+      NodeKind.Task,
+      Nil,
+      Some(TaskShape.unresolved(TaskShape.PythonTask, Set.empty, Set.empty)),
+      "",
+      ""
+    )
+    val view = SnapshotView(
+      "new",
+      chain().nodes + (py -> python),
+      Map.empty
+    )
+    val notTraced =
+      UnresolvedEdge(NodeRef("", "(any)"), py, "python task, inputs unknown, not traced")
+    ImpactPropagator.propagate(List(change(Breaking, AllColumns)), view)._2 should contain(
+      notTraced
+    )
+    ImpactPropagator
+      .propagate(
+        List(change(NonBreaking, Cols(Set("note")), List(ColumnAdded("note")))),
+        view
+      )
+      ._2 should not contain notTraced
+  }
 }

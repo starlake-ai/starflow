@@ -40,7 +40,7 @@
 
 <h2>Unresolved</h2>
 <ul>
-{% for e in report.unresolved %}<li>{{ e.from }} to {{ e.to }}: {{ e.reason }}</li>{% endfor %}{% if report.unresolved|length == 0 %}<li>None</li>{% endif %}
+{% for e in report.unresolved %}<li>{% if e.from == e.to %}{{ e.to }}{% else %}{{ e.from }} to {{ e.to }}{% endif %}: {{ e.reason }}</li>{% endfor %}{% if report.unresolved|length == 0 %}<li>None</li>{% endif %}
 </ul>
 
 <h2>Other changes, not traced</h2>

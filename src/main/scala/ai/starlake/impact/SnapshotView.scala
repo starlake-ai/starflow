@@ -42,6 +42,10 @@ final case class TaskShape(
 }
 
 object TaskShape {
+
+  /** The unresolved reason of a python task: its inputs are unknown. */
+  val PythonTask = "python task"
+
   def unresolved(reason: String, inputs: Set[NodeRef], allIdentifiers: Set[String]): TaskShape =
     TaskShape(inputs, Nil, Set.empty, "", Set.empty, allIdentifiers, Map.empty, Some(reason))
 }
@@ -59,10 +63,10 @@ final case class AttributeView(
 )
 
 /** @param structural
-  *   fingerprint of what changes which rows end up in the table: write strategy, merge key,
-  *   partition, clustering, table filter
+  *   fingerprint of what changes which rows end up in the table, or where: write strategy, merge
+  *   key, sink, connection, pre/post SQL, pattern, table filter, parsing
   * @param metadata
-  *   fingerprint of what changes no data: comment, tags, ACL, RLS, expectations
+  *   fingerprint of what changes no data: comment, tags, ACL, RLS, expectations, schedule, DAG
   */
 final case class NodeView(
   ref: NodeRef,
@@ -71,12 +75,7 @@ final case class NodeView(
   shape: Option[TaskShape],
   structural: String,
   metadata: String
-) {
-
-  /** Columns this node exposes to consumers. */
-  def outputColumns: List[String] =
-    shape.map(_.columns.map(_.name)).filter(_.nonEmpty).getOrElse(attributes.map(_.finalName))
-}
+)
 
 /** A file under `metadata/load` or `metadata/transform`, with the nodes it defines by the file name
   * convention: a table or task file defines the node of the same name, a `_config.sl.yml` every
@@ -90,16 +89,38 @@ final case class DefinitionFile(hash: String, nodes: Set[NodeRef])
   * @param definitionFiles
   *   relative path of every file under `metadata/load` and `metadata/transform`: a change no direct
   *   change of its nodes explains is listed as not classified
+  * @param collisions
+  *   nodes defined more than once (two tasks, a load table and a task ...), with what defines them:
+  *   only one definition is in `nodes`
   */
 final case class SnapshotView(
   label: String,
   nodes: Map[NodeRef, NodeView],
   otherFiles: Map[String, String],
-  definitionFiles: Map[String, DefinitionFile] = Map.empty
+  definitionFiles: Map[String, DefinitionFile] = Map.empty,
+  collisions: Map[NodeRef, String] = Map.empty
 ) {
+
+  /** Consumers of each input, and of each table name for the inputs that keep no domain. */
+  private lazy val (byInput, byTableName): (
+    Map[NodeRef, List[NodeView]],
+    Map[String, List[NodeView]]
+  ) = {
+    val pairs = nodes.values.toList.flatMap(n => n.shape.toList.flatMap(_.inputs).map(_ -> n))
+    val (unqualified, qualified) = pairs.partition(_._1.domain.isEmpty)
+    (
+      qualified.groupBy(_._1).map { case (ref, ps) => ref -> ps.map(_._2) },
+      unqualified.groupBy(_._1.table).map { case (table, ps) => table -> ps.map(_._2) }
+    )
+  }
+
+  /** The nodes reading `ref`. An input without domain (a single-part name that was ambiguous, or
+    * whose table is gone) reads every node of that table name: over-reporting is safer than missing
+    * an impact.
+    */
   def consumersOf(ref: NodeRef): List[NodeView] =
-    nodes.values
-      .filter(n => n.ref != ref && n.shape.exists(_.inputs.contains(ref)))
-      .toList
+    (byInput.getOrElse(ref, Nil) ++ byTableName.getOrElse(ref.table, Nil))
+      .filter(_.ref != ref)
+      .distinctBy(_.ref)
       .sortBy(_.ref.name)
 }

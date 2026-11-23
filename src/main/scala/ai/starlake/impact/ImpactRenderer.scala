@@ -119,7 +119,10 @@ object ImpactRenderer {
   private def textUnresolved(r: ImpactReport): String = {
     val sb = new StringBuilder
     sb ++= s"\nUnresolved (${r.unresolved.size})\n"
-    r.unresolved.foreach(e => sb ++= s"  ${e.from.name} -> ${e.to.name}: ${e.reason}\n")
+    r.unresolved.foreach { e =>
+      val edge = if (e.from == e.to) e.to.name else s"${e.from.name} -> ${e.to.name}"
+      sb ++= s"  $edge: ${e.reason}\n"
+    }
     sb.toString
   }
 
@@ -127,9 +130,12 @@ object ImpactRenderer {
     val sb = new StringBuilder
     sb ++= "\n### Unresolved\n\n"
     if (r.unresolved.isEmpty) sb ++= "None\n"
-    r.unresolved.foreach(e =>
-      sb ++= s"- `${cell(e.from.name)}` -> `${cell(e.to.name)}`: ${cell(e.reason)}\n"
-    )
+    r.unresolved.foreach { e =>
+      val edge =
+        if (e.from == e.to) s"`${cell(e.to.name)}`"
+        else s"`${cell(e.from.name)}` -> `${cell(e.to.name)}`"
+      sb ++= s"- $edge: ${cell(e.reason)}\n"
+    }
     sb.toString
   }
 

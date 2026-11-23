@@ -293,6 +293,28 @@ object ProjectSnapshot {
       neutralize(metadataFingerprint(table, domain))
     )
 
+    // the maps below keep one definition per node: the others are reported, not analyzed
+    val collisions: Map[NodeRef, String] = {
+      val loads = loadNodes.groupBy(_.ref).map { case (ref, ns) => ref -> ns.size }
+      val taskCounts =
+        tasks.groupBy { case (_, t) => NodeRef.of(t.domain, t.table) }.map { case (ref, ts) =>
+          ref -> ts.size
+        }
+      def count(n: Int, what: String): Option[String] = n match {
+        case 0 => None
+        case 1 => Some(what)
+        case 2 => Some(s"two ${what}s")
+        case _ => Some(s"$n ${what}s")
+      }
+      (loads.keySet ++ taskCounts.keySet).toList.flatMap { ref =>
+        val l = loads.getOrElse(ref, 0)
+        val t = taskCounts.getOrElse(ref, 0)
+        if (l + t > 1)
+          Some(ref -> (count(l, "load table").toList ++ count(t, "task")).mkString(" and "))
+        else None
+      }.toMap
+    }
+
     val taskByRef: Map[NodeRef, AutoTaskInfo] =
       tasks.map { case (_, t) => NodeRef.of(t.domain, t.table) -> t }.toMap
     val taskDirs: Map[NodeRef, Path] =
@@ -346,7 +368,7 @@ object ProjectSnapshot {
               task.python match {
                 case Some(path) =>
                   TaskShape
-                    .unresolved("python task", Set.empty, Set.empty)
+                    .unresolved(TaskShape.PythonTask, Set.empty, Set.empty)
                     .copy(rowFingerprint = sha256(settings.storageHandler().read(path)))
                 case None =>
                   commandFile(ref, task).flatMap(renderErrors.get) match {
@@ -388,7 +410,8 @@ object ProjectSnapshot {
         projectDir,
         loadByRef.keySet,
         taskByRef.map { case (ref, t) => ref -> (taskDirs(ref).getName -> t._filenamePrefix) }
-      )
+      ),
+      collisions
     )
   }
 
