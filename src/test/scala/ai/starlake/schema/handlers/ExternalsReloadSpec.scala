@@ -36,6 +36,7 @@ class ExternalsReloadSpec extends TestHelper {
       storageHandler.write(tableYaml("a", "x"), new Path(ext1, "a.sl.yml"))
 
       val schemaHandler = settings.schemaHandler(reload = true)
+      schemaHandler.externalsRecheckIntervalMs = 0
       tables(schemaHandler) shouldBe Map("ext1.a" -> List("x"))
 
       // a new table in an existing domain and a new domain
@@ -61,6 +62,24 @@ class ExternalsReloadSpec extends TestHelper {
       // an explicit reload keeps every external, not only the files changed since the last load
       schemaHandler.loadExternals()
       tables(schemaHandler) shouldBe Map("ext1.a" -> List("x", "x2"))
+    }
+  }
+
+  it should "list the externals folder at most once per recheck interval" in {
+    new WithSettings() {
+      val ext1 = new Path(DatasetArea.external, "ext1")
+      storageHandler.write(domainYaml("ext1"), new Path(ext1, "_config.sl.yml"))
+      storageHandler.write(tableYaml("a", "x"), new Path(ext1, "a.sl.yml"))
+
+      val schemaHandler = settings.schemaHandler(reload = true)
+      schemaHandler.externalsRecheckIntervalMs = 3600000
+      tables(schemaHandler) shouldBe Map("ext1.a" -> List("x"))
+      storageHandler.write(tableYaml("b", "y"), new Path(ext1, "b.sl.yml"))
+      // still within the interval: the cache is trusted
+      tables(schemaHandler) shouldBe Map("ext1.a" -> List("x"))
+      // an explicit reload always reads the folder
+      schemaHandler.loadExternals()
+      tables(schemaHandler).keySet shouldBe Set("ext1.a", "ext1.b")
     }
   }
 }

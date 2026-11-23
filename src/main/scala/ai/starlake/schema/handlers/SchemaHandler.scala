@@ -1085,13 +1085,27 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   private def externalsFingerprint(): List[(String, Long, Long)] =
     filesFingerprint(DatasetArea.external, ".sl.yml")
 
-  /** External domains, reloaded whenever a file under the externals folder was added, changed or
-    * removed since the last load, so a long-running process such as starlake-api never serves stale
-    * externals.
+  @volatile private var _externalsCheckedAt = Long.MinValue
+
+  /** How long externals() trusts its cache before listing the externals folder again. Callers look
+    * tables up one at a time (findTableInObjects), so checking on every call would list the folder
+    * once per table, which is slow on object storage.
+    */
+  @volatile private[handlers] var externalsRecheckIntervalMs: Long = 2000
+
+  /** External domains, reloaded when a file under the externals folder was added, changed or
+    * removed since the last load, so a long-running process such as starlake-api does not serve
+    * stale externals. The folder is listed at most once per externalsRecheckIntervalMs.
     */
   def externals(): List[DomainInfo] = synchronized {
-    val fingerprint = externalsFingerprint()
-    if (!_externalsFingerprint.contains(fingerprint)) loadExternals(fingerprint)
+    val now = System.nanoTime()
+    val recheck = _externalsFingerprint.isEmpty ||
+      (now - _externalsCheckedAt) / 1000000 >= externalsRecheckIntervalMs
+    if (recheck) {
+      val fingerprint = externalsFingerprint()
+      if (!_externalsFingerprint.contains(fingerprint)) loadExternals(fingerprint)
+      _externalsCheckedAt = now
+    }
     _externals
   }
 
@@ -1115,6 +1129,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         valid.collect { case Success(domain) => domain }
       }
     _externalsFingerprint = Some(fingerprint)
+    _externalsCheckedAt = System.nanoTime()
     _externals
   }
 
