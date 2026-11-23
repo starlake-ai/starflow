@@ -131,7 +131,9 @@ class ModelBuilder(
   }
 
   private def existingPath(candidates: String*): Option[String] =
-    candidates.find(rel => Try(storage.exists(new Path(DatasetArea.metadata, rel))).getOrElse(false))
+    candidates.find(rel =>
+      Try(storage.exists(new Path(DatasetArea.metadata, rel))).getOrElse(false)
+    )
 
   private def dagName(ref: String): String =
     ref.split('/').last.stripSuffix(".sl.yml").stripSuffix(".yml")
@@ -301,5 +303,9 @@ object ModelBuilder {
     }
 
   def apply(schemaHandler: SchemaHandler)(implicit settings: Settings): ModelBuilder =
-    new ModelBuilder(schemaHandler, defaultCompiler(schemaHandler), defaultColLineage(schemaHandler))
+    new ModelBuilder(
+      schemaHandler,
+      defaultCompiler(schemaHandler),
+      defaultColLineage(schemaHandler)
+    )
 }

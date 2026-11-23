@@ -39,10 +39,11 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     customers.filePath shouldBe Some("load/sales/customers.sl.yml")
   }
 
-  it should "warn on unknown doc blocks and resolve foreign keys" in withFixture { implicit settings =>
-    val orders = build().nodes("load:sales.orders")
-    orders.warnings should contain("Unknown doc block 'missing_block'")
-    orders.columns.find(_.name == "customer_id").flatMap(_.foreignKeyNode) shouldBe
+  it should "warn on unknown doc blocks and resolve foreign keys" in withFixture {
+    implicit settings =>
+      val orders = build().nodes("load:sales.orders")
+      orders.warnings should contain("Unknown doc block 'missing_block'")
+      orders.columns.find(_.name == "customer_id").flatMap(_.foreignKeyNode) shouldBe
       Some("load:sales.customers")
   }
 

@@ -4,7 +4,8 @@ import ai.starlake.config.Settings
 import ai.starlake.integration.IntegrationTestBase
 import better.files.File
 
-/** Copies src/test/resources/site/fixture to a temp folder and runs the block with SL_ROOT on it. */
+/** Copies src/test/resources/site/fixture to a temp folder and runs the block with SL_ROOT on it.
+  */
 trait SiteFixture extends IntegrationTestBase {
   lazy val fixtureRoot: File = {
     val tmp = File.newTemporaryDirectory("sl-site-fixture-")
