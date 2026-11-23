@@ -52,4 +52,46 @@ class SiteHandlerSpec extends IntegrationTestBase with SiteFixture {
     if (sys.env.get("SL_UPDATE_GOLDEN").contains("true")) golden.overwrite(pretty)
     pretty shouldBe golden.contentAsString.replace("\r\n", "\n")
   }
+
+  "site --serve" should "fail quickly when the port is busy" in withFixture { implicit settings =>
+    val busy = new java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+    try {
+      val out = File.newTemporaryDirectory("sl-site-busy-")
+      val cfg = SiteConfig(out, Some(true), serve = true, port = busy.getLocalPort)
+      val start = System.nanoTime()
+      new SiteHandler(cfg, settings.schemaHandler()).run().isFailure shouldBe true
+      ((System.nanoTime() - start) / 1000000000L) should be < 60L
+    } finally busy.close()
+  }
+
+  it should "release the port and remove its hook when interrupted" in withFixture {
+    implicit settings =>
+      val probe = new java.net.ServerSocket(0)
+      val port = probe.getLocalPort
+      probe.close()
+      val out = File.newTemporaryDirectory("sl-site-serve-")
+      val handler =
+        new SiteHandler(
+          SiteConfig(out, Some(true), serve = true, port = port),
+          settings.schemaHandler()
+        )
+      @volatile var result: Option[scala.util.Try[Unit]] = None
+      val t = new Thread(() => result = Some(handler.run()))
+      t.start()
+      val deadline = System.currentTimeMillis() + 120000
+      while (handler.servingPort == 0 && t.isAlive && System.currentTimeMillis() < deadline)
+        Thread.sleep(50)
+      handler.servingPort shouldBe port
+      t.interrupt()
+      t.join(30000)
+      t.isAlive shouldBe false
+      result.get.isFailure shouldBe true
+      val again = new java.net.ServerSocket(port)
+      again.close()
+      val hook = handler.lastHook.get
+      noException should be thrownBy {
+        Runtime.getRuntime.addShutdownHook(hook)
+        Runtime.getRuntime.removeShutdownHook(hook)
+      }
+  }
 }

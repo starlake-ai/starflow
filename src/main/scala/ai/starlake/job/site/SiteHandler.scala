@@ -39,16 +39,40 @@ class SiteHandler(config: SiteConfig, schemaHandler: SchemaHandler)(implicit val
     logger.info(summary)
     if (Main.cliMode) println(summary)
 
-    if (config.serve) {
-      val server = new SiteServer(config.outputPath, config.port)
-      val bound = server.start()
-      val latch = new java.util.concurrent.CountDownLatch(1)
-      sys.addShutdownHook {
-        server.stop()
-        latch.countDown()
+    if (config.serve) serve()
+  }
+
+  /** Port the serve loop is bound to, or 0 when not serving. For tests. */
+  @volatile private[site] var servingPort: Int = 0
+
+  /** The shutdown hook of the last serve loop. For tests. */
+  @volatile private[site] var lastHook: Option[Thread] = None
+
+  /** Serves the output directory until the calling thread is interrupted. A JVM shutdown only stops
+    * the server through the hook, it never lets this method return.
+    */
+  private[site] def serve(): Unit = {
+    val server = new SiteServer(config.outputPath, config.port)
+    val bound = server.start()
+    val hook = new Thread(() => server.stop())
+    lastHook = Some(hook)
+    try {
+      Runtime.getRuntime.addShutdownHook(hook)
+      servingPort = bound
+      val msg = s"Serving the site on http://127.0.0.1:$bound/ (Ctrl-C to stop)"
+      logger.info(msg)
+      if (Main.cliMode) println(msg)
+      try new java.util.concurrent.CountDownLatch(1).await()
+      catch {
+        case e: InterruptedException =>
+          Thread.currentThread().interrupt()
+          throw new IllegalStateException("Site serving interrupted", e)
       }
-      println(s"Serving the site on http://127.0.0.1:$bound/ (Ctrl-C to stop)")
-      latch.await()
+    } finally {
+      servingPort = 0
+      server.stop()
+      // removing a hook throws IllegalStateException while the JVM is shutting down
+      Try(Runtime.getRuntime.removeShutdownHook(hook))
     }
   }
 }
