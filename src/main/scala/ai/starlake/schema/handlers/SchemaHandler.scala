@@ -43,6 +43,7 @@ import ai.starlake.config.Settings.{latestSchemaVersion, ConnectionInfo}
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.{ExtractSchema, JdbcDbUtils}
 import ai.starlake.job.ingest.{AuditLog, RejectedRecord}
+import ai.starlake.job.site.DocBlocks
 import ai.starlake.job.metrics.ExpectationReport
 import ai.starlake.lineage.InheritedDescriptions
 import ai.starlake.schema.model.*
@@ -1019,8 +1020,9 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       val domainName = components(0)
       val tablePartName = components(1)
 
-      var folder = DomainInfo.path(domainName)
-      loadTableRef(tablePartName + ".sl.yml", raw = false, folder)
+      val folder = DomainInfo.path(domainName)
+      val desc = loadTableRef(tablePartName + ".sl.yml", raw = false, folder)
+      desc.copy(table = docResolver().table(desc.table))
     }
 
   def domains(
@@ -1045,21 +1047,43 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   @volatile private[handlers] var _domainErrors: List[ValidationMessage] = Nil
   @volatile private[handlers] var _domains: Option[List[DomainInfo]] = None
 
-  @volatile private var _externals = List.empty[DomainInfo]
-  @volatile private var _externalsFingerprint: Option[List[(String, Long, Long)]] = None
+  @volatile private var _docBlocks: Option[(List[(String, Long, Long)], DocBlocks)] = None
 
-  /** Path, modification time and size of every YAML file under the externals folder. Listing is
-    * cheap next to parsing, so it tells whether the cached externals are still current, deleted
-    * files included.
+  /** Doc blocks read from the .md files under metadata/docs, reloaded when one of them changes. */
+  def docBlocks(): DocBlocks = synchronized {
+    val docsDir = new Path(DatasetArea.metadata, "docs")
+    val fingerprint = filesFingerprint(docsDir, ".md")
+    _docBlocks match {
+      case Some((`fingerprint`, blocks)) => blocks
+      case _ =>
+        val (blocks, warnings) = DocBlocks.load(storage, docsDir)
+        warnings.foreach(w => logger.warn(w))
+        _docBlocks = Some(fingerprint -> blocks)
+        blocks
+    }
+  }
+
+  /** Resolves the doc references in the descriptions of a model loaded with Jinja applied. */
+  private def docResolver() = new DocBlocks.Resolver(docBlocks(), w => logger.warn(w))
+
+  /** Path, modification time and size of every file with the extension under folder. Listing is
+    * cheap next to parsing, so it tells whether what was loaded from the folder is still current,
+    * deleted files included.
     */
-  private def externalsFingerprint(): List[(String, Long, Long)] =
-    if (storage.exists(DatasetArea.external))
+  private def filesFingerprint(folder: Path, extension: String): List[(String, Long, Long)] =
+    if (storage.exists(folder))
       storage
-        .list(DatasetArea.external, extension = ".sl.yml", recursive = true)
+        .list(folder, extension = extension, recursive = true)
         .map(f => (f.path.toString, f.modificationInstant.toEpochMilli, f.fileSizeInBytes))
         .sorted
     else
       Nil
+
+  @volatile private var _externals = List.empty[DomainInfo]
+  @volatile private var _externalsFingerprint: Option[List[(String, Long, Long)]] = None
+
+  private def externalsFingerprint(): List[(String, Long, Long)] =
+    filesFingerprint(DatasetArea.external, ".sl.yml")
 
   /** External domains, reloaded whenever a file under the externals folder was added, changed or
     * removed since the last load, so a long-running process such as starlake-api never serves stale
@@ -1213,6 +1237,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     tableNames: List[String] = Nil,
     raw: Boolean
   ): (List[Try[DomainInfo]], List[Try[DomainInfo]]) = {
+    val resolver = docResolver()
     val (validDomainsFile, invalidDomainsFiles) =
       deserializedDomains(area, domainNames, raw)
         .map {
@@ -1233,7 +1258,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                   t.copy(metadata = Some(t.mergedMetadata(domain.metadata)))
                 }
             logger.info(s"Successfully loaded Domain  in $path")
-            Success(domain.copy(tables = finalTables))
+            val loaded = domain.copy(tables = finalTables)
+            Success(if (raw) loaded else resolver.domain(loaded))
           case (path, Failure(e)) =>
             logger.error(s"Failed to load domain in $path")
             Utils.logException(logger, e)
@@ -1358,7 +1384,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         )
       }
       // copy so that comment and any other field read from _config.sl.yml survive
-      jobDesc.copy(name = jobName, tasks = mergedTasksWithStrippedComments)
+      docResolver().job(jobDesc.copy(name = jobName, tasks = mergedTasksWithStrippedComments))
     } match {
       case Success(value) => Success(value)
       case Failure(exception) =>
