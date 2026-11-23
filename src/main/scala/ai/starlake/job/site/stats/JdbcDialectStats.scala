@@ -89,14 +89,25 @@ object JdbcDialectStats {
     override def backslashEscapes = true
     val engine = "redshift"
     val rowCountEstimated = true // tbl_rows includes rows marked for deletion
+
+    /** information_schema misses Spectrum tables and materialized views, and the columns of
+      * late-binding views: svv_tables and svv_columns list local and external (Spectrum) objects,
+      * late-binding views included, and svv_mv_info the materialized views. A materialized view
+      * also listed by svv_tables is reported once.
+      */
     def tablesSql(database: Option[String], schema: String): String =
-      infoTables(this, "", schema)
+      s"SELECT table_name, table_type FROM svv_tables WHERE ${schemaFilter(this, "table_schema", schema)} " +
+      "UNION ALL SELECT name AS table_name, 'MATERIALIZED VIEW' AS table_type FROM svv_mv_info " +
+      s"WHERE ${schemaFilter(this, "\"schema\"", schema)} AND database_name = current_database()"
     def statsSql(database: Option[String], schema: String): Option[String] = Some(
       "SELECT \"table\" AS table_name, tbl_rows AS row_count, " +
       "CAST(size AS BIGINT) * 1048576 AS bytes FROM svv_table_info " +
       s"WHERE ${schemaFilter(this, "\"schema\"", schema)}"
     )
-    def columnsSql(database: Option[String], schema: String): String = infoColumns(this, "", schema)
+    def columnsSql(database: Option[String], schema: String): String =
+      "SELECT table_name, column_name, data_type, is_nullable, character_maximum_length, " +
+      s"numeric_precision, numeric_scale FROM svv_columns WHERE ${schemaFilter(this, "table_schema", schema)} " +
+      "ORDER BY table_name, ordinal_position"
   }
 
   object DuckDb extends JdbcDialectStats {

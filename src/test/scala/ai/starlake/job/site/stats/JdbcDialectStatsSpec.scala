@@ -36,6 +36,34 @@ class JdbcDialectStatsSpec extends AnyFlatSpec with Matchers {
     stats should include("1048576")
   }
 
+  it should "list Spectrum tables, materialized views and late-binding view columns" in {
+    val tables = Redshift.tablesSql(None, "sales")
+    tables should include("FROM svv_tables WHERE lower(table_schema) = lower('sales')")
+    tables should include("FROM svv_mv_info WHERE lower(\"schema\") = lower('sales')")
+    tables should include("'MATERIALIZED VIEW' AS table_type")
+    tables should not include "information_schema"
+    val columns = Redshift.columnsSql(None, "sales")
+    columns should include("FROM svv_columns WHERE lower(table_schema) = lower('sales')")
+    columns should include("ORDER BY table_name, ordinal_position")
+  }
+
+  it should "map Spectrum and materialized view rows" in {
+    val merged = InfoSchemaMapping.merge(
+      List(
+        Map("table_name" -> "ext", "table_type" -> "EXTERNAL TABLE"),
+        Map("table_name" -> "mv", "table_type"  -> "VIEW"),
+        Map("table_name" -> "mv", "table_type"  -> "MATERIALIZED VIEW")
+      ),
+      Nil,
+      List(Map("table_name" -> "mv", "column_name" -> "id", "data_type" -> "integer")),
+      estimated = true
+    )
+    merged.keySet shouldBe Set("ext", "mv")
+    merged("ext").tableType shouldBe Some("EXTERNAL")
+    merged("mv").tableType shouldBe Some("VIEW")
+    merged("mv").columns.map(_.name) shouldBe List("id")
+  }
+
   "DuckDb" should "read duckdb_tables() in the current database by default" in {
     val stats = DuckDb.statsSql(None, "sales").get
     stats should include("duckdb_tables()")

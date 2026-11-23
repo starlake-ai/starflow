@@ -25,7 +25,8 @@ class DocRefsAtLoadSpec extends SiteFixture {
       schemaHandler.tableOnly("sales.customers").get.table.comment shouldBe
       Some("**Customers** master data.")
 
-      val all = schemaHandler.domains().flatMap(d => d.comment.toList ++ d.tables.flatMap(_.comment))
+      val all =
+        schemaHandler.domains().flatMap(d => d.comment.toList ++ d.tables.flatMap(_.comment))
       all.exists(_.contains("sl-doc")) shouldBe false
   }
 
