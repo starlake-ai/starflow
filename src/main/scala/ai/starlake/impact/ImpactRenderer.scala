@@ -32,12 +32,14 @@ object ImpactRenderer {
 
   private def buildTree(
     report: ImpactReport,
-    hideExplained: Boolean
+    hideExplained: Boolean,
+    esc: String => String
   ): java.util.Map[String, Object] = {
+    def l(xs: List[String]): java.util.List[String] = xs.map(esc).asJava
     val s = report.summary
     jmap(
-      "oldSide" -> report.oldSide,
-      "newSide" -> report.newSide,
+      "oldSide" -> esc(report.oldSide),
+      "newSide" -> esc(report.newSide),
       "summary" -> jmap(
         "direct"         -> counts(s.direct),
         "impacted"       -> counts(s.impacted),
@@ -47,36 +49,42 @@ object ImpactRenderer {
       ),
       "direct" -> report.direct.map { d =>
         jmap(
-          "node"       -> d.node.name,
+          "node"       -> esc(d.node.name),
           "kind"       -> d.kind.label,
           "class"      -> d.changeClass.label,
-          "columns"    -> d.columns.label,
-          "details"    -> d.details.map(_.describe).asJava,
-          "reasons"    -> d.reasons.asJava,
-          "unresolved" -> (if (hideExplained) shownUnresolved(d) else d.unresolved).orNull,
+          "columns"    -> esc(d.columns.label),
+          "details"    -> l(d.details.map(_.describe)),
+          "reasons"    -> l(d.reasons),
+          "unresolved" -> (if (hideExplained) shownUnresolved(d) else d.unresolved).map(esc).orNull,
           "deleted"    -> Boolean.box(d.deleted)
         )
       }.asJava,
       "impacted" -> report.impacted.map { n =>
         jmap(
-          "node"              -> n.node.name,
+          "node"              -> esc(n.node.name),
           "kind"              -> n.kind.label,
           "class"             -> n.changeClass.label,
-          "columns"           -> n.columns.label,
-          "path"              -> n.path.asJava,
+          "columns"           -> esc(n.columns.label),
+          "path"              -> l(n.path),
           "likelyFailure"     -> Boolean.box(n.likelyFailure),
           "viaUnresolvedEdge" -> Boolean.box(n.viaUnresolvedEdge)
         )
       }.asJava,
       "unresolved" -> report.unresolved.map { e =>
-        jmap("from" -> e.from.name, "to" -> e.to.name, "reason" -> e.reason)
+        jmap("from" -> esc(e.from.name), "to" -> esc(e.to.name), "reason" -> esc(e.reason))
       }.asJava,
-      "otherChanges" -> report.otherChanges.asJava
+      "otherChanges" -> l(report.otherChanges)
     )
   }
 
-  /** The stable JSON contract. */
-  def toTree(report: ImpactReport): java.util.Map[String, Object] = buildTree(report, false)
+  private def htmlEscape(s: String): String =
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+  /** The stable JSON contract. The raw `unresolved` value is kept on purpose (it is the contract),
+    * only the text and markdown renderers hide it when a reason already explains it.
+    */
+  def toTree(report: ImpactReport): java.util.Map[String, Object] =
+    buildTree(report, false, (s: String) => s)
 
   def render(report: ImpactReport, format: String, template: Option[String])(implicit
     settings: Settings
@@ -108,11 +116,29 @@ object ImpactRenderer {
   private def cell(s: String): String =
     s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ").replace("|", "\\|")
 
+  private def textUnresolved(r: ImpactReport): String = {
+    val sb = new StringBuilder
+    sb ++= s"\nUnresolved (${r.unresolved.size})\n"
+    r.unresolved.foreach(e => sb ++= s"  ${e.from.name} -> ${e.to.name}: ${e.reason}\n")
+    sb.toString
+  }
+
+  private def mdUnresolved(r: ImpactReport): String = {
+    val sb = new StringBuilder
+    sb ++= "\n### Unresolved\n\n"
+    if (r.unresolved.isEmpty) sb ++= "None\n"
+    r.unresolved.foreach(e =>
+      sb ++= s"- `${cell(e.from.name)}` -> `${cell(e.to.name)}`: ${cell(e.reason)}\n"
+    )
+    sb.toString
+  }
+
   private def text(r: ImpactReport): String = {
     val sb = new StringBuilder
     sb ++= s"Change impact: ${r.oldSide} -> ${r.newSide}\n\n"
     if (r.isEmpty) {
       sb ++= "No changes\n"
+      sb ++= textUnresolved(r)
       return sb.toString
     }
     sb ++= s"Direct changes (${r.direct.size})\n"
@@ -127,8 +153,7 @@ object ImpactRenderer {
       sb ++= f"  ${n.changeClass.label}%-13s ${n.kind.label}%-5s ${n.node.name} ${cols(n.columns)}$flag$via\n"
       sb ++= s"                path: ${n.path.mkString(" -> ")}\n"
     }
-    sb ++= s"\nUnresolved (${r.unresolved.size})\n"
-    r.unresolved.foreach(e => sb ++= s"  ${e.from.name} -> ${e.to.name}: ${e.reason}\n")
+    sb ++= textUnresolved(r)
     sb ++= s"\nOther changes, not traced (${r.otherChanges.size})\n"
     r.otherChanges.foreach(o => sb ++= s"  $o\n")
     sb ++= s"\nSummary: ${summaryLine(r)}\n"
@@ -138,9 +163,10 @@ object ImpactRenderer {
   private def markdown(r: ImpactReport): String = {
     val sb = new StringBuilder
     sb ++= "## Change impact\n\n"
-    sb ++= s"`${r.oldSide}` -> `${r.newSide}`\n\n"
+    sb ++= s"`${cell(r.oldSide)}` -> `${cell(r.newSide)}`\n\n"
     if (r.isEmpty) {
       sb ++= "No changes\n"
+      sb ++= mdUnresolved(r)
       return sb.toString
     }
     sb ++= s"**${summaryLine(r)}**\n\n"
@@ -157,12 +183,10 @@ object ImpactRenderer {
           n.columns.label
         )} | ${cell(n.path.mkString(" -> "))} | $flags |\n"
     }
-    sb ++= "\n### Unresolved\n\n"
-    if (r.unresolved.isEmpty) sb ++= "None\n"
-    r.unresolved.foreach(e => sb ++= s"- `${e.from.name}` -> `${e.to.name}`: ${e.reason}\n")
+    sb ++= mdUnresolved(r)
     sb ++= "\n### Other changes, not traced\n\n"
     if (r.otherChanges.isEmpty) sb ++= "None\n"
-    r.otherChanges.foreach(o => sb ++= s"- $o\n")
+    r.otherChanges.foreach(o => sb ++= s"- ${cell(o)}\n")
     sb.toString
   }
 
@@ -170,9 +194,16 @@ object ImpactRenderer {
     settings: Settings
   ): String = {
     val content = template match {
-      case Some(path) => settings.storageHandler().read(new Path(path))
+      case Some(path) =>
+        val p = new Path(path)
+        if (!settings.storageHandler().exists(p))
+          throw new IllegalArgumentException(s"Template not found: $path")
+        settings.storageHandler().read(p)
       case None =>
-        val stream = getClass.getResourceAsStream("/templates/impact/index.html.j2")
+        val resource = "/templates/impact/index.html.j2"
+        val stream = Option(getClass.getResourceAsStream(resource)).getOrElse(
+          throw new IllegalStateException(s"Bundled template missing: $resource")
+        )
         val source = scala.io.Source.fromInputStream(stream)
         try source.mkString
         finally source.close()
@@ -180,7 +211,8 @@ object ImpactRenderer {
     Utils.parseJinjaTpl(
       content,
       Map[String, Object](
-        "report"    -> buildTree(r, true),
+        "report"    -> buildTree(r, true, htmlEscape(_)),
+        "breaking"  -> (if (r.summary.hasBreaking) "yes" else "no"),
         "timestamp" -> DateTimeFormatter.ISO_INSTANT.format(java.time.Instant.now())
       )
     )

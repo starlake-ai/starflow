@@ -17,13 +17,13 @@
 <body>
 <h1>Change impact</h1>
 <p><code>{{ report.oldSide }}</code> to <code>{{ report.newSide }}</code>, generated {{ timestamp }}</p>
-<p>{{ report.direct|length }} direct, {{ report.impacted|length }} impacted, {{ report.summary.likelyFailures }} likely failures</p>
+<p>{{ report.direct|length }} direct, {{ report.impacted|length }} impacted, {{ report.summary.likelyFailures }} likely failures, breaking: {{ breaking }}</p>
 
 <h2>Direct changes</h2>
 <table>
 <tr><th>Class</th><th>Kind</th><th>Node</th><th>Columns</th><th>Details</th></tr>
 {% for d in report.direct %}
-<tr><td class="{{ d.class }}">{{ d.class }}</td><td>{{ d.kind }}</td><td>{{ d.node }}</td><td>{{ d.columns }}</td>
+<tr><td class="{{ d.class }}">{{ d.class }}</td><td>{{ d.kind }}</td><td>{{ d.node }}{% if d.deleted %} (deleted){% endif %}</td><td>{{ d.columns }}</td>
 <td>{% for x in d.details %}{{ x }}<br>{% endfor %}{% for x in d.reasons %}{{ x }}<br>{% endfor %}{% if d.unresolved %}unresolved: {{ d.unresolved }}{% endif %}</td></tr>
 {% endfor %}
 </table>
@@ -40,12 +40,12 @@
 
 <h2>Unresolved</h2>
 <ul>
-{% for e in report.unresolved %}<li>{{ e.from }} to {{ e.to }}: {{ e.reason }}</li>{% else %}<li>None</li>{% endfor %}
+{% for e in report.unresolved %}<li>{{ e.from }} to {{ e.to }}: {{ e.reason }}</li>{% endfor %}{% if report.unresolved|length == 0 %}<li>None</li>{% endif %}
 </ul>
 
 <h2>Other changes, not traced</h2>
 <ul>
-{% for o in report.otherChanges %}<li>{{ o }}</li>{% else %}<li>None</li>{% endfor %}
+{% for o in report.otherChanges %}<li>{{ o }}</li>{% endfor %}{% if report.otherChanges|length == 0 %}<li>None</li>{% endif %}
 </ul>
 </body>
 </html>
