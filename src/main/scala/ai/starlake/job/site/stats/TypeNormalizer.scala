@@ -1,10 +1,15 @@
 package ai.starlake.job.site.stats
 
+import java.util.Locale
+
 case class NormalizedType(base: String, params: List[String])
 
 object TypeNormalizer {
 
   private val Shape = """^([A-Z0-9_ ]+?)\s*(?:\(([^)]*)\))?$""".r
+
+  /** Precision placed before the rest of the name: `TIMESTAMP(6) WITH TIME ZONE`. */
+  private val MidParams = """^([A-Z0-9_ ]+?)\s*\(([^)]*)\)\s+([A-Z0-9_ ]+)$""".r
 
   private val common: Map[String, String] = Map(
     "INT"                         -> "INTEGER",
@@ -105,26 +110,32 @@ object TypeNormalizer {
 
   def normalize(engine: String, raw: String): NormalizedType = {
     val cleaned =
-      raw.trim.toUpperCase.replaceAll("\\s+", " ").replaceAll(" NOT NULL$", "").trim
+      raw.trim
+        .toUpperCase(Locale.ROOT)
+        .replaceAll("\\s+", " ")
+        .replaceAll(" NOT NULL$", "")
+        .trim
     cleaned match {
-      case Shape(base0, params0) =>
-        val base = base0.trim
-        val params =
-          Option(params0).toList.flatMap(_.split(',').map(_.trim).filter(_.nonEmpty))
-        perEngine.getOrElse(engine.toLowerCase, Map.empty).get(base) match {
-          case Some(mapped) => if (params.nonEmpty) mapped.copy(params = params) else mapped
-          case None         => NormalizedType(common.getOrElse(base, base), params)
-        }
+      case MidParams(head, params0, tail) => resolve(engine, s"${head.trim} ${tail.trim}", params0)
+      case Shape(base0, params0)          => resolve(engine, base0.trim, params0)
       case _ => NormalizedType(cleaned, Nil) // ARRAY<...>, STRUCT<...>, MAP<...>
     }
   }
 
-  /** True when both types have the same family and, if the declared type has parameters, the same
-    * parameters.
+  private def resolve(engine: String, base: String, params0: String): NormalizedType = {
+    val params = Option(params0).toList.flatMap(_.split(',').map(_.trim).filter(_.nonEmpty))
+    perEngine.getOrElse(engine.toLowerCase(Locale.ROOT), Map.empty).get(base) match {
+      case Some(mapped) => if (params.nonEmpty) mapped.copy(params = params) else mapped
+      case None         => NormalizedType(common.getOrElse(base, base), params)
+    }
+  }
+
+  /** True when both types have the same family and, when both sides have parameters, the same
+    * parameters. A side without parameters leaves them unknown: only the family is compared.
     */
   def same(engine: String, declared: String, actual: String): Boolean = {
     val d = normalize(engine, declared)
     val a = normalize(engine, actual)
-    d.base == a.base && (d.params.isEmpty || d.params == a.params)
+    d.base == a.base && (d.params.isEmpty || a.params.isEmpty || d.params == a.params)
   }
 }

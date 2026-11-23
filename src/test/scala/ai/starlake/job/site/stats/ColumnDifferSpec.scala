@@ -37,7 +37,11 @@ class ColumnDifferSpec extends AnyFlatSpec with Matchers {
 
   it should "identify a renamed column by its rename, not its source name" in {
     val d = List(SiteColumn("src_name", rename = Some("name"), sqlType = Some("VARCHAR")))
-    ColumnDiffer.diff(d, List(ColumnStat("src_name", "text", nullable = true)), "postgresql") shouldBe List(
+    ColumnDiffer.diff(
+      d,
+      List(ColumnStat("src_name", "text", nullable = true)),
+      "postgresql"
+    ) shouldBe List(
       ColumnDiff("name", Some("VARCHAR"), None, "missingInWarehouse"),
       ColumnDiff("src_name", None, Some("text"), "extraInWarehouse")
     )

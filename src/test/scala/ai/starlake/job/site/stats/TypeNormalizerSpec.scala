@@ -8,9 +8,9 @@ class TypeNormalizerSpec extends AnyFlatSpec with Matchers {
 
   "normalize" should "upper-case, collapse spaces and split params" in {
     TypeNormalizer.normalize("postgresql", " character  varying(255) ") shouldBe
-      NormalizedType("VARCHAR", List("255"))
+    NormalizedType("VARCHAR", List("255"))
     TypeNormalizer.normalize("duckdb", "DECIMAL(38, 9)") shouldBe
-      NormalizedType("DECIMAL", List("38", "9"))
+    NormalizedType("DECIMAL", List("38", "9"))
     TypeNormalizer.normalize("spark", "array<string>") shouldBe NormalizedType("ARRAY<STRING>", Nil)
   }
 
@@ -65,5 +65,75 @@ class TypeNormalizerSpec extends AnyFlatSpec with Matchers {
   it should "report different families as different" in {
     same("postgresql", "BIGINT", "character varying") shouldBe false
     same("duckdb", "DATE", "TIMESTAMP") shouldBe false
+  }
+
+  it should "compare the base type only when either side has no parameters" in {
+    same("postgresql", "VARCHAR(8000)", "text") shouldBe true
+    same("postgresql", "NUMERIC(38,9)", "numeric") shouldBe true
+    same("duckdb", "DECIMAL", "DECIMAL(18,3)") shouldBe true
+  }
+
+  "normalize" should "read a precision placed before the time zone" in {
+    TypeNormalizer.normalize("postgresql", "timestamp(6) with time zone") shouldBe
+    NormalizedType("TIMESTAMPTZ", List("6"))
+    TypeNormalizer.normalize("postgresql", "timestamp(3) without time zone") shouldBe
+    NormalizedType("TIMESTAMP", List("3"))
+    TypeNormalizer.normalize("postgresql", "time(3) without time zone") shouldBe
+    NormalizedType("TIME", List("3"))
+  }
+
+  it should "not depend on the default locale" in {
+    val default = java.util.Locale.getDefault
+    try {
+      java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"))
+      TypeNormalizer.normalize("postgresql", "int") shouldBe NormalizedType("INTEGER", Nil)
+      TypeNormalizer.normalize("snowflake", "timestamp_ltz") shouldBe
+      NormalizedType("TIMESTAMPTZ", Nil)
+    } finally java.util.Locale.setDefault(default)
+  }
+
+  /** Starlake ddlMapping output (declared) versus the spelling the warehouse reports (actual). */
+  private val matching = List(
+    ("duckdb", "DECIMAL", "DECIMAL(18,3)"),
+    ("duckdb", "TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE"),
+    ("postgresql", "varchar(8000)", "character varying(8000)"),
+    ("postgresql", "DECIMAL", "numeric(18,2)"),
+    ("postgresql", "TIMESTAMP", "timestamp without time zone"),
+    ("postgresql", "TIMESTAMPTZ", "timestamp(6) with time zone"),
+    ("postgresql", "INT", "integer"),
+    ("snowflake", "INT", "NUMBER(38,0)"),
+    ("snowflake", "STRING", "TEXT"),
+    ("snowflake", "TIMESTAMP", "TIMESTAMP_NTZ(9)"),
+    ("bigquery", "INT64", "INT64"),
+    ("bigquery", "STRING", "STRING"),
+    ("bigquery", "NUMERIC", "NUMERIC"),
+    ("bigquery", "TIMESTAMP", "TIMESTAMP"),
+    ("redshift", "BIGINT", "bigint"),
+    ("redshift", "TEXT", "character varying(256)"),
+    ("spark", "BIGINT", "bigint"),
+    ("spark", "STRING", "string"),
+    ("spark", "DECIMAL(38,9)", "decimal(38,9)")
+  )
+
+  private val mismatching = List(
+    ("postgresql", "varchar(10)", "character varying(20)"),
+    ("bigquery", "INT64", "STRING"),
+    ("bigquery", "TIMESTAMP", "DATETIME")
+  )
+
+  "same" should "match Starlake ddlMapping outputs with real warehouse spellings" in {
+    matching.foreach { case (engine, declared, actual) =>
+      withClue(s"$engine: $declared vs $actual") {
+        same(engine, declared, actual) shouldBe true
+      }
+    }
+  }
+
+  it should "keep real mismatches" in {
+    mismatching.foreach { case (engine, declared, actual) =>
+      withClue(s"$engine: $declared vs $actual") {
+        same(engine, declared, actual) shouldBe false
+      }
+    }
   }
 }
