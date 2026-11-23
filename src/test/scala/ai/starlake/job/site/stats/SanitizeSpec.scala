@@ -292,6 +292,51 @@ class SanitizeSpec extends AnyFlatSpec with Matchers {
     Sanitize.message("sent bearer abc") shouldBe "sent bearer <redacted>"
   }
 
+  it should "redact a quoted SQL password written without separator" in {
+    Sanitize.message("syntax error in CREATE USER bob PASSWORD 'hunter2' VALID UNTIL x") shouldBe
+    "syntax error in CREATE USER bob PASSWORD <redacted> VALID UNTIL x"
+    Sanitize.message("""ALTER USER bob IDENTIFIED BY "hunter2" failed""") shouldBe
+    "ALTER USER bob IDENTIFIED BY <redacted> failed"
+    Sanitize.message("""FATAL: password authentication failed for user "bob"""") shouldBe
+    """FATAL: password authentication failed for user "bob""""
+  }
+
+  it should "redact the whole of a quoted password holding a doubled quote" in {
+    Sanitize.message("bad password='ab''cd' here") shouldBe "bad password=<redacted> here"
+    Sanitize.message("""bad password="ab""cd" here""") shouldBe "bad password=<redacted> here"
+    Sanitize.message("CREATE USER u PASSWORD 'it''s' x") shouldBe
+    "CREATE USER u PASSWORD <redacted> x"
+    Sanitize.message("bad password='' user='bob'") shouldBe "bad password=<redacted> user='bob'"
+  }
+
+  it should "redact a URL password with an empty user" in {
+    Sanitize.message("cannot reach redis://:s3cr3t@cache.local:6379/0") shouldBe
+    "cannot reach redis://<redacted>@cache.local:6379/0"
+  }
+
+  it should "redact camelCase keys ending in a short secret word" in {
+    List("sfPwd=k9", "dbPWD: k9", "urlSig=k9", "sfPwdFile=k9", "db2Pwd=k9").foreach { s =>
+      val msg = Sanitize.message(s)
+      msg should not include "k9"
+      msg should include("<redacted>")
+    }
+    Sanitize.message("isSigned=true") shouldBe "isSigned=true"
+    Sanitize.message("mySIGNAL=1") shouldBe "mySIGNAL=1"
+    Sanitize.message("cwd: ok") shouldBe "cwd: ok"
+  }
+
+  it should "stay idempotent on the separator-free and doubled quote forms" in {
+    List(
+      "CREATE USER u PASSWORD 'x''y'",
+      "redis://:pw@h",
+      "sfPwd=abc",
+      "IDENTIFIED BY \"z\""
+    ).foreach { s =>
+      val once = Sanitize.message(s)
+      Sanitize.message(once) shouldBe once
+    }
+  }
+
   it should "keep the false positives readable" in {
     Sanitize.message("table password_history not found") shouldBe
     "table password_history not found"
