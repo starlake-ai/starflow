@@ -66,14 +66,22 @@ case class SiteNode(
   python: Option[String] = None,
   freshness: Option[Freshness] = None,
   schedule: Option[String] = None,
-  warnings: List[String] = Nil
+  warnings: List[String] = Nil,
+  // Some(true) for an external node created from a SQL reference that matches no declared
+  // table, absent for the tables declared under metadata/external
+  undeclared: Option[Boolean] = None
 )
 
 case class SiteEdge(from: String, to: String, kind: String)
 case class SiteColumnEdge(from: String, to: String, task: String)
 case class SiteGroup(name: String, description: Option[String], nodes: List[String])
 case class SiteDagGroup(name: String, template: String, comment: String, nodes: List[String])
-case class SiteGroups(domains: List[SiteGroup], jobs: List[SiteGroup], dags: List[SiteDagGroup])
+case class SiteGroups(
+  domains: List[SiteGroup],
+  jobs: List[SiteGroup],
+  dags: List[SiteDagGroup],
+  externals: List[SiteGroup] = Nil
+)
 case class SiteProject(
   name: String,
   env: String,

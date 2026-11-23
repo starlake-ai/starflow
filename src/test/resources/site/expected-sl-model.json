@@ -13,7 +13,31 @@
       "kind" : "external",
       "name" : "fx_rates",
       "domain" : "refdata",
-      "table" : "fx_rates"
+      "table" : "fx_rates",
+      "connectionRef" : "duckdb",
+      "engine" : "duckdb",
+      "description" : "Daily **FX rates**, one row per currency.",
+      "tags" : [ "reference" ],
+      "filePath" : "external/refdata/fx_rates.sl.yml",
+      "columns" : [ {
+        "name" : "currency",
+        "type" : "string",
+        "sqlType" : "VARCHAR",
+        "required" : true,
+        "primaryKey" : false
+      }, {
+        "name" : "rate",
+        "type" : "decimal",
+        "sqlType" : "DECIMAL",
+        "required" : false,
+        "primaryKey" : false
+      }, {
+        "name" : "rate_date",
+        "type" : "date",
+        "sqlType" : "DATE",
+        "required" : false,
+        "primaryKey" : false
+      } ]
     },
     "load:sales.customers" : {
       "id" : "load:sales.customers",
@@ -157,6 +181,10 @@
     "kind" : "lineage"
   } ],
   "columnEdges" : [ {
+    "from" : "external:refdata.fx_rates#rate",
+    "to" : "transform:kpi.revenue#revenue",
+    "task" : "transform:kpi.revenue"
+  }, {
     "from" : "load:sales.customers#id",
     "to" : "transform:kpi.revenue#customer_id",
     "task" : "transform:kpi.revenue"
@@ -189,12 +217,18 @@
       "template" : "transform/airflow__scheduled_task__shell.py.j2",
       "comment" : "transform dag",
       "nodes" : [ "transform:kpi.revenue", "transform:reporting.fx_report" ]
+    } ],
+    "externals" : [ {
+      "name" : "refdata",
+      "description" : "Reference data maintained outside the pipeline.",
+      "nodes" : [ "external:refdata.fx_rates" ]
     } ]
   },
   "docs" : {
     "__overview__" : "# Fixture project",
     "customers_desc" : "**Customers** master data.",
     "fr_only_desc" : "Only **French** rows.",
+    "fx_rates_desc" : "Daily **FX rates**, one row per currency.",
     "load_dag_desc" : "Scheduled **load** DAG.",
     "sales_desc" : "The **sales** domain."
   }

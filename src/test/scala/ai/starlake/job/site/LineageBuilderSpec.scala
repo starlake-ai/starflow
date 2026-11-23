@@ -216,4 +216,97 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
     )
     res.nodes.contains("external:fx_rates") shouldBe false
   }
+
+  private val fxRates = SiteNode(
+    NodeId.external("refdata.fx_rates"),
+    "external",
+    "fx_rates",
+    "refdata",
+    "fx_rates",
+    columns = List(SiteColumn("currency"), SiteColumn("rate"))
+  )
+  private val withFx = nodes + (fxRates.id -> fxRates)
+
+  private def relationFrom(domain: String, table: String, column: String) =
+    ColLineage.Lineage(
+      Nil,
+      List(
+        ColLineage.Relation(
+          ColLineage.Column(domain, table, column),
+          ColLineage.Column("kpi", "revenue", "revenue"),
+          None
+        )
+      )
+    )
+
+  it should "resolve a SQL reference to a declared external instead of a bare one" in {
+    val res = LineageBuilder.build(
+      withFx,
+      Map(revenue.id -> List("refdata.fx_rates", "DB.REFDATA.FX_RATES", "fx_rates")),
+      Map(revenue.id -> relationFrom("refdata", "fx_rates", "rate"))
+    )
+    res.edges.filter(_.kind == "lineage") shouldBe
+    List(SiteEdge(fxRates.id, revenue.id, "lineage"))
+    res.columnEdges shouldBe List(
+      SiteColumnEdge(s"${fxRates.id}#rate", "transform:kpi.revenue#revenue", revenue.id)
+    )
+    res.nodes.keySet shouldBe withFx.keySet
+    res.nodes(fxRates.id) shouldBe fxRates
+    res.nodes(fxRates.id).undeclared shouldBe None
+  }
+
+  it should "flag the bare externals of both passes as undeclared" in {
+    val res = LineageBuilder.build(
+      withFx,
+      Map(revenue.id -> List("refdata.other")),
+      Map(revenue.id -> relationFrom("misc", "thing", "x"))
+    )
+    res.nodes("external:refdata.other").undeclared shouldBe Some(true)
+    res.nodes("external:misc.thing").undeclared shouldBe Some(true)
+    res.nodes(fxRates.id).undeclared shouldBe None
+  }
+
+  it should "prefer load and transform producers over a declared external of the same name" in {
+    val shadowOrders =
+      SiteNode(NodeId.external("sales.orders"), "external", "orders", "sales", "orders")
+    val shadowRevenue =
+      SiteNode(NodeId.external("kpi.revenue"), "external", "revenue", "kpi", "revenue")
+    val report = task("kpi", "report")
+    val all = nodes ++ Seq(shadowOrders, shadowRevenue, report).map(n => n.id -> n)
+    val res = LineageBuilder.build(
+      all,
+      Map(report.id -> List("sales.orders", "orders", "kpi.revenue")),
+      Map.empty
+    )
+    res.edges.filter(_.kind == "lineage").sortBy(_.from) shouldBe List(
+      SiteEdge("load:sales.orders", report.id, "lineage"),
+      SiteEdge("transform:kpi.revenue", report.id, "lineage")
+    )
+    val cols = LineageBuilder.build(
+      all,
+      Map.empty,
+      Map(revenue.id -> relationFrom("sales", "orders", "amount"))
+    )
+    cols.columnEdges.map(_.from) shouldBe List("load:sales.orders#amount")
+  }
+
+  it should "resolve foreign keys to declared externals, after load and transform tables" in {
+    fkResult("refdata.fx_rates.currency", fxRates) shouldBe
+    (List(SiteEdge("load:sales.invoices", fxRates.id, "fk")), Some(fxRates.id))
+    fkResult("refdata.fx_rates", fxRates) shouldBe
+    (List(SiteEdge("load:sales.invoices", fxRates.id, "fk")), Some(fxRates.id))
+    fkResult("fx_rates.currency", fxRates) shouldBe
+    (List(SiteEdge("load:sales.invoices", fxRates.id, "fk")), Some(fxRates.id))
+    val shadow =
+      SiteNode(NodeId.external("sales.customers"), "external", "customers", "sales", "customers")
+    fkResult("sales.customers.id", shadow) shouldBe
+    (List(SiteEdge("load:sales.invoices", customers.id, "fk")), Some(customers.id))
+    fkResult("customers.id", shadow) shouldBe
+    (List(SiteEdge("load:sales.invoices", customers.id, "fk")), Some(customers.id))
+  }
+
+  it should "never resolve a foreign key to an undeclared external" in {
+    val bare = fxRates.copy(undeclared = Some(true))
+    fkResult("refdata.fx_rates.currency", bare) shouldBe ((Nil, None))
+  }
 }

@@ -115,6 +115,7 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
       "sales_desc",
       "fr_only_desc",
       "load_dag_desc",
+      "fx_rates_desc",
       "__overview__"
     )
     model.project.overview shouldBe Some("# Fixture project")
@@ -189,10 +190,10 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     implicit settings =>
       val tables = ModelBuilder.declaredTablesWithColumns(
         settings.schemaHandler(),
-        List("sales.orders", "refdata.fx_rates", "customers")
+        List("sales.orders", "refdata.fx_rates", "refdata.undeclared", "customers")
       )
       tables.map { case (domain, t) => s"$domain.${t.name}" } shouldBe
-      List("sales.orders", ".customers")
+      List("sales.orders", "refdata.fx_rates", ".customers")
       tables.head._2.attrs.map(_._1) shouldBe List("amount", "customer_id", "id")
   }
 
@@ -202,6 +203,122 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     model.nodes.keySet should not contain "external:fx"
     model.nodes.keySet should contain("external:refdata.fx_rates")
     model.columnEdges.exists(_.to.startsWith("transform:kpi.revenue#")) shouldBe true
+    model.columnEdges should contain(
+      SiteColumnEdge(
+        "external:refdata.fx_rates#rate",
+        "transform:kpi.revenue#revenue",
+        "transform:kpi.revenue"
+      )
+    )
+  }
+
+  it should "document declared externals like load tables" in withFixture { implicit settings =>
+    val model = build()
+    val fx = model.nodes("external:refdata.fx_rates")
+    (fx.kind, fx.name, fx.domain, fx.table) shouldBe ("external", "fx_rates", "refdata", "fx_rates")
+    fx.undeclared shouldBe None
+    fx.description shouldBe Some("Daily **FX rates**, one row per currency.")
+    fx.tags shouldBe List("reference")
+    fx.filePath shouldBe Some("external/refdata/fx_rates.sl.yml")
+    fx.connectionRef shouldBe Some("duckdb")
+    fx.engine shouldBe Some("duckdb")
+    fx.columns.map(c => (c.name, c.`type`, c.required, c.sqlType)) shouldBe List(
+      ("currency", "string", true, Some("VARCHAR")),
+      ("rate", "decimal", false, Some("DECIMAL")),
+      ("rate_date", "date", false, Some("DATE"))
+    )
+    fx.pattern shouldBe None
+    fx.writeStrategy shouldBe None
+    fx.dag shouldBe None
+    fx.schedule shouldBe None
+    fx.metadata shouldBe None
+    fx.warnings shouldBe Nil
+    model.groups.externals shouldBe List(
+      SiteGroup(
+        "refdata",
+        Some("Reference data maintained outside the pipeline."),
+        List("external:refdata.fx_rates")
+      )
+    )
+    model.groups.domains.map(_.name) shouldBe List("sales")
+    model.groups.dags.flatMap(_.nodes) should not contain "external:refdata.fx_rates"
+  }
+
+  it should "build declared externals with the load column, connection and doc rules" in {
+    val root = File.newTemporaryDirectory("sl-site-ext-")
+    try {
+      File("src/test/resources/site/fixture").copyTo(root)(File.CopyOptions(overwrite = true))
+      val app = root / "metadata" / "application.sl.yml"
+      app.overwrite(
+        app.contentAsString + "    pg:\n      type: jdbc\n      options:\n" +
+        "        url: \"jdbc:postgresql://localhost:5432/db\"\n" +
+        "        driver: \"org.postgresql.Driver\"\n"
+      )
+      val dir = (root / "metadata" / "external" / "crm").createDirectories()
+      (dir / "_config.sl.yml").overwrite(
+        """version: 1
+          |load:
+          |  name: "crm"
+          |  database: "lake"
+          |  comment: '{{ doc("sales_desc") }}'
+          |  metadata:
+          |    sink:
+          |      connectionRef: "pg"
+          |""".stripMargin
+      )
+      (dir / "accounts.sl.yml").overwrite(
+        """version: 1
+          |table:
+          |  name: "accounts"
+          |  pattern: "accounts.*"
+          |  comment: "Accounts, see {{ doc('no_such_block') }}"
+          |  primaryKey: ["id"]
+          |  acl:
+          |    - role: "roles/viewer"
+          |      grants: ["user:b@example.com"]
+          |  expectations:
+          |    - expect: "is_unique('id')"
+          |      failOnError: false
+          |  attributes:
+          |    - name: "id"
+          |      type: "long"
+          |    - name: "acct_label"
+          |      rename: "label"
+          |      type: "string"
+          |    - name: "customer_id"
+          |      type: "long"
+          |      foreignKey: "sales.customers"
+          |    - name: "raw"
+          |      type: "string"
+          |      ignore: true
+          |""".stripMargin
+      )
+      withEnvs("SL_ROOT" -> root.pathAsString, "SL_ENV" -> "") {
+        val model = build()(settings)
+        val acc = model.nodes("external:crm.accounts")
+        acc.database shouldBe Some("lake")
+        acc.connectionRef shouldBe Some("pg")
+        acc.engine shouldBe Some("postgresql")
+        acc.filePath shouldBe Some("external/crm/accounts.sl.yml")
+        acc.primaryKey shouldBe List("id")
+        acc.acl shouldBe List(SiteAcl("roles/viewer", List("user:b@example.com")))
+        acc.expectations shouldBe List(SiteExpectation("is_unique('id')", false))
+        acc.warnings shouldBe List("Unknown doc block 'no_such_block'")
+        acc.columns.map(c => (c.name, c.rename, c.sqlType, c.primaryKey, c.ignore)) shouldBe List(
+          ("id", None, Some("BIGINT"), true, None),
+          ("acct_label", Some("label"), Some("TEXT"), false, None),
+          ("customer_id", None, Some("BIGINT"), false, None),
+          ("raw", None, Some("TEXT"), false, Some(true))
+        )
+        acc.columns.find(_.name == "customer_id").flatMap(_.foreignKeyNode) shouldBe
+        Some("load:sales.customers")
+        model.edges should contain(SiteEdge("external:crm.accounts", "load:sales.customers", "fk"))
+        model.groups.externals.map(g => g.name -> g.description) shouldBe List(
+          "crm"     -> Some("The **sales** domain."),
+          "refdata" -> Some("Reference data maintained outside the pipeline.")
+        )
+      }
+    } finally root.delete(swallowIOExceptions = true)
   }
 
   "declaredSqlType" should "use the Spark JDBC dialect type on postgresql and redshift" in withFixture {

@@ -17,3 +17,7 @@ Only **French** rows.
 {% docs load_dag_desc %}
 Scheduled **load** DAG.
 {% enddocs %}
+
+{% docs fx_rates_desc %}
+Daily **FX rates**, one row per currency.
+{% enddocs %}

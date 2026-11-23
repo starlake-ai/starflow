@@ -34,11 +34,15 @@ class ModelBuilder(
 
     val domains = schemaHandler.domains(reload = true).sortBy(_.finalName)
     val jobs = schemaHandler.jobs(reload = true).sortBy(_.name)
+    // externals() only: objects() also appends the audit tables, which are not declared
+    val externals = schemaHandler.externals().sortBy(_.finalName)
 
     val loadNodes = domains.flatMap(d => d.tables.map(t => loadNode(d, t, docBlocks)))
+    val externalNodes = externals.flatMap(d => d.tables.map(t => externalNode(d, t, docBlocks)))
     val tasks = jobs.flatMap(j => j.tasks.map(t => j -> t))
     val transformNodes = tasks.map { case (j, t) => transformNode(j, t, docBlocks) }
-    val declared = TreeMap((loadNodes ++ transformNodes).map(n => n.id -> n): _*)
+    val declared =
+      TreeMap((loadNodes ++ externalNodes ++ transformNodes).map(n => n.id -> n): _*)
 
     val (deps, depWarnings) = ModelBuilder.extractTaskDeps(
       tasks.map { case (_, t) => NodeId.transform(t.fullName()) -> taskDeps(t) }
@@ -80,7 +84,7 @@ class ModelBuilder(
       nodes = nodes,
       edges = lineage.edges.sortBy(e => (e.kind, e.from, e.to)),
       columnEdges = lineage.columnEdges.sortBy(e => (e.task, e.from, e.to)),
-      groups = groups(domains, jobs, nodes, docBlocks),
+      groups = groups(domains, externals, jobs, nodes, docBlocks),
       docs = TreeMap(docBlocks.blocks.toSeq: _*)
     )
   }
@@ -153,21 +157,28 @@ class ModelBuilder(
   private def dagName(ref: String): String =
     ref.split('/').last.stripSuffix(".sl.yml").stripSuffix(".yml")
 
-  private def loadNode(domain: DomainInfo, table: SchemaInfo, docs: DocBlocks): SiteNode = {
+  /** The fields a domain table carries whether Starlake loads it (metadata/load) or only reads it
+    * (metadata/external): columns, description, connection, file path, security and expectations.
+    * The connection is the one core writes or reads the table on: the sink connection, else the
+    * load connection, else the default one (Metadata.getSinkConnectionRef).
+    */
+  private def domainTableNode(
+    id: String,
+    kind: String,
+    area: String,
+    domain: DomainInfo,
+    table: SchemaInfo,
+    docs: DocBlocks
+  ): SiteNode = {
     val merged = table.mergedMetadata(domain.metadata)
     val connectionRef = Try(merged.getSinkConnectionRef()).toOption
     val engine = engineOf(connectionRef)
     val (desc, descWarnings) = describe(table.comment, docs)
     val cols = table.attributes.map(a => column(a, table.primaryKey, engine, docs))
     val rls = table.rls.map(r => siteRls(r, docs))
-    val dag = table.metadata
-      .flatMap(_.dagRef)
-      .orElse(domain.metadata.flatMap(_.dagRef))
-      .orElse(settings.appConfig.dagRef.flatMap(_.load))
-      .map(dagName)
     SiteNode(
-      id = NodeId.load(domain.finalName, table.finalName),
-      kind = "load",
+      id = id,
+      kind = kind,
       name = table.finalName,
       domain = domain.finalName,
       table = table.finalName,
@@ -176,14 +187,33 @@ class ModelBuilder(
       engine = engine,
       description = desc,
       tags = table.tags.toList.sorted,
-      filePath = existingPath(s"load/${domain.name}/${table.name}.sl.yml"),
+      filePath = existingPath(s"$area/${domain.name}/${table.name}.sl.yml"),
       columns = cols.map(_._1),
       expectations = table.expectations.map(e => SiteExpectation(e.expect, e.failOnError)),
       acl = table.acl.map(a => SiteAcl(a.role, a.grants.toList.sorted)),
       rls = rls.map(_._1),
+      primaryKey = table.primaryKey,
+      warnings = (descWarnings ++ cols.flatMap(_._2) ++ rls.flatMap(_._2)).distinct
+    )
+  }
+
+  private def loadNode(domain: DomainInfo, table: SchemaInfo, docs: DocBlocks): SiteNode = {
+    val merged = table.mergedMetadata(domain.metadata)
+    val dag = table.metadata
+      .flatMap(_.dagRef)
+      .orElse(domain.metadata.flatMap(_.dagRef))
+      .orElse(settings.appConfig.dagRef.flatMap(_.load))
+      .map(dagName)
+    domainTableNode(
+      NodeId.load(domain.finalName, table.finalName),
+      "load",
+      "load",
+      domain,
+      table,
+      docs
+    ).copy(
       sink = merged.sink,
       dag = dag,
-      primaryKey = table.primaryKey,
       presql = table.presql,
       postsql = table.postsql,
       writeStrategy = merged.writeStrategy,
@@ -191,10 +221,22 @@ class ModelBuilder(
       patternSample = table.patternSample,
       metadata = Some(merged),
       schedule = merged.schedule,
-      freshness = merged.freshness,
-      warnings = (descWarnings ++ cols.flatMap(_._2) ++ rls.flatMap(_._2)).distinct
+      freshness = merged.freshness
     )
   }
+
+  /** A table declared under metadata/external: documented like a load table, without what only
+    * loading uses (pattern, write strategy, DAG, schedule).
+    */
+  private def externalNode(domain: DomainInfo, table: SchemaInfo, docs: DocBlocks): SiteNode =
+    domainTableNode(
+      NodeId.external(s"${domain.finalName}.${table.finalName}"),
+      "external",
+      "external",
+      domain,
+      table,
+      docs
+    )
 
   private def transformNode(job: AutoJobInfo, task: AutoTaskInfo, docs: DocBlocks): SiteNode = {
     val connectionRef = Try(task.getRunConnectionRef()).toOption
@@ -255,6 +297,7 @@ class ModelBuilder(
 
   private def groups(
     domains: List[DomainInfo],
+    externals: List[DomainInfo],
     jobs: List[AutoJobInfo],
     nodes: TreeMap[String, SiteNode],
     docs: DocBlocks
@@ -269,6 +312,13 @@ class ModelBuilder(
         d.finalName,
         resolved(s"Domain ${d.finalName}", d.comment),
         d.tables.map(t => NodeId.load(d.finalName, t.finalName)).sorted
+      )
+    }
+    val externalGroups = externals.map { d =>
+      SiteGroup(
+        d.finalName,
+        resolved(s"External domain ${d.finalName}", d.comment),
+        d.tables.map(t => NodeId.external(s"${d.finalName}.${t.finalName}")).sorted
       )
     }
     val jobGroups = jobs.map { j =>
@@ -291,7 +341,7 @@ class ModelBuilder(
         byDag.getOrElse(name, Nil).map(_._2).toList.sorted
       )
     }
-    SiteGroups(domainGroups, jobGroups, dagGroups)
+    SiteGroups(domainGroups, jobGroups, dagGroups, externalGroups)
   }
 }
 

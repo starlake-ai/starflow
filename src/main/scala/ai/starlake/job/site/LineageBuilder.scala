@@ -17,24 +17,52 @@ object LineageBuilder {
 
   private def parts(ref: String): List[String] = ref.split('.').toList.map(clean).filter(_.nonEmpty)
 
-  /** Producers (load or transform nodes) matching a table reference. */
-  private def producers(nodes: Iterable[SiteNode], ref: String, preferDomain: Option[String]) = {
+  private def isLoadOrTransform(n: SiteNode): Boolean = n.kind == "load" || n.kind == "transform"
+
+  /** A table declared under metadata/external, as opposed to a bare reference. */
+  private def isDeclaredExternal(n: SiteNode): Boolean =
+    n.kind == "external" && n.undeclared.isEmpty
+
+  /** The candidates matching `matches` among load and transform nodes, else among declared
+    * externals: a table Starlake produces wins over a declaration of the same name.
+    */
+  private def firstMatching(
+    nodes: Iterable[SiteNode],
+    matches: Iterable[SiteNode] => List[SiteNode]
+  ): List[SiteNode] = {
+    val produced = matches(nodes.filter(isLoadOrTransform))
+    if (produced.nonEmpty) produced else matches(nodes.filter(isDeclaredExternal))
+  }
+
+  /** Producers (load or transform nodes, else declared externals) matching a table reference. */
+  private def producers(
+    nodes: Iterable[SiteNode],
+    ref: String,
+    preferDomain: Option[String]
+  ): List[SiteNode] = {
     val p = parts(ref)
-    val declared = nodes.filter(n => n.kind == "load" || n.kind == "transform")
     p match {
       case Nil => Nil
       case table :: Nil =>
-        val byTable = declared.filter(_.table.toLowerCase == table).toList
-        val sameDomain = preferDomain.toList.flatMap(d => byTable.filter(_.domain.toLowerCase == d))
-        if (sameDomain.nonEmpty) sameDomain else byTable
-      case _ =>
-        val domain = p(p.length - 2)
-        val table = p.last
-        declared
-          .filter(n => n.domain.toLowerCase == domain && n.table.toLowerCase == table)
-          .toList
+        firstMatching(
+          nodes,
+          candidates => {
+            val byTable = candidates.filter(_.table.toLowerCase == table).toList
+            val sameDomain =
+              preferDomain.toList.flatMap(d => byTable.filter(_.domain.toLowerCase == d))
+            if (sameDomain.nonEmpty) sameDomain else byTable
+          }
+        )
+      case _ => exactly(nodes, p(p.length - 2), p.last)
     }
   }
+
+  /** The nodes declaring `domain.table`, load and transform nodes first. */
+  private def exactly(nodes: Iterable[SiteNode], domain: String, table: String): List[SiteNode] =
+    firstMatching(
+      nodes,
+      _.filter(n => n.domain.toLowerCase == domain && n.table.toLowerCase == table).toList
+    )
 
   /** Target of a foreign key, mirroring SchemaInfo.fkComponents. A two-part reference is read as
     * `domain.table` when such a table is declared, else as `table.column`.
@@ -44,9 +72,7 @@ object LineageBuilder {
     fk: String,
     domain: String
   ): Option[SiteNode] = {
-    val declared = nodes.filter(n => n.kind == "load" || n.kind == "transform")
-    def exact(d: String, t: String) =
-      declared.find(n => n.domain.toLowerCase == d && n.table.toLowerCase == t)
+    def exact(d: String, t: String) = exactly(nodes, d, t).headOption
     def byTable(t: String) = producers(nodes, t, Some(domain)).headOption
     parts(fk) match {
       case Nil                    => None
@@ -67,7 +93,8 @@ object LineageBuilder {
       name = table,
       domain = domain,
       table = table,
-      database = database
+      database = database,
+      undeclared = Some(true)
     )
   }
 
