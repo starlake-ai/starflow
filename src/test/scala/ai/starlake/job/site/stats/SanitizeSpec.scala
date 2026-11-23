@@ -65,6 +65,55 @@ class SanitizeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "redact a DuckLake style Postgres DSN password" in {
+    val msg = Sanitize.message(
+      "IO Error: Unable to connect to Postgres at host=db.internal user=u password=s3cr3t dbname=d"
+    )
+    msg should not include "s3cr3t"
+    msg shouldBe
+    "IO Error: Unable to connect to Postgres at host=db.internal user=u password=<redacted> dbname=d"
+    Sanitize.message("""failed: 'host=h password="p w" port=5432'""") should not include "p w"
+    Sanitize.message("PWD: hunter2; retry") shouldBe "PWD=<redacted>; retry"
+  }
+
+  it should "redact the user info of a URL" in {
+    val msg = Sanitize.message("Connection refused: jdbc:postgresql://alice:pa55word@db:5432/sales")
+    msg should not include "pa55word"
+    msg should not include "alice"
+    msg shouldBe "Connection refused: jdbc:postgresql://<redacted>@db:5432/sales"
+  }
+
+  it should "redact the signature and credential of an S3 presigned URL" in {
+    val msg = Sanitize.message(
+      "403 on https://b.s3.amazonaws.com/k.parquet?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+      "&X-Amz-Credential=AKIAEXAMPLE%2F20261123%2Fus-east-1%2Fs3%2Faws4_request" +
+      "&X-Amz-Signature=deadbeef0123&X-Amz-Expires=60"
+    )
+    msg should not include "AKIAEXAMPLE"
+    msg should not include "deadbeef0123"
+    msg should include("X-Amz-Signature=<redacted>")
+    msg should include("X-Amz-Credential=<redacted>")
+  }
+
+  it should "redact a token header and keyed secrets" in {
+    Sanitize.message("token: abc123") shouldBe "token=<redacted>"
+    val msg = Sanitize.message(
+      "bad config secret_key=K1 access_key: K2 private_key_id = K3 sig=K4 signature='K 5'"
+    )
+    List("K1", "K2", "K3", "K4", "K 5").foreach(s => msg should not include s)
+  }
+
+  it should "stay idempotent once secrets are redacted" in {
+    List(
+      "user=u password=secret dbname=d",
+      "jdbc:postgresql://a:b@h/db",
+      "https://h/x?X-Amz-Signature=abc"
+    ).foreach { s =>
+      val once = Sanitize.message(s)
+      Sanitize.message(once) shouldBe once
+    }
+  }
+
   "StatsCollector.message" should "sanitize exception messages and fall back to the class name" in {
     StatsCollector.message(
       new IllegalStateException("corrupt /tmp/delta/_delta_log\n  dump")
