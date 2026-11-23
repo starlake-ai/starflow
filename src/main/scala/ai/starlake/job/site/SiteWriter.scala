@@ -11,7 +11,13 @@ object SiteWriter {
   val DataMarker = "<!--sl-data-->"
   private val BundleRoot = "/site-ui/"
 
-  def escapeForScript(json: String): String = json.replace("</", "<\\/")
+  // JSON unicode escape for "<". Built by concatenation so the source never contains the
+  // escape literally. Every "<" is escaped, which covers both "</script>" and "<!--" inside
+  // inlined JSON. Only "<" can open markup in a script element, and "<" occurs in JSON
+  // only inside strings, so the result is still valid JSON.
+  private val EscapedLt = "\\" + "u003c"
+
+  def escapeForScript(json: String): String = json.replace("<", EscapedLt)
 
   def inline(html: String, blocks: List[(String, String)]): String = {
     val tags = blocks
