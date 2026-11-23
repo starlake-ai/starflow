@@ -364,6 +364,23 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "ignore hidden files in the untraced changes" in {
+    new WithSettings() {
+      withProjects(
+        Map(
+          "metadata/load/raw/.DS_Store"             -> "x",
+          "metadata/dags/.DS_Store"                 -> "x",
+          "metadata/transform/kpi/.revenue.sql.swp" -> "x",
+          "metadata/.hidden/notes.txt"              -> "x"
+        )
+      ) { (o, n) =>
+        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        report.direct shouldBe empty
+        report.otherChanges shouldBe empty
+      }
+    }
+  }
+
   it should "return exit code 2 on usage errors" in {
     new WithSettings() {
       val usageErrors = List(

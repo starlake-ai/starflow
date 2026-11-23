@@ -589,8 +589,15 @@ object ProjectSnapshot {
   private[impact] def relativePath(base: File, f: File): String =
     base.path.relativize(f.path).iterator().asScala.map(_.toString).mkString("/")
 
+  /** The regular files under `dir`, hidden ones (`.DS_Store`, editor swap files) and those of
+    * hidden directories left out.
+    */
   private def filesUnder(dir: File): List[File] =
-    if (dir.isDirectory) dir.listRecursively.filter(_.isRegularFile).toList else Nil
+    if (dir.isDirectory)
+      dir.listRecursively
+        .filter(f => f.isRegularFile && !relativePath(dir, f).split('/').exists(_.startsWith(".")))
+        .toList
+    else Nil
 
   /** Every file under `metadata/` but `load/` and `transform/`, which the nodes cover. */
   private def otherFiles(projectDir: File): Map[String, String] = {
