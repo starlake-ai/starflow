@@ -31,4 +31,12 @@ describe('search', () => {
     expect(index.search('  ')).toEqual([]);
     expect(index.search('sales', 1)).toHaveLength(1);
   });
+
+  it('does not throw on duplicate column names', () => {
+    const dup = structuredClone(model);
+    const n = dup.nodes['load:sales.customers'];
+    n.columns = [...(n.columns ?? []), ...(n.columns ?? [])];
+    const idx = buildSearchIndex(dup);
+    expect(idx.search('email').filter((h) => h.column === 'email')).toHaveLength(1);
+  });
 });

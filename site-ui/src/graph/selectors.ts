@@ -60,8 +60,13 @@ function evalAtom(model: SiteModel, g: Graph, atom: string, errors: string[]): S
   const colon = target.indexOf(':');
   const prefix = colon > 0 ? target.slice(0, colon).toLowerCase() : '';
   let base: string[];
-  if (METHODS.includes(prefix)) base = matchMethod(model, prefix, target.slice(colon + 1));
-  else if (colon > 0 && !KINDS.includes(prefix)) {
+  if (METHODS.includes(prefix)) {
+    if (target.slice(colon + 1).trim() === '') {
+      errors.push(`Empty value for '${prefix}:'`);
+      return new Set();
+    }
+    base = matchMethod(model, prefix, target.slice(colon + 1));
+  } else if (colon > 0 && !KINDS.includes(prefix)) {
     errors.push(`Unknown selector method '${prefix}'`);
     return new Set();
   } else base = matchName(model, target);
@@ -78,8 +83,12 @@ export function select(model: SiteModel, g: Graph, text: string): SelectResult {
   if (terms.length === 0) return { ids: new Set(Object.keys(model.nodes)), errors };
   const ids = new Set<string>();
   for (const term of terms) {
-    const sets = term.split(',').filter(Boolean).map((atom) => evalAtom(model, g, atom, errors));
-    if (sets.length === 0) continue;
+    const atoms = term.split(',').filter(Boolean);
+    if (atoms.length === 0) {
+      errors.push(`Invalid selector '${term}'`);
+      continue;
+    }
+    const sets = atoms.map((atom) => evalAtom(model, g, atom, errors));
     const inter = sets.reduce((acc, s) => new Set([...acc].filter((x) => s.has(x))));
     inter.forEach((id) => ids.add(id));
   }

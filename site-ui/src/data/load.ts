@@ -22,6 +22,12 @@ export async function loadData(
 ): Promise<SiteData> {
   const model = inline<SiteModel>(doc, 'sl-model') ?? (await fetched<SiteModel>(fetcher, './sl-model.json'));
   if (!model) throw new Error('No project model found: sl-model.json is missing');
+  // The serializer drops empty values: default the optional top-level fields once.
+  model.nodes ??= {};
+  model.edges ??= [];
+  model.columnEdges ??= [];
+  model.docs ??= {};
+  model.groups ??= {};
   const stats = inline<SiteStats>(doc, 'sl-stats') ?? (await fetched<SiteStats>(fetcher, './sl-stats.json'));
   return { model, stats };
 }

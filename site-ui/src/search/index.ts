@@ -52,7 +52,8 @@ export function buildSearchIndex(model: SiteModel): SearchIndex {
       });
     }
   }
-  ms.addAll(docs);
+  const seen = new Set<string>();
+  ms.addAll(docs.filter((d) => !seen.has(d.id) && !!seen.add(d.id)));
   return {
     search(q: string, limit = 20): SearchHit[] {
       if (!q.trim()) return [];

@@ -47,4 +47,14 @@ describe('loadData', () => {
   it('throws when no model is available', async () => {
     await expect(loadData(document, okFetch({}))).rejects.toThrow('sl-model.json');
   });
+
+  it('defaults optional top-level fields for an empty project', async () => {
+    const empty = { schemaVersion: 1, generatedAt: 'x', starlakeVersion: 'x', project: { name: 'p' }, groups: {} };
+    const data = await loadData(document, okFetch({ './sl-model.json': empty }));
+    expect(data.model.nodes).toEqual({});
+    expect(data.model.edges).toEqual([]);
+    expect(data.model.columnEdges).toEqual([]);
+    expect(data.model.docs).toEqual({});
+    expect(data.model.groups).toEqual({});
+  });
 });

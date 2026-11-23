@@ -9,7 +9,14 @@ export function parseHash(hash: string): Route {
   const path = q >= 0 ? h.slice(0, q) : h;
   const params = new URLSearchParams(q >= 0 ? h.slice(q + 1) : '');
   if (path.startsWith('/node/')) {
-    const id = decodeURIComponent(path.slice('/node/'.length));
+    const raw = path.slice('/node/'.length);
+    if (!raw) return { page: 'overview' };
+    let id = raw;
+    try {
+      id = decodeURIComponent(raw);
+    } catch {
+      /* malformed escape: keep the raw id */
+    }
     const column = params.get('column');
     return column ? { page: 'node', id, column } : { page: 'node', id };
   }

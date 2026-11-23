@@ -22,4 +22,9 @@ describe('router', () => {
     expect(graphHref()).toBe('#/graph');
     expect(parseHash('#/graph')).toEqual({ page: 'graph', select: '', exclude: '' });
   });
+
+  it('survives a malformed escape and treats an empty id as the overview', () => {
+    expect(parseHash('#/node/%')).toEqual({ page: 'node', id: '%' });
+    expect(parseHash('#/node/')).toEqual({ page: 'overview' });
+  });
 });
