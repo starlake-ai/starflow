@@ -15,6 +15,35 @@ const branch = (model: SiteModel, key: string, label: string, ids: string[]): Tr
   children: ids.filter((id) => id in model.nodes).map((id) => leaf(model, key, id)),
 });
 
+function externalBranch(model: SiteModel): TreeNode {
+  const g = model.groups.externals ?? [];
+  const listed = new Set(g.flatMap((d) => d.nodes));
+  const undeclared = Object.values(model.nodes)
+    .filter((n) => n.kind === 'external' && n.undeclared && !listed.has(n.id))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const byDomain = new Map<string, string[]>();
+  const flat: string[] = [];
+  for (const n of undeclared) {
+    if (n.domain) byDomain.set(n.domain, [...(byDomain.get(n.domain) ?? []), n.id]);
+    else flat.push(n.id);
+  }
+  const key = 'external/undeclared';
+  const children: TreeNode[] = g.map((d) => branch(model, `external/${d.name}`, d.name, d.nodes));
+  if (undeclared.length > 0) {
+    children.push({
+      key,
+      label: 'Undeclared',
+      children: [
+        ...[...byDomain.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([d, ids]) => branch(model, `${key}/${d}`, d, ids)),
+        ...flat.map((id) => leaf(model, key, id)),
+      ],
+    });
+  }
+  return { key: 'external', label: 'External', children };
+}
+
 export function projectTree(model: SiteModel): TreeNode[] {
   const g = model.groups;
   return [
@@ -28,6 +57,7 @@ export function projectTree(model: SiteModel): TreeNode[] {
       label: 'Transform',
       children: (g.jobs ?? []).map((j) => branch(model, `transform/${j.name}`, j.name, j.nodes)),
     },
+    externalBranch(model),
     {
       key: 'dags',
       label: 'DAGs',

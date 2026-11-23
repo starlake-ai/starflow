@@ -40,7 +40,16 @@ const nodes: SiteNode[] = [
     id: 'transform:kpi.top_customers', kind: 'transform', name: 'top_customers', domain: 'kpi',
     table: 'top_customers', engine: 'bigquery', connectionRef: 'bq', dag: 'airflow_transform',
   }),
-  node({ id: 'external:refdata.fx_rates', kind: 'external', name: 'fx_rates', domain: 'refdata', table: 'fx_rates' }),
+  node({
+    id: 'external:refdata.fx_rates', kind: 'external', name: 'fx_rates', domain: 'refdata', table: 'fx_rates',
+    description: 'Daily FX rates', tags: ['reference'], filePath: 'external/refdata/fx_rates.sl.yml',
+    columns: [{ name: 'currency', type: 'string', required: true, primaryKey: false }],
+  }),
+  node({
+    id: 'external:refdata.legacy_codes', kind: 'external', name: 'legacy_codes', domain: 'refdata',
+    table: 'legacy_codes', undeclared: true,
+  }),
+  node({ id: 'external:ghost', kind: 'external', name: 'ghost', table: 'ghost', undeclared: true }),
 ];
 
 export const model: SiteModel = {
@@ -60,6 +69,7 @@ export const model: SiteModel = {
     { from: 'load:sales.customers#id', to: 'transform:kpi.revenue#customer_id', task: 'transform:kpi.revenue' },
   ],
   groups: {
+    externals: [{ name: 'refdata', description: 'Reference data', nodes: ['external:refdata.fx_rates'] }],
     domains: [{ name: 'sales', description: 'Sales domain', nodes: ['load:sales.customers', 'load:sales.orders'] }],
     jobs: [{ name: 'kpi', nodes: ['transform:kpi.revenue', 'transform:kpi.top_customers'] }],
     dags: [

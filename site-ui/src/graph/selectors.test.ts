@@ -10,9 +10,11 @@ const O = 'load:sales.orders';
 const R = 'transform:kpi.revenue';
 const T = 'transform:kpi.top_customers';
 const F = 'external:refdata.fx_rates';
+const L = 'external:refdata.legacy_codes';
+const GH = 'external:ghost';
 
 describe('select', () => {
-  it('selects everything when empty', () => expect(ids('  ')).toEqual([F, C, O, R, T]));
+  it('selects everything when empty', () => expect(ids('  ')).toEqual([GH, F, L, C, O, R, T].sort()));
 
   it('matches by bare table name, domain.table and id', () => {
     expect(ids('revenue')).toEqual([R]);
@@ -37,7 +39,7 @@ describe('select', () => {
     expect(ids('domain:sales')).toEqual([C, O]);
     expect(ids('job:kpi')).toEqual([R, T]);
     expect(ids('dag:airflow_transform')).toEqual([R, T]);
-    expect(ids('kind:external')).toEqual([F]);
+    expect(ids('kind:external')).toEqual([GH, F, L]);
     expect(ids('engine:duckdb')).toEqual([C, O]);
   });
 

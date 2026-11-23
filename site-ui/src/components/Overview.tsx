@@ -99,6 +99,18 @@ export function Overview({ model, stats }: { model: SiteModel; stats: SiteStats 
           ))}
         </ul>
       </Section>
+      {(model.groups.externals ?? []).length > 0 && (
+        <Section title="External domains">
+          <ul className="node-list groups">
+            {(model.groups.externals ?? []).map((d) => (
+              <li key={d.name}>
+                <a href={graphHref(`domain:${d.name}`)}>{d.name}</a> <span className="muted">{d.nodes.length} tables</span>
+                {d.description && <Markdown source={d.description} />}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
       {(model.groups.jobs ?? []).length > 0 && (
         <Section title="Jobs">
           <ul className="node-list groups">

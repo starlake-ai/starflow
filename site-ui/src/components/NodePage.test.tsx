@@ -70,3 +70,21 @@ describe('NodePage', () => {
     expect(errors().filter((e) => e.includes('same key'))).toEqual([]);
   });
 });
+
+describe('NodePage externals', () => {
+  const page = (id: string) =>
+    renderToString(<NodePage model={model} stats={null} graph={buildGraph(model)} node={model.nodes[id]} />).replace(/<!-- -->/g, '');
+
+  it('shows a declared external like a load node', () => {
+    const html = page('external:refdata.fx_rates');
+    expect(html).toContain('Daily FX rates');
+    expect(html).toContain('currency');
+    expect(html).toContain('reference');
+    expect(html).toContain('metadata/external/refdata/fx_rates.sl.yml');
+    expect(html).not.toContain('not declared under metadata/external');
+  });
+
+  it('notes an undeclared external', () => {
+    expect(page('external:ghost')).toContain('Referenced in SQL but not declared under metadata/external');
+  });
+});

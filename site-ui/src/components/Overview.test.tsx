@@ -24,3 +24,17 @@ describe('Overview', () => {
     expect(html).toContain('href="#/graph?select=dag%3Aairflow_load"');
   });
 });
+
+describe('Overview externals', () => {
+  it('shows an External domains section and counts declared externals', () => {
+    expect(html).toContain('External domains');
+    expect(html).toContain('href="#/graph?select=domain%3Arefdata"');
+    expect(html).toContain('Reference data');
+  });
+  it('lists only undeclared externals in the health panel', () => {
+    const health = html.slice(html.indexOf('Undeclared tables referenced in SQL'));
+    expect(health).toContain('external:ghost');
+    expect(health).toContain('external:refdata.legacy_codes');
+    expect(health).not.toContain('external:refdata.fx_rates');
+  });
+});

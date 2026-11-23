@@ -14,7 +14,7 @@ export function computeHealth(model: SiteModel, stats: SiteStats | null): Health
     warnings: nodes
       .filter((n) => (n.warnings ?? []).length > 0)
       .map((n) => ({ id: n.id, messages: n.warnings ?? [] })),
-    externals: nodes.filter((n) => n.kind === 'external').map((n) => n.id),
+    externals: nodes.filter((n) => n.kind === 'external' && n.undeclared === true).map((n) => n.id),
     mismatches: tables.flatMap(([id, t]) =>
       (t.columnDiff ?? [])
         .filter((d) => d.status === 'mismatch')

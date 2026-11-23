@@ -6,7 +6,7 @@ describe('computeHealth', () => {
   it('lists warnings and external references without stats', () => {
     const h = computeHealth(model, null);
     expect(h.warnings).toEqual([{ id: 'load:sales.orders', messages: ["Unknown doc block 'missing_block'"] }]);
-    expect(h.externals).toEqual(['external:refdata.fx_rates']);
+    expect(h.externals).toEqual(['external:ghost', 'external:refdata.legacy_codes']);
     expect(h.mismatches).toEqual([]);
     expect(h.missing).toEqual([]);
   });

@@ -60,6 +60,8 @@ export type SiteNode = {
   freshness?: Json | null;
   schedule?: string | null;
   warnings?: string[];
+  /** Present only when true: an external table referenced in SQL but not declared under metadata/external. */
+  undeclared?: boolean;
 };
 
 export type SiteEdge = { from: string; to: string; kind: 'lineage' | 'fk' };
@@ -75,7 +77,7 @@ export type SiteModel = {
   nodes: Record<string, SiteNode>;
   edges?: SiteEdge[];
   columnEdges?: SiteColumnEdge[];
-  groups: { domains?: SiteGroup[]; jobs?: SiteGroup[]; dags?: SiteDagGroup[] };
+  groups: { domains?: SiteGroup[]; externals?: SiteGroup[]; jobs?: SiteGroup[]; dags?: SiteDagGroup[] };
   docs?: Record<string, string>;
 };
 

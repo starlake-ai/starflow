@@ -8,6 +8,7 @@ import { buildGraph } from './graph/graph';
 import { select } from './graph/selectors';
 import { buildSearchIndex } from './search/index';
 import { databaseTree, projectTree } from './tree';
+import { computeHealth } from './health';
 import { Overview } from './components/Overview';
 import { NodePage } from './components/NodePage';
 import type { SiteModel } from './types';
@@ -41,6 +42,22 @@ describe('contract with the exporter golden file', () => {
     expect(errors).toEqual([]);
     expect(ids.has(target.id)).toBe(true);
     expect(ids.size).toBeGreaterThan(1);
+  });
+
+  it('covers the declared external node and groups.externals', () => {
+    const ext = model.nodes['external:refdata.fx_rates'];
+    expect(ext.kind).toBe('external');
+    expect(ext.undeclared).toBeUndefined();
+    expect((ext.columns ?? []).length).toBeGreaterThan(0);
+    expect(ext.filePath).toBe('external/refdata/fx_rates.sl.yml');
+    expect(model.groups.externals).toEqual([
+      { name: 'refdata', description: expect.any(String), nodes: ['external:refdata.fx_rates'] },
+    ]);
+    const tree = projectTree(model).find((n) => n.key === 'external')!;
+    expect(tree.children[0].children.map((n) => n.nodeId)).toEqual(['external:refdata.fx_rates']);
+    expect(computeHealth(model, null).externals).toEqual([]);
+    const html = text(renderToString(<Overview model={model} stats={null} />));
+    expect(html).toContain('External domains');
   });
 
   it('renders the overview', () => {

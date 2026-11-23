@@ -119,9 +119,13 @@ export function NodePage({ model, stats, graph, node, column }: Props) {
           </ul>
         )}
       </header>
-      <Section title="Description">
-        <Markdown source={node.description || '_No description provided._'} />
-      </Section>
+      {node.undeclared ? (
+        <p className="muted">Referenced in SQL but not declared under metadata/external.</p>
+      ) : (
+        <Section title="Description">
+          <Markdown source={node.description || '_No description provided._'} />
+        </Section>
+      )}
       <Section title="Details">
         <Details node={node} t={t} conn={conn} hasStats={hasStats} />
       </Section>

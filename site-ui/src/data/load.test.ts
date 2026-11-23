@@ -54,7 +54,7 @@ describe('loadData', () => {
 
   it('falls back to fetch when inline blocks are absent', async () => {
     const data = await loadData(document, okFetch({ './sl-model.json': model, './sl-stats.json': stats }));
-    expect(Object.keys(data.model.nodes)).toHaveLength(5);
+    expect(Object.keys(data.model.nodes)).toHaveLength(7);
     expect(data.stats).not.toBeNull();
   });
 
