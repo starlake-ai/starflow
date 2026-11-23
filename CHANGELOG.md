@@ -133,9 +133,9 @@ __Bug fix__:
 - **`compare --commit1` / `--commit2` with an unknown commit fails**: the archive of the commit was piped to `tar`, whose status hid the error of `git`, so on macOS the comparison ran against an empty project. The command now fails with the error of `git`.
 
 __Improvement__:
-- **`starlake site` builds a documentation site in the style of dbt docs**, as a single page that opens from the file system with no network access:
+- **`starlake site` builds a full documentation site**, as a single page that opens from the file system with no network access:
   - search over tables, tasks, columns, tags and SQL, a project tree and a database tree;
-  - a lineage graph of the whole project, down to the column, with dbt style selectors (`+orders`, `orders+`, `2+orders+1`, `@orders`, `tag:`, `domain:`, `job:`, `dag:`, `kind:`, `engine:`), export to SVG or PNG;
+  - a lineage graph of the whole project, down to the column, with selectors (`+orders`, `orders+`, `2+orders+1`, `@orders`, `tag:`, `domain:`, `job:`, `dag:`, `kind:`, `engine:`), export to SVG or PNG;
   - Markdown descriptions and reusable doc blocks (`{% docs name %}` in `metadata/docs/*.md`, referenced with `{{ doc("name") }}`), with `__overview__` as the home page;
   - node pages with columns, keys, expectations, ACL and row level security, raw and compiled SQL, upstream and downstream nodes.
   - Without `--stats`, the site never connects to a warehouse: column lineage uses the declared tables only.
