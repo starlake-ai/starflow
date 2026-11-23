@@ -950,11 +950,11 @@ launch_starlake() {
   then
     check_jdk_supported || exit 1
     if  [ -n "$SL_LOG_LEVEL" ] && [ "$SL_LOG_LEVEL" != "error" ]; then
-      echo "- JAVA_HOME=$JAVA_HOME"
-      echo "- SL_ROOT=$SL_ROOT"
+      echo "- JAVA_HOME=$JAVA_HOME" >&2
+      echo "- SL_ROOT=$SL_ROOT" >&2
     fi
     if [ "$SL_ENV" != "" ]; then
-      echo "- SL_ENV=$SL_ENV"
+      echo "- SL_ENV=$SL_ENV" >&2
     fi
 #    echo "- SL_MAIN=$SL_MAIN"
 #    echo "- SL_VALIDATE_ON_LOAD=$SL_VALIDATE_ON_LOAD"
