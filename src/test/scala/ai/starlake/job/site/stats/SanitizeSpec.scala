@@ -114,6 +114,121 @@ class SanitizeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "redact keys that contain a secret word, keeping the other pairs" in {
+    val sf = Sanitize.message("Snowflake: private_key_file_pwd: s1, user: bob")
+    sf should not include "s1"
+    sf should include("user: bob")
+    sf should include("private_key_file_pwd=<redacted>")
+    List("sfPassword=x1", "PGPASSWORD=x2", "client_secret=x3", "access_token=x4").foreach { s =>
+      Sanitize.message(s"bad $s here") shouldBe
+      s"bad ${s.takeWhile(_ != '=')}=<redacted> here"
+    }
+    Sanitize.message("api_key=k1") shouldBe "api_key=<redacted>"
+    Sanitize.message("apikey: k2") shouldBe "apikey=<redacted>"
+  }
+
+  it should "redact a service account JSON key" in {
+    val json =
+      """{"type": "service_account", "private_key_id": "abc123", "private_key": """ +
+      """"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN\n-----END PRIVATE KEY-----\n", """ +
+      """"client_email": "x@y.iam.gserviceaccount.com"}"""
+    val msg = Sanitize.message(s"invalid credentials $json")
+    List("abc123", "MIIEvQIBADAN", "BEGIN PRIVATE KEY", "END PRIVATE KEY").foreach(
+      msg should not include _
+    )
+    msg should include(""""client_email": "x@y.iam.gserviceaccount.com"""")
+  }
+
+  it should "redact a PEM block up to its END line, or to the end of the message" in {
+    val multiLine =
+      "bad key private_key: -----BEGIN RSA PRIVATE KEY-----\nMIIEpAIB\nAAKCAQ\n" +
+      "-----END RSA PRIVATE KEY----- for user bob"
+    val msg = Sanitize.message(multiLine)
+    msg shouldBe "bad key private_key=<redacted> for user bob"
+    val cut = Sanitize.message("bad key private_key=-----BEGIN PRIVATE KEY-----\nMIIEvQ")
+    cut shouldBe "bad key private_key=<redacted>"
+  }
+
+  it should "redact JSON style quoted keys" in {
+    List(
+      """{"password":"x"}""",
+      """{"password": "x"}""",
+      """{"access_token":"ya29.abc"}""",
+      """{'password': 'x'}"""
+    ).foreach { s =>
+      val msg = Sanitize.message(s"bad payload $s")
+      msg should not include "\"x\""
+      msg should not include "'x'"
+      msg should not include "ya29"
+      msg should include("=<redacted>}")
+    }
+  }
+
+  it should "redact Authorization headers and bare bearer tokens" in {
+    Sanitize.message("401 with Authorization: Bearer xyz.abc") shouldBe
+    "401 with Authorization: <redacted>"
+    Sanitize.message("401 with Authorization: Basic dXNlcjpwYXNz") shouldBe
+    "401 with Authorization: <redacted>"
+    Sanitize.message("Proxy-Authorization=Digest abc") shouldBe "Proxy-Authorization: <redacted>"
+    Sanitize.message("""headers {"Authorization": "Bearer xyz"}""") should not include "xyz"
+    Sanitize.message("sent Bearer eyJhbGciOi.payload.sig to the API") shouldBe
+    "sent Bearer <redacted> to the API"
+  }
+
+  it should "redact an Azure storage connection string account key" in {
+    val msg = Sanitize.message(
+      "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=K3y==;EndpointSuffix=core.windows.net"
+    )
+    msg should not include "K3y=="
+    msg shouldBe
+    "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=<redacted>;EndpointSuffix=core.windows.net"
+  }
+
+  it should "redact values with commas, parentheses, braces, escapes or URL encoding" in {
+    Sanitize.message("password=ab)cd next") shouldBe "password=<redacted> next"
+    Sanitize.message("password=a,b next") shouldBe "password=<redacted> next"
+    Sanitize.message("Driver={ODBC};Pwd={a;b};Uid=u") shouldBe "Driver={ODBC};Pwd=<redacted>;Uid=u"
+    Sanitize.message("""password='it\'s' next""") shouldBe "password=<redacted> next"
+    Sanitize.message("""password="say \"hi\"" next""") shouldBe "password=<redacted> next"
+    Sanitize.message("q?user=u&password%3Dhunter2&x=1") shouldBe "q?user=u&password=<redacted>&x=1"
+  }
+
+  it should "redact a URL password containing an @" in {
+    val msg = Sanitize.message("cannot connect to jdbc:postgresql://alice:p@ss@h:5432/db")
+    msg should not include "p@ss"
+    msg should not include "alice"
+    msg shouldBe "cannot connect to jdbc:postgresql://<redacted>@h:5432/db"
+  }
+
+  it should "keep keys that are not followed by a separator" in {
+    Sanitize.message("table password_history not found") shouldBe
+    "table password_history not found"
+    Sanitize.message("Column private_key not found: expected type STRING") shouldBe
+    "Column private_key not found: expected type STRING"
+    Sanitize.message("Secret Manager access denied") shouldBe "Secret Manager access denied"
+  }
+
+  it should "redact a parser token (accepted false positive)" in {
+    // JSqlParser reports `token: "FROM"`; the key/value rule cannot tell it from a token pair
+    Sanitize.message("""Encountered unexpected token: "FROM" at line 1""") shouldBe
+    "Encountered unexpected token=<redacted> at line 1"
+  }
+
+  it should "stay idempotent on the new redactions" in {
+    List(
+      """{"password":"x"}""",
+      "Authorization: Bearer xyz",
+      "Bearer abc def",
+      "AccountKey=K3y==;EndpointSuffix=e",
+      "Pwd={a;b};Uid=u",
+      "jdbc:postgresql://alice:p@ss@h:5432/db",
+      "private_key: -----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY----- end"
+    ).foreach { s =>
+      val once = Sanitize.message(s)
+      Sanitize.message(once) shouldBe once
+    }
+  }
+
   "StatsCollector.message" should "sanitize exception messages and fall back to the class name" in {
     StatsCollector.message(
       new IllegalStateException("corrupt /tmp/delta/_delta_log\n  dump")
