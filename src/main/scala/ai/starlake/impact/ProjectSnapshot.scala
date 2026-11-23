@@ -392,6 +392,17 @@ object ProjectSnapshot {
         }
       )
 
+    // the task as written, independent of the columns its inputs have on this side
+    def definitionOf(ref: NodeRef, task: AutoTaskInfo): String =
+      task.python match {
+        case Some(path) => "python:" + sha256(settings.storageHandler().read(path))
+        case None =>
+          commandFile(ref, task).flatMap(renderErrors.get) match {
+            case Some((_, raw)) => "unrendered:" + TaskShapeBuilder.normalize(raw)
+            case None => "sql:" + TaskShapeBuilder.normalize(neutralize(task.sql.getOrElse("")))
+          }
+      }
+
     val taskNodes = taskByRef.toList.sortBy(_._1.name).map { case (ref, t) =>
       NodeView(
         ref,
@@ -399,7 +410,8 @@ object ProjectSnapshot {
         t.attributes.map(attributeView(neutralize)),
         Some(shapeOf(ref, t)),
         neutralize(structural(t)),
-        neutralize(metadataFingerprint(t))
+        neutralize(metadataFingerprint(t)),
+        definitionOf(ref, t)
       )
     }
 
