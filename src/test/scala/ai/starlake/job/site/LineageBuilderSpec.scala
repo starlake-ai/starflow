@@ -48,6 +48,68 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
     res.nodes("load:sales.orders").columns.head.foreignKeyNode shouldBe Some("load:sales.customers")
   }
 
+  private def fkNodes(fk: String, extra: SiteNode*) = {
+    val src = load("sales", "invoices", List(SiteColumn("ref", foreignKey = Some(fk))))
+    TreeMap((Seq(customers, src) ++ extra).map(n => n.id -> n): _*)
+  }
+
+  private def fkResult(fk: String, extra: SiteNode*) = {
+    val res = LineageBuilder.build(fkNodes(fk, extra: _*), Map.empty, Map.empty)
+    (res.edges, res.nodes("load:sales.invoices").columns.head.foreignKeyNode)
+  }
+
+  it should "resolve a one-part foreign key as a table name" in {
+    fkResult("customers") shouldBe
+    (List(SiteEdge("load:sales.invoices", "load:sales.customers", "fk")), Some(customers.id))
+  }
+
+  it should "resolve a two-part foreign key as domain.table when such a table exists" in {
+    val crm = load("crm", "accounts")
+    fkResult("crm.accounts", crm) shouldBe
+    (List(SiteEdge("load:sales.invoices", "load:crm.accounts", "fk")), Some(crm.id))
+  }
+
+  it should "resolve a two-part foreign key as table.column otherwise" in {
+    fkResult("customers.id") shouldBe
+    (List(SiteEdge("load:sales.invoices", "load:sales.customers", "fk")), Some(customers.id))
+  }
+
+  it should "resolve a three-part foreign key as domain.table.column" in {
+    val crm = load("crm", "customers")
+    fkResult("crm.customers.id", crm) shouldBe
+    (List(SiteEdge("load:sales.invoices", "load:crm.customers", "fk")), Some(crm.id))
+  }
+
+  it should "resolve foreign keys declared on nested columns" in {
+    val nested = load(
+      "sales",
+      "carts",
+      List(
+        SiteColumn(
+          "buyer",
+          `type` = "struct",
+          columns = List(SiteColumn("customer_id", foreignKey = Some("customers.id")))
+        )
+      )
+    )
+    val res =
+      LineageBuilder.build(
+        TreeMap(Seq(customers, nested).map(n => n.id -> n): _*),
+        Map.empty,
+        Map.empty
+      )
+    res.edges shouldBe List(SiteEdge("load:sales.carts", "load:sales.customers", "fk"))
+    res.nodes("load:sales.carts").columns.head.columns.head.foreignKeyNode shouldBe
+    Some(customers.id)
+  }
+
+  it should "not emit an fk edge for a self reference" in {
+    val tree = load("sales", "tree", List(SiteColumn("parent_id", foreignKey = Some("tree.id"))))
+    val res = LineageBuilder.build(TreeMap(tree.id -> tree), Map.empty, Map.empty)
+    res.edges shouldBe Nil
+    res.nodes(tree.id).columns.head.foreignKeyNode shouldBe Some(tree.id)
+  }
+
   it should "map column lineage onto node ids" in {
     val lineage = ColLineage.Lineage(
       Nil,

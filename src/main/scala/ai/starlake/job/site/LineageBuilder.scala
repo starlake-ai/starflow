@@ -36,6 +36,26 @@ object LineageBuilder {
     }
   }
 
+  /** Target of a foreign key, mirroring SchemaInfo.fkComponents. A two-part reference is read as
+    * `domain.table` when such a table is declared, else as `table.column`.
+    */
+  private def fkTarget(
+    nodes: Iterable[SiteNode],
+    fk: String,
+    domain: String
+  ): Option[SiteNode] = {
+    val declared = nodes.filter(n => n.kind == "load" || n.kind == "transform")
+    def exact(d: String, t: String) =
+      declared.find(n => n.domain.toLowerCase == d && n.table.toLowerCase == t)
+    def byTable(t: String) = producers(nodes, t, Some(domain)).headOption
+    parts(fk) match {
+      case Nil                    => None
+      case table :: Nil           => byTable(table)
+      case first :: second :: Nil => exact(first, second).orElse(byTable(first))
+      case p                      => exact(p(p.length - 3), p(p.length - 2))
+    }
+  }
+
   private def externalNode(ref: String): SiteNode = {
     val p = parts(ref)
     val table = p.lastOption.getOrElse(ref)
@@ -74,22 +94,19 @@ object LineageBuilder {
       }
     }
 
-    // Foreign keys: "[domain.]table.attribute"
-    val withFks = allNodes.map { case (id, node) =>
-      val cols = node.columns.map { col =>
-        col.foreignKey match {
-          case Some(fk) =>
-            val tableRef = fk.split('.').dropRight(1).mkString(".")
-            producers(nodes.values, tableRef, Some(node.domain.toLowerCase)).headOption match {
-              case Some(target) =>
-                edges += SiteEdge(id, target.id, "fk")
-                col.copy(foreignKeyNode = Some(target.id))
-              case None => col
-            }
-          case None => col
+    // Foreign keys: "table", "domain.table", "table.column" or "domain.table.column"
+    def resolveFks(id: String, domain: String, cols: List[SiteColumn]): List[SiteColumn] =
+      cols.map { col =>
+        val withChildren = col.copy(columns = resolveFks(id, domain, col.columns))
+        col.foreignKey.flatMap(fk => fkTarget(nodes.values, fk, domain)) match {
+          case Some(target) =>
+            if (target.id != id) edges += SiteEdge(id, target.id, "fk")
+            withChildren.copy(foreignKeyNode = Some(target.id))
+          case None => withChildren
         }
       }
-      id -> node.copy(columns = cols)
+    val withFks = allNodes.map { case (id, node) =>
+      id -> node.copy(columns = resolveFks(id, node.domain.toLowerCase, node.columns))
     }
 
     // Column lineage: keep only relations that feed the task's own output table
