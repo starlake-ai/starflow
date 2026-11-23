@@ -68,7 +68,7 @@ class ChangeDetectorSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "keep an added load attribute with data fields NON_BREAKING" in {
-    val added = baseAttrs :+ AttributeView("note", "note", "string", "required=true")
+    val added = baseAttrs :+ AttributeView("note", "note", "string", "default=x,trim=Both")
     val c = detect(load(baseAttrs), load(added)).head
     c.changeClass shouldBe NonBreaking
     c.columns shouldBe Cols(Set("note"))
@@ -112,6 +112,9 @@ class ChangeDetectorSpec extends AnyFlatSpec with Matchers {
     val c = detect(load(baseAttrs), load(baseAttrs, structural = "UPSERT_BY_KEY(order_id)")).head
     c.changeClass shouldBe Breaking
     c.columns shouldBe AllColumns
+    c.reasons shouldBe List(
+      "write strategy / partition / merge key / pre-post SQL / parsing / required attributes changed"
+    )
   }
 
   it should "classify a metadata-only change as METADATA" in {

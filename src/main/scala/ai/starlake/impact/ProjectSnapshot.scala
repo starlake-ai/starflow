@@ -109,9 +109,10 @@ object ProjectSnapshot {
 
   /** Replaces the root of the work copy and of the project, as written and as real paths, with
     * [[RootToken]]. Every other path variable (`SL_METADATA`, `SL_DATASETS` ...) lies under the
-    * work copy root, so it is covered too. A root is replaced only as a whole path: followed by a
-    * separator, a quote, a blank or the end (`/x/proj` is not replaced in `/x/proj2`). Longest
-    * first: a real path may contain the other one (`/private/var/x` on macOS).
+    * work copy root, so it is covered too. A root is replaced only as a whole path: not followed by
+    * a character of a path name (`/x/proj` is not replaced in `/x/proj2` nor in `/x/proj.bak`), so
+    * whatever follows it in a fingerprint (`)`, `,`, `|` ...) does not matter. Longest first: a
+    * real path may contain the other one (`/private/var/x` on macOS).
     */
   private def neutralizeRoots(dirs: List[File]): String => String = {
     val patterns = dirs
@@ -119,7 +120,7 @@ object ProjectSnapshot {
       .filter(_.length > 1)
       .distinct
       .sortBy(-_.length)
-      .map(root => Pattern.compile(Pattern.quote(root) + "(?=[/\\\\'\"`\\s]|$)"))
+      .map(root => Pattern.compile(Pattern.quote(root) + "(?![A-Za-z0-9._-])"))
     val token = Matcher.quoteReplacement(RootToken)
     text => patterns.foldLeft(text)((acc, p) => p.matcher(acc).replaceAll(token))
   }
@@ -127,21 +128,25 @@ object ProjectSnapshot {
   /** The messages of `e` and of its causes: a Jinja error says "Error rendering tag", its cause
     * says which template is missing.
     */
-  private def messages(e: Throwable): String =
-    Iterator
-      .iterate(e)(_.getCause)
-      .takeWhile(_ != null)
-      .flatMap {
-        case fatal: FatalTemplateErrorsException =>
-          fatal.getErrors.asScala.toList.flatMap { error =>
-            Option(error.getMessage).toList ++
-            Option(error.getException).map(messages).toList
-          }
-        case c => Option(c.getMessage).toList
-      }
-      .toList
-      .distinct
-      .mkString(": ")
+  private[impact] def messages(e: Throwable): String = {
+    // identity, not equality: a cause chain may loop back to an exception already visited
+    val seen = java.util.Collections.newSetFromMap(
+      new java.util.IdentityHashMap[Throwable, java.lang.Boolean]()
+    )
+    def walk(e: Throwable): List[String] =
+      Iterator
+        .iterate(e)(_.getCause)
+        .takeWhile(c => c != null && seen.add(c))
+        .toList
+        .flatMap {
+          case fatal: FatalTemplateErrorsException =>
+            Option(fatal.getMessage).toList ++ fatal.getErrors.asScala.toList.flatMap { error =>
+              Option(error.getMessage).toList ++ Option(error.getException).toList.flatMap(walk)
+            }
+          case c => Option(c.getMessage).toList
+        }
+    walk(e).distinct.mkString(": ")
+  }
 
   /** The schema handler logs and skips the YAML files it cannot read, and fails a whole transform
     * when one of its SQL files does not render. Before it loads anything, every domain, table,
@@ -152,7 +157,7 @@ object ProjectSnapshot {
     */
   private def checkFiles(metadataDir: File, handler: SchemaHandler)(implicit
     settings: Settings
-  ): Map[File, (String, String)] = {
+  ): Map[String, (String, String)] = {
     val vars = handler.activeEnvVars()
     def subDirs(dir: File): List[File] =
       if (dir.isDirectory) dir.list.filter(_.isDirectory).toList.sortBy(_.name) else Nil
@@ -192,7 +197,7 @@ object ProjectSnapshot {
           val raw = sqlFile.contentAsString
           Try(Utils.parseJinja(raw, vars)).failed.toOption.map { e =>
             sqlFile.writeText("")
-            sqlFile -> (messages(e), raw)
+            name(sqlFile) -> (messages(e), raw)
           }
         }
     }.toMap
@@ -252,13 +257,17 @@ object ProjectSnapshot {
     val taskDirs: Map[NodeRef, Path] =
       tasks.map { case (dir, t) => NodeRef.of(t.domain, t.table) -> dir }.toMap
 
-    /** The file the handler reads the command of the task from (same lookup order). */
-    def commandFile(ref: NodeRef, task: AutoTaskInfo): Option[File] =
+    /** The file the handler reads the command of the task from (same lookup order), relative to
+      * `metadata/` like the keys of `renderErrors`. Transform folders are one level under
+      * `transform/`, and their name is all that is taken from the Hadoop path.
+      */
+    def commandFile(ref: NodeRef, task: AutoTaskInfo): Option[String] =
       taskDirs.get(ref).flatMap { dir =>
         List("sql", "sql.j2", "py")
-          .map(ext => File(new Path(dir, s"${task._filenamePrefix}.$ext").toUri.getPath))
-          .find(_.exists)
+          .map(ext => s"transform/${dir.getName}/${task._filenamePrefix}.$ext")
+          .find(relative => (workDir / "metadata" / relative).exists)
       }
+
     val loadByRef = loadNodes.map(n => n.ref -> n).toMap
     val allRefs = loadByRef.keySet ++ taskByRef.keySet
 
@@ -363,12 +372,12 @@ object ProjectSnapshot {
 
   /** The fields of an attribute that change the values of its column, nested attributes included:
     * the `dataFingerprint` of its [[AttributeView]], a column-level change. Nested attributes also
-    * carry their name and type, which [[AttributeView]] (top level only) does not see.
+    * carry their name and type, which [[AttributeView]] (top level only) does not see. `required`
+    * is not here: it rejects rows, see [[requiredAttributes]].
     */
   private def attributeData(a: TableAttribute): String = {
     val fields = List(
       "array"    -> a.array,
-      "required" -> a.required,
       "default"  -> a.default,
       "trim"     -> a.trim,
       "script"   -> a.script,
@@ -387,13 +396,24 @@ object ProjectSnapshot {
     (fields ++ nested).mkString(",")
   }
 
+  /** Final names (`parent.child` when nested, lower case) of the required attributes: a row with no
+    * value for one of them is rejected, so which rows land depends on this set.
+    */
+  private def requiredAttributes(attrs: List[TableAttribute], prefix: String = ""): List[String] =
+    attrs.flatMap { a =>
+      val name = prefix + finalNameOf(a)
+      (if (a.required.contains(true)) List(name) else Nil) ++
+      requiredAttributes(a.attributes, s"$name.")
+    }
+
   private def structural(table: SchemaInfo, domain: DomainInfo): String = {
     val metadata = table.mergedMetadata(domain.metadata)
     List(
       metadata.writeStrategy.map(_.toString).getOrElse(""),
       metadata.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
       table.filter.getOrElse(""),
-      parsing(metadata)
+      parsing(metadata),
+      requiredAttributes(table.attributes).sorted.mkString("required=[", ",", "]")
     ).mkString("|")
   }
 

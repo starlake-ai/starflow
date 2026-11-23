@@ -333,14 +333,19 @@ class ProjectSnapshotSpec extends TestHelper {
       try {
         val root = dir.pathAsString
         val sql =
-          s"SELECT s.id, '$root/a' AS inside, '${root}2/a' AS sibling, '$root' AS bare " +
-          "FROM stg.orders s\n"
+          s"SELECT s.id, '$root/a' AS inside, '${root}2/a' AS sibling, '$root' AS bare, " +
+          s"'${root}_x' AS underscore, '$root.bak' AS dotted, '$root-old' AS dashed, " +
+          s"concat('$root', 'x') AS separated FROM stg.orders s\n"
         ImpactFixtures.writeProject(dir, Map("metadata/transform/kpi/revenue.sql" -> sql))
         val shape =
           ProjectSnapshot.load(dir, "base", None).get.nodes(NodeRef("kpi", "revenue")).shape.get
         shape.column("inside").get.fingerprint should include("'__SL_ROOT__/a'")
         shape.column("sibling").get.fingerprint should include(s"'${root}2/a'")
         shape.column("bare").get.fingerprint should include("'__SL_ROOT__'")
+        shape.column("underscore").get.fingerprint should include(s"'${root}_x'")
+        shape.column("dotted").get.fingerprint should include(s"'$root.bak'")
+        shape.column("dashed").get.fingerprint should include(s"'$root-old'")
+        shape.column("separated").get.fingerprint should include("'__SL_ROOT__'")
       } finally dir.delete(swallowIOExceptions = true)
     }
   }
@@ -391,8 +396,9 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
-  private def statusWith(extra: String, format: String = "DSV") = Map(
+  private def statusWith(extra: String, format: String = "DSV", comment: String = "") = Map(
     "metadata/load/raw/orders.sl.yml" -> ordersWith(
+      (if (comment.isEmpty) "" else s"  comment: \"$comment\"\n") +
       s"""  attributes:
          |  - name: id
          |    type: long
@@ -412,13 +418,12 @@ class ProjectSnapshotSpec extends TestHelper {
         n.attributes.find(_.key == name).get
       val base = node("")
 
-      val added = node("  - name: added\n    type: string\n    required: true\n")
+      val added = node("  - name: added\n    type: string\n    default: \"x\"\n")
       added.structural shouldBe base.structural
-      attribute(added, "added").dataFingerprint should include("required=true")
+      attribute(added, "added").dataFingerprint should include("default=x")
 
       List(
         "    script: \"upper(status)\"\n",
-        "    required: true\n",
         "    default: \"x\"\n",
         "    privacy: HIDE\n"
       ).foreach { field =>
@@ -445,6 +450,52 @@ class ProjectSnapshotSpec extends TestHelper {
       attribute(node("    default: \"{{SL_ROOT}}/d\"\n"), "status") shouldBe
       attribute(rooted, "status")
     }
+  }
+
+  it should "treat required attributes as structural" in {
+    new WithSettings() {
+      val raw = NodeRef("raw", "orders")
+      def node(extra: String): NodeView = load(statusWith(extra)).nodes(raw)
+      val base = node("")
+      val flipped = node("    required: true\n")
+      flipped.structural should not be base.structural
+      flipped.structural should include("[status]")
+      flipped.attributes.find(_.key == "status").get.dataFingerprint shouldBe
+      base.attributes.find(_.key == "status").get.dataFingerprint
+      val added = node("  - name: added\n    type: string\n    required: true\n")
+      added.structural should not be base.structural
+      added.structural should include("[added]")
+      val nested = node(
+        "  - name: nested\n    type: struct\n    attributes:\n    - name: inner\n" +
+        "      type: string\n      required: true\n"
+      )
+      nested.structural should include("[nested.inner]")
+    }
+  }
+
+  it should "neutralize a root that ends a YAML value" in {
+    new WithSettings() {
+      def node(): NodeView =
+        load(
+          statusWith(
+            "    default: \"{{SL_ROOT}}\"\n    script: \"upper(status)\"\n",
+            comment = "{{SL_ROOT}}"
+          )
+        ).nodes(NodeRef("raw", "orders"))
+      val first = node()
+      first.metadata should include(s"Some(${ProjectSnapshot.RootToken})")
+      first.attributes.find(_.key == "status").get.dataFingerprint should include(
+        s"default=${ProjectSnapshot.RootToken},"
+      )
+      node() shouldBe first
+    }
+  }
+
+  it should "stop on a cycle of causes" in {
+    val a = new RuntimeException("first")
+    val b = new RuntimeException("second", a)
+    a.initCause(b)
+    ProjectSnapshot.messages(a) shouldBe "first: second"
   }
 
   it should "keep task attribute privacy at the column level" in {

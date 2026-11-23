@@ -84,7 +84,9 @@ object ChangeDetector {
           Breaking,
           AllColumns,
           Nil,
-          List("write strategy / partition / merge key changed")
+          List(
+            "write strategy / partition / merge key / pre-post SQL / parsing / required attributes changed"
+          )
         )
       )
     } else if (rowLevelChanged(o, n)) {
