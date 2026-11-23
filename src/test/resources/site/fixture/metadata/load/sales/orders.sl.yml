@@ -2,7 +2,7 @@ version: 1
 table:
   name: "orders"
   pattern: "orders.*.csv"
-  comment: 'Orders, see {{ doc("missing_block") }}'
+  comment: "Orders, see {{ doc('missing_block') }}"
   attributes:
     - name: "id"
       type: "long"

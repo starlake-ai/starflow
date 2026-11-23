@@ -45,4 +45,12 @@ class DocBlocksSpec extends AnyFlatSpec with Matchers {
     text shouldBe """{{ doc("loop_a") }}"""
     warnings shouldBe List("Cyclic doc block reference 'loop_a'")
   }
+
+  it should "replace the marker form and warn on unknown markers" in {
+    val (blocks, _) = DocBlocks.parse(Seq(md))
+    blocks.resolve("See <!--sl-doc:customers_desc-->.") shouldBe
+    ("See **Customers** master data..", Nil)
+    DocBlocks.Empty.resolve("x <!--sl-doc:x-->") shouldBe
+    ("x <!--sl-doc:x-->", List("Unknown doc block 'x'"))
+  }
 }

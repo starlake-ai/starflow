@@ -18,7 +18,7 @@ final case class DocBlocks(blocks: Map[String, String]) {
     val out = DocBlocks.RefRe.replaceAllIn(
       text,
       m => {
-        val name = m.group(1)
+        val name = DocBlocks.refName(m)
         val replacement =
           if (visiting.contains(name)) {
             warnings += s"Cyclic doc block reference '$name'"
@@ -48,7 +48,11 @@ final case class DocBlocks(blocks: Map[String, String]) {
 object DocBlocks {
   val Empty: DocBlocks = DocBlocks(Map.empty)
 
-  val RefRe: Regex = """\{\{\s*doc\(\s*["']([^"']+)["']\s*\)\s*\}\}""".r
+  /** Matches the load-time marker (group 1) or the {{ doc("name") }} form (group 2). */
+  val RefRe: Regex =
+    """<!--sl-doc:([^<>]+?)-->|\{\{\s*doc\(\s*["']([^"']+)["']\s*\)\s*\}\}""".r
+
+  def refName(m: Regex.Match): String = Option(m.group(1)).getOrElse(m.group(2))
   private val BlockRe: Regex =
     """(?s)\{%-?\s*docs\s+([A-Za-z0-9_]+)\s*-?%\}(.*?)\{%-?\s*enddocs\s*-?%\}""".r
 

@@ -4,11 +4,14 @@ import ai.starlake.TestHelper
 import ai.starlake.utils.Utils
 
 class DocFunctionSpec extends TestHelper {
-  "parseJinja" should "keep doc() references intact" in {
+  "parseJinja" should "emit a quote-free marker that keeps both YAML quoting styles valid" in {
     new WithSettings() {
-      val in = """comment: '{{ doc("customers_desc") }}' and {{ doc('other') }}"""
+      val in = "a: '{{ doc(\"customers_desc\") }}'\nb: \"see {{ doc('other') }}\""
       val out = Utils.parseJinja(in, Map.empty[String, Any])
-      out shouldBe """comment: '{{ doc("customers_desc") }}' and {{ doc("other") }}"""
+      out shouldBe "a: '<!--sl-doc:customers_desc-->'\nb: \"see <!--sl-doc:other-->\""
+      val tree = Utils.newYamlMapper().readTree(out)
+      tree.get("a").asText() shouldBe "<!--sl-doc:customers_desc-->"
+      tree.get("b").asText() shouldBe "see <!--sl-doc:other-->"
     }
   }
 }
