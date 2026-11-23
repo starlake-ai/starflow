@@ -176,13 +176,7 @@ object TaskShapeBuilder {
   }
 
   private def hasStar(select: Select): Boolean =
-    groups(select, main = true).exists(_.branches.exists { p =>
-      p.getSelectItems.asScala.exists(_.getExpression match {
-        case _: JAllColumns     => true
-        case _: AllTableColumns => true
-        case _                  => false
-      })
-    })
+    groups(select, main = true).exists(_.branches.exists(_.getSelectItems.asScala.exists(isStar)))
 
   private def hasInnerSetOperation(select: Select): Boolean =
     groups(select, main = true).exists(g => !g.main && g.branches.size > 1)
@@ -208,6 +202,55 @@ object TaskShapeBuilder {
     val self = Option(c.getExpression).map(_.toString).getOrElse(s"${c.tableName}.${c.columnName}")
     val children = c.getChildren.asScala.map(fingerprint)
     if (children.isEmpty) self else s"$self(${children.mkString(",")})"
+  }
+
+  private def isStar(item: SelectItem[?]): Boolean = item.getExpression match {
+    case _: JAllColumns     => true
+    case _: AllTableColumns => true
+    case _                  => false
+  }
+
+  /** The parsed select-item text defining each resolved output column, followed by the text of
+    * every inner item (CTE body, FROM / JOIN subquery) it references by output name, recursively.
+    * The resolver tree drops wrappers such as CAST, EXTRACT and `::`, the parsed text keeps them.
+    * References are matched by identifier, not by scope: a name collision only adds text, which
+    * over-reports.
+    */
+  private def definitions(select: Select, names: List[String]): List[String] = {
+    val all = groups(select, main = true)
+    val mainItems =
+      all.find(_.main).flatMap(_.branches.headOption).map(_.getSelectItems.asScala.toList)
+    val inner: List[(String, String)] = all.filterNot(_.main).flatMap { g =>
+      val branchItems =
+        g.branches.map(b => Option(b.getSelectItems).map(_.asScala.toList).getOrElse(Nil))
+      branchItems.headOption.getOrElse(Nil).map(outputName).zipWithIndex.collect {
+        case (Some(n), i) => n -> branchItems.flatMap(_.lift(i)).map(_.toString).mkString(" union ")
+      }
+    }
+    def expand(seed: String): String = {
+      val seen = mutable.Set.empty[Int]
+      val found = mutable.ListBuffer.empty[String]
+      var frontier = List(seed)
+      while (frontier.nonEmpty) {
+        val ids = frontier.flatMap(identifiers).toSet
+        val next = inner.zipWithIndex.collect {
+          case ((n, text), i) if ids.contains(n) && !seen.contains(i) =>
+            seen += i
+            text
+        }
+        found ++= next
+        frontier = next
+      }
+      (seed :: found.toList).mkString(" ; ")
+    }
+    val items = mainItems.getOrElse(Nil)
+    val positional = !items.exists(isStar) && items.size == names.size
+    names.zipWithIndex.map { case (name, i) =>
+      val seed =
+        if (positional) items(i).toString
+        else items.find(it => outputName(it).contains(name)).map(_.toString).getOrElse(name)
+      expand(seed)
+    }
   }
 
   private def nonEmpty(s: String): Option[String] = Option(s).map(_.trim).filter(_.nonEmpty)
@@ -319,9 +362,12 @@ object TaskShapeBuilder {
             }
 
             val resolvedCols = res.getColumns.asScala.toList
-            val columns = resolvedCols.zip(res.getLabels.asScala.toList).map { case (col, label) =>
-              val name = nonEmpty(label).getOrElse(col.columnName).toLowerCase
-              ColumnDef(name, normalize(fingerprint(col)), sources(col))
+            val names = resolvedCols.zip(res.getLabels.asScala.toList).map { case (col, label) =>
+              nonEmpty(label).getOrElse(col.columnName).toLowerCase
+            }
+            val defs = definitions(select, names)
+            val columns = resolvedCols.zip(names).zip(defs).map { case ((col, name), definition) =>
+              ColumnDef(name, normalize(s"${fingerprint(col)} := $definition"), sources(col))
             }
             val setOpInputs =
               if (hasInnerSetOperation(select))

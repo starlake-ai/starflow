@@ -78,6 +78,7 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
     val shape = build("SELECT * FROM starbake.orders")
     shape.starInputs shouldBe Set(orders)
     shape.columns.map(_.name) shouldBe List("order_id", "product_id", "quantity", "order_date")
+    shape.unresolvedInputs shouldBe empty
   }
 
   it should "record inputs with unknown columns as unresolved" in {
@@ -253,5 +254,55 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
     shape.unresolved.isDefined shouldBe true
     shape.columns shouldBe empty
     shape.inputs shouldBe Set(NodeRef("other", "mystery"))
+  }
+
+  private val castSql =
+    "SELECT CAST(o.order_date AS DATE) AS d, o.quantity AS q, o.order_id FROM starbake.orders o"
+
+  private def fp(sql: String, column: String): String = build(sql).column(column).get.fingerprint
+
+  it should "change the fingerprint when a CAST target changes" in {
+    val changed = castSql.replace("AS DATE", "AS TIMESTAMP")
+    fp(changed, "d") should not be fp(castSql, "d")
+    fp(changed, "q") shouldBe fp(castSql, "q")
+    fp(changed, "order_id") shouldBe fp(castSql, "order_id")
+  }
+
+  it should "change the fingerprint when a CAST is removed" in {
+    val changed = castSql.replace("CAST(o.order_date AS DATE)", "o.order_date")
+    fp(changed, "d") should not be fp(castSql, "d")
+    fp(changed, "q") shouldBe fp(castSql, "q")
+  }
+
+  it should "change the fingerprint when an EXTRACT field changes" in {
+    val sql = "SELECT EXTRACT(YEAR FROM o.order_date) AS y, o.quantity AS q FROM starbake.orders o"
+    val changed = sql.replace("YEAR", "MONTH")
+    fp(changed, "y") should not be fp(sql, "y")
+    fp(changed, "q") shouldBe fp(sql, "q")
+  }
+
+  it should "change the fingerprint when a :: cast target changes" in {
+    val sql = "SELECT p.price::INT AS pr, p.name FROM starbake.products p"
+    val changed = sql.replace("::INT", "::BIGINT")
+    fp(changed, "pr") should not be fp(sql, "pr")
+    fp(changed, "name") shouldBe fp(sql, "name")
+  }
+
+  it should "change the outer fingerprint when a CAST inside a CTE changes" in {
+    val sql =
+      "WITH c AS (SELECT CAST(o.order_date AS DATE) AS d, o.quantity AS q FROM starbake.orders o) " +
+      "SELECT d, q FROM c"
+    val changed = sql.replace("AS DATE", "AS TIMESTAMP")
+    fp(changed, "d") should not be fp(sql, "d")
+    fp(changed, "q") shouldBe fp(sql, "q")
+  }
+
+  it should "change the outer fingerprint when a CAST inside a FROM subquery changes" in {
+    val sql =
+      "SELECT s.d, s.q FROM (SELECT CAST(o.order_date AS DATE) AS d, o.quantity AS q " +
+      "FROM starbake.orders o) s"
+    val changed = sql.replace("AS DATE", "AS TIMESTAMP")
+    fp(changed, "d") should not be fp(sql, "d")
+    fp(changed, "q") shouldBe fp(sql, "q")
   }
 }
