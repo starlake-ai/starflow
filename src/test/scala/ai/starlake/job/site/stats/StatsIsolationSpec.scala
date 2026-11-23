@@ -120,6 +120,23 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     res.failures shouldBe List("p.secret: Access Denied: Dataset p:secret")
   }
 
+  it should "fail its group visibly, without the API fallback, on an unsafe dataset name" in {
+    val t = PhysicalTable(Some("p"), "bad`ds", "orders")
+    var apiCalls = 0
+    val res = StatsCollector.isolate(StatsCollector.bySchema(List(t), caseSensitive = true)) { g =>
+      BigQueryStatsCollector.collectDataset(
+        "p",
+        g,
+        _ => Nil,
+        _ => { apiCalls += 1; found }
+      )
+    }
+    apiCalls shouldBe 0
+    res.tables shouldBe Map.empty
+    res.failures.size shouldBe 1
+    res.failures.head should include("Unsafe or empty BigQuery dataset name")
+  }
+
   "ConnectionStatus.from" should "be ok with no error when nothing failed" in {
     ConnectionStatus.from("duckdb", CollectResult(Map(orders -> found), Nil), 12L) shouldBe
     ConnectionStats("duckdb", "ok", None, 12L)

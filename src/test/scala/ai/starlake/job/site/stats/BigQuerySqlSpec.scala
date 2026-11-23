@@ -81,4 +81,29 @@ class BigQuerySqlSpec extends AnyFlatSpec with Matchers {
     merged("v_orders").rowCount shouldBe None
     merged("v_orders").bytes shouldBe None
   }
+
+  it should "give EXTERNAL tables no row count and no bytes" in {
+    val rows = List(
+      Map[String, Any](
+        "table_id"           -> "ext",
+        "type"               -> "3",
+        "row_count"          -> "0",
+        "size_bytes"         -> "0",
+        "last_modified_time" -> "1795403400000"
+      ),
+      Map[String, Any](
+        "table_id"           -> "real",
+        "type"               -> "1",
+        "row_count"          -> "5",
+        "size_bytes"         -> "10",
+        "last_modified_time" -> "1795403400000"
+      )
+    )
+    val merged = merge(rows, Nil)
+    merged("ext").tableType shouldBe Some("EXTERNAL")
+    merged("ext").rowCount shouldBe None
+    merged("ext").bytes shouldBe None
+    merged("real").rowCount shouldBe Some(5L)
+    merged("real").bytes shouldBe Some(10L)
+  }
 }

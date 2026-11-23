@@ -46,7 +46,7 @@ object BigQuerySql {
     tableRows.flatMap { r =>
       str(r, "table_id").map { name =>
         val tpe = tableType(long(r, "type"))
-        val isTable = tpe != "VIEW"
+        val isTable = tpe == "TABLE"
         name.toLowerCase -> RawTableStats(
           exists = true,
           tableType = Some(tpe),
@@ -149,12 +149,10 @@ object BigQueryStatsCollector extends LazyLogging {
     api: String => RawTableStats
   ): GroupResult = {
     val dataset = group.schema
-    Try(
-      BigQuerySql.merge(
-        query(BigQuerySql.tablesSql(project, dataset)),
-        query(BigQuerySql.columnsSql(project, dataset))
-      )
-    ) match {
+    // built outside the Try: an unsafe name must fail the group with its message, not fall back
+    val tablesSql = BigQuerySql.tablesSql(project, dataset)
+    val columnsSql = BigQuerySql.columnsSql(project, dataset)
+    Try(BigQuerySql.merge(query(tablesSql), query(columnsSql))) match {
       case Success(merged) =>
         GroupResult(
           group.tables
