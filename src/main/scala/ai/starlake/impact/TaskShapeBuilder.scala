@@ -3,7 +3,7 @@ package ai.starlake.impact
 import ai.starlake.sql.SQLUtils
 import ai.starlake.transpiler.JSQLColumResolver
 import ai.starlake.transpiler.schema.{JdbcColumn, JdbcMetaData}
-import net.sf.jsqlparser.expression.LongValue
+import net.sf.jsqlparser.expression.{CastExpression, Expression, LongValue}
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.schema.{Column, Table}
 import net.sf.jsqlparser.statement.select.{
@@ -66,37 +66,42 @@ object TaskShapeBuilder {
     identifierRegex.findAllIn(Option(text).getOrElse("").toLowerCase).toSet
 
   /** PlainSelects sharing one output column list: a single SELECT, or every branch of a set
-    * operation. `main` is the outermost query, whose select list is the task output.
+    * operation. `main` is the outermost query, whose select list is the task output. `name` is the
+    * CTE name or the FROM / JOIN subquery alias an enclosing query refers to it by.
     */
-  private final case class SelectGroup(branches: List[PlainSelect], main: Boolean)
+  private final case class SelectGroup(
+    branches: List[PlainSelect],
+    main: Boolean,
+    name: Option[String]
+  )
 
-  private def withSelects(select: Select): List[Select] =
+  private def withSelects(select: Select): List[(Option[String], Select)] =
     Option(select.getWithItemsList)
       .map(_.asScala.toList)
       .getOrElse(Nil)
       .flatMap(w =>
         w.getStatement match {
-          case s: Select => List(s)
+          case s: Select => List(Option(w.getAlias).map(_.getName).map(unquote) -> s)
           case _         => Nil
         }
       )
 
-  private def fromSubqueries(p: PlainSelect): List[Select] =
+  private def fromSubqueries(p: PlainSelect): List[(Option[String], Select)] =
     (Option(p.getFromItem).toList ++
       Option(p.getJoins).map(_.asScala.toList.map(_.getFromItem)).getOrElse(Nil)).collect {
-      case ps: ParenthesedSelect => ps
+      case ps: ParenthesedSelect => Option(ps.getAlias).map(_.getName).map(unquote) -> ps
     }
 
   /** (branches defining the output of `select`, groups nested in CTEs and FROM / JOIN subqueries)
     */
   private def walk(select: Select): (List[PlainSelect], List[SelectGroup]) = {
-    val withs = withSelects(select).flatMap(groups(_, main = false))
+    val withs = withSelects(select).flatMap { case (n, s) => groups(s, main = false, n) }
     select match {
       case ps: ParenthesedSelect =>
         val (top, nested) = walk(ps.getSelect)
         (top, withs ++ nested)
       case p: PlainSelect =>
-        (List(p), withs ++ fromSubqueries(p).flatMap(groups(_, main = false)))
+        (List(p), withs ++ fromSubqueries(p).flatMap { case (n, s) => groups(s, main = false, n) })
       case s: SetOperationList =>
         val parts = s.getSelects.asScala.toList.map(walk)
         (parts.flatMap(_._1), withs ++ parts.flatMap(_._2))
@@ -108,9 +113,13 @@ object TaskShapeBuilder {
     * branches and subqueries in FROM / JOIN. Subqueries in WHERE are left alone on purpose: their
     * select list filters rows, so it belongs to the row-level part.
     */
-  private def groups(select: Select, main: Boolean): List[SelectGroup] = {
+  private def groups(
+    select: Select,
+    main: Boolean,
+    name: Option[String] = None
+  ): List[SelectGroup] = {
     val (top, nested) = walk(select)
-    if (top.isEmpty) nested else SelectGroup(top, main) :: nested
+    if (top.isEmpty) nested else SelectGroup(top, main, name) :: nested
   }
 
   private def parseSelect(sql: String): Try[Select] =
@@ -123,15 +132,54 @@ object TaskShapeBuilder {
   private def unquote(name: String): String =
     SQLUtils.unquoteAgressive(name).toLowerCase
 
-  /** Name a select item is referenced by from an enclosing query: alias, else column name. */
-  private def outputName(item: SelectItem[?]): Option[String] =
+  /** Name a select item is referenced by from an enclosing query: alias, else column name, looking
+    * through casts (`CAST(x AS T)`, `x::T`, `TRY_CAST`, ...) since they keep the column name.
+    */
+  private def outputName(item: SelectItem[?]): Option[String] = {
+    @tailrec
+    def columnName(e: Expression): Option[String] = e match {
+      case c: Column         => Option(c.getColumnName)
+      case c: CastExpression => columnName(c.getLeftExpression)
+      case _                 => None
+    }
     Option(item.getAlias)
       .map(_.getName)
-      .orElse(item.getExpression match {
-        case c: Column => Option(c.getColumnName)
-        case _         => None
-      })
-      .map(unquote)
+      .orElse(columnName(item.getExpression.asInstanceOf[Expression]))
+      .map(unquote(_))
+  }
+
+  private val tokenRegex = "'(?:[^']|'')*'|\"[^\"]*\"|`[^`]*`|[A-Za-z_][A-Za-z0-9_]*|\\S".r
+
+  /** Column references in an expression text as (qualifier, column), lowercased. String literals
+    * and function names (a word followed by `(`) are skipped. Keywords and type names (`as`,
+    * `date`, ...) are kept: they are also valid column names, and skipping one could lose a real
+    * link.
+    */
+  private def columnRefs(text: String): List[(Option[String], String)] = {
+    val tokens = tokenRegex.findAllIn(Option(text).getOrElse("")).toVector
+    def word(t: String): Option[String] =
+      if (t.length >= 2 && (t.head == '"' || t.head == '`')) Some(t.substring(1, t.length - 1))
+      else if (t.head.isLetter || t.head == '_') Some(t)
+      else None
+    val refs = mutable.ListBuffer.empty[(Option[String], String)]
+    var i = 0
+    while (i < tokens.length) {
+      word(tokens(i)) match {
+        case Some(w) =>
+          val parts = mutable.ListBuffer(w.toLowerCase)
+          var j = i + 1
+          while (j + 1 < tokens.length && tokens(j) == "." && word(tokens(j + 1)).isDefined) {
+            parts += word(tokens(j + 1)).get.toLowerCase
+            j += 2
+          }
+          if (!(j < tokens.length && tokens(j) == "("))
+            refs += ((if (parts.size >= 2) Some(parts(parts.size - 2)) else None, parts.last))
+          i = j
+        case None => i += 1
+      }
+    }
+    refs.toList
+  }
 
   /** The SQL with the main select list blanked. Inner select lists (CTE bodies, FROM / JOIN
     * subqueries) keep the items an enclosing query uses in a row-level clause, iterated to a
@@ -210,46 +258,79 @@ object TaskShapeBuilder {
     case _                  => false
   }
 
+  /** An inner select item an outer reference can resolve to. */
+  private final case class InnerDef(
+    relation: Option[String],
+    name: String,
+    text: String,
+    expr: String
+  )
+
   /** The parsed select-item text defining each resolved output column, followed by the text of
-    * every inner item (CTE body, FROM / JOIN subquery) it references by output name, recursively.
-    * The resolver tree drops wrappers such as CAST, EXTRACT and `::`, the parsed text keeps them.
-    * References are matched by identifier, not by scope: a name collision only adds text, which
-    * over-reports.
+    * every inner item (CTE body, FROM / JOIN subquery) it references, recursively. The resolver
+    * tree drops wrappers such as CAST, EXTRACT and `::`, the parsed text keeps them. A qualified
+    * reference (`a.col`) is looked up only in the CTE or subquery its qualifier names; an
+    * unqualified one, or one whose qualifier is unknown, in every inner item with that name, which
+    * can only over-report.
     */
   private def definitions(select: Select, names: List[String]): List[String] = {
     val all = groups(select, main = true)
     val mainItems =
       all.find(_.main).flatMap(_.branches.headOption).map(_.getSelectItems.asScala.toList)
-    val inner: List[(String, String)] = all.filterNot(_.main).flatMap { g =>
-      val branchItems =
-        g.branches.map(b => Option(b.getSelectItems).map(_.asScala.toList).getOrElse(Nil))
-      branchItems.headOption.getOrElse(Nil).map(outputName).zipWithIndex.collect {
-        case (Some(n), i) => n -> branchItems.flatMap(_.lift(i)).map(_.toString).mkString(" union ")
+    def exprText(item: SelectItem[?]): String =
+      Option(item.getExpression).map(_.toString).getOrElse("")
+    val inner: Vector[InnerDef] = all
+      .filterNot(_.main)
+      .flatMap { g =>
+        val branchItems =
+          g.branches.map(b => Option(b.getSelectItems).map(_.asScala.toList).getOrElse(Nil))
+        branchItems.headOption.getOrElse(Nil).map(outputName).zipWithIndex.collect {
+          case (Some(n), i) =>
+            val items = branchItems.flatMap(_.lift(i))
+            InnerDef(
+              g.name,
+              n,
+              items.map(_.toString).mkString(" union "),
+              items.map(exprText).mkString(" union ")
+            )
+        }
+      }
+      .toVector
+    val aliases = tableAliases(select)
+    def targets(ref: (Option[String], String)): Seq[Int] = {
+      val (qualifier, column) = ref
+      val byName = inner.indices.filter(i => inner(i).name == column)
+      qualifier match {
+        case None    => byName
+        case Some(q) =>
+          // the qualifier is a subquery alias or CTE name, or the alias of a table reference
+          val relations =
+            aliases.collect { case (a, parts) if a == q => parts.lastOption }.flatten.toSet + q
+          val knownQualifier =
+            inner.exists(_.relation.exists(relations.contains)) || aliases.exists(_._1 == q)
+          if (knownQualifier) byName.filter(i => inner(i).relation.exists(relations.contains))
+          else byName
       }
     }
-    def expand(seed: String): String = {
+    def expand(seedText: String, seedExpr: String): String = {
       val seen = mutable.Set.empty[Int]
       val found = mutable.ListBuffer.empty[String]
-      var frontier = List(seed)
+      var frontier = List(seedExpr)
       while (frontier.nonEmpty) {
-        val ids = frontier.flatMap(identifiers).toSet
-        val next = inner.zipWithIndex.collect {
-          case ((n, text), i) if ids.contains(n) && !seen.contains(i) =>
-            seen += i
-            text
-        }
-        found ++= next
-        frontier = next
+        val next = frontier.flatMap(columnRefs).flatMap(targets).distinct.filterNot(seen.contains)
+        seen ++= next
+        found ++= next.map(inner(_).text)
+        frontier = next.map(inner(_).expr)
       }
-      (seed :: found.toList).mkString(" ; ")
+      (seedText :: found.toList).mkString(" ; ")
     }
     val items = mainItems.getOrElse(Nil)
     val positional = !items.exists(isStar) && items.size == names.size
     names.zipWithIndex.map { case (name, i) =>
       val seed =
-        if (positional) items(i).toString
-        else items.find(it => outputName(it).contains(name)).map(_.toString).getOrElse(name)
-      expand(seed)
+        if (positional) Some(items(i))
+        else items.find(it => outputName(it).contains(name))
+      seed.map(it => expand(it.toString, exprText(it))).getOrElse(expand(name, name))
     }
   }
 

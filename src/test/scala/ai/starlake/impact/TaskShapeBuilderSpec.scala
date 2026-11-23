@@ -305,4 +305,43 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
     fp(changed, "d") should not be fp(sql, "d")
     fp(changed, "q") shouldBe fp(sql, "q")
   }
+
+  it should "keep an unaliased CAST in a CTE read through a star" in {
+    val sql =
+      "WITH c AS (SELECT CAST(o.order_date AS DATE), o.quantity FROM starbake.orders o) " +
+      "SELECT * FROM c"
+    val changed = sql.replace("AS DATE", "AS TIMESTAMP")
+    fp(changed, "order_date") should not be fp(sql, "order_date")
+    fp(changed, "quantity") shouldBe fp(sql, "quantity")
+  }
+
+  it should "keep an unaliased CAST in a FROM subquery read by name" in {
+    val sql =
+      "SELECT order_date, quantity FROM " +
+      "(SELECT CAST(o.order_date AS DATE), o.quantity FROM starbake.orders o) s"
+    val changed = sql.replace("AS DATE", "AS TIMESTAMP")
+    fp(changed, "order_date") should not be fp(sql, "order_date")
+    fp(changed, "quantity") shouldBe fp(sql, "quantity")
+  }
+
+  it should "count an unaliased CAST in a CTE used in an outer WHERE as row level" in {
+    val sql =
+      "WITH c AS (SELECT CAST(o.order_date AS DATE), o.order_id FROM starbake.orders o) " +
+      "SELECT order_id FROM c WHERE order_date > '2020-01-01'"
+    build(sql.replace("AS DATE", "AS TIMESTAMP")).rowFingerprint should not be
+    build(sql).rowFingerprint
+  }
+
+  it should "look up a qualified reference only in the CTE its qualifier names" in {
+    val sql =
+      "WITH a AS (SELECT o.order_id, o.product_id FROM starbake.orders o), " +
+      "b AS (SELECT p.product_id + 1 AS order_id, p.product_id FROM starbake.products p) " +
+      "SELECT a.order_id FROM a JOIN b ON a.product_id = b.product_id"
+    fp(sql.replace("+ 1", "+ 2"), "order_id") shouldBe fp(sql, "order_id")
+    fp(
+      sql.replace("SELECT o.order_id", "SELECT o.order_id + 0 AS order_id"),
+      "order_id"
+    ) should not be
+    fp(sql, "order_id")
+  }
 }
