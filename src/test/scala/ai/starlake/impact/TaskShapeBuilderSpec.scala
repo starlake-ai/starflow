@@ -344,4 +344,25 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
     ) should not be
     fp(sql, "order_id")
   }
+
+  it should "keep a column fingerprint independent of its own output alias" in {
+    val sql = "SELECT o.order_id, o.quantity * 2 AS total FROM starbake.orders o"
+    val renamed = sql.replace("AS total", "AS total_qty")
+    fp(renamed, "total_qty") shouldBe fp(sql, "total")
+    fp(sql.replace("* 2", "* 3"), "total") should not be fp(sql, "total")
+    val inCte =
+      "WITH d AS (SELECT o.quantity * 2 AS q FROM starbake.orders o) SELECT d.q AS total FROM d"
+    fp(inCte.replace("AS total", "AS total_qty"), "total_qty") shouldBe fp(inCte, "total")
+    fp(inCte.replace("* 2", "* 3"), "total") should not be fp(inCte, "total")
+  }
+
+  it should "fingerprint the whole SQL of an unresolved shape" in {
+    val union =
+      "SELECT order_id FROM starbake.orders WHERE quantity > 1 " +
+      "UNION ALL SELECT product_id FROM starbake.products"
+    val a = build(union)
+    a.unresolved.isDefined shouldBe true
+    build(union.replace("> 1", "> 2")).rowFingerprint should not be a.rowFingerprint
+    build(union.replace(" UNION", "\n  UNION")).rowFingerprint shouldBe a.rowFingerprint
+  }
 }

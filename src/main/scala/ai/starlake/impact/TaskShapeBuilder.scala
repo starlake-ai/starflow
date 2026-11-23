@@ -266,10 +266,10 @@ object TaskShapeBuilder {
     expr: String
   )
 
-  /** The parsed select-item text defining each resolved output column, followed by the text of
-    * every inner item (CTE body, FROM / JOIN subquery) it references, recursively. The resolver
-    * tree drops wrappers such as CAST, EXTRACT and `::`, the parsed text keeps them. A qualified
-    * reference (`a.col`) is looked up only in the CTE or subquery its qualifier names; an
+  /** The parsed expression defining each resolved output column (its alias excluded), followed by
+    * the text of every inner item (CTE body, FROM / JOIN subquery) it references, recursively. The
+    * resolver tree drops wrappers such as CAST, EXTRACT and `::`, the parsed text keeps them. A
+    * qualified reference (`a.col`) is looked up only in the CTE or subquery its qualifier names; an
     * unqualified one, or one whose qualifier is unknown, in every inner item with that name, which
     * can only over-report.
     */
@@ -330,7 +330,9 @@ object TaskShapeBuilder {
       val seed =
         if (positional) Some(items(i))
         else items.find(it => outputName(it).contains(name))
-      seed.map(it => expand(it.toString, exprText(it))).getOrElse(expand(name, name))
+      // the defining expression only: the item's own alias is the column name, kept out of the
+      // fingerprint so a rename can be told apart from a new column
+      seed.map(it => expand(exprText(it), exprText(it))).getOrElse(expand(name, name))
     }
   }
 
@@ -360,6 +362,10 @@ object TaskShapeBuilder {
         (keyOf(name.split('.').toList), resolveName(name))
       }
     val inputs = raw.map(_._2).toSet
+    // The whole normalized SQL stands in for the row fingerprint: with no column analysis, any
+    // edit (a literal, a number, an operator) must still show up as a change.
+    def unresolvedShape(reason: String): TaskShape =
+      TaskShape.unresolved(reason, inputs, allIds).copy(rowFingerprint = normalize(sql))
 
     val analyzed = for {
       select <- parseSelect(sql)
@@ -368,7 +374,7 @@ object TaskShapeBuilder {
 
     analyzed match {
       case Failure(e) =>
-        TaskShape.unresolved(s"SQL parse failed: ${e.getMessage}", inputs, allIds)
+        unresolvedShape(s"SQL parse failed: ${e.getMessage}")
       case Success((select, rowFp)) =>
         val unknownInputs = raw.collect {
           case (_, node) if knownColumns(node).isEmpty => node -> "columns unknown offline"
@@ -392,7 +398,7 @@ object TaskShapeBuilder {
         )
         resolved match {
           case Failure(e) =>
-            TaskShape.unresolved(s"column resolution failed: ${e.getMessage}", inputs, allIds)
+            unresolvedShape(s"column resolution failed: ${e.getMessage}")
           case Success(res) =>
             def sourceOf(catalog: String, schema: String, table: String): Option[NodeRef] = {
               val t = Option(table).getOrElse("").toLowerCase
