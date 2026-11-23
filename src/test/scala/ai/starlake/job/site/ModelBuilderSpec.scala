@@ -67,6 +67,13 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     model.edges should contain(SiteEdge("load:sales.orders", "load:sales.customers", "fk"))
   }
 
+  it should "locate task files in the job folder, python relative to metadata" in withFixture {
+    implicit settings =>
+      val report = build().nodes("transform:reporting.fx_report")
+      report.filePath shouldBe Some("transform/finance/fx_report.sl.yml")
+      report.python shouldBe Some("transform/finance/fx_report.py")
+  }
+
   it should "record a warning when SQL compilation fails" in withFixture { implicit settings =>
     val revenue = build(compile = false).nodes("transform:kpi.revenue")
     revenue.sql.flatMap(_.compiled) shouldBe None
@@ -82,8 +89,10 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
         List("load:sales.customers", "load:sales.orders")
       )
     )
-    model.groups.jobs.map(_.name) shouldBe List("kpi")
-    model.groups.jobs.head.nodes shouldBe List("transform:kpi.revenue")
+    model.groups.jobs.map(j => j.name -> j.nodes) shouldBe List(
+      "finance" -> List("transform:reporting.fx_report"),
+      "kpi"     -> List("transform:kpi.revenue")
+    )
     model.groups.dags.map(d => d.name -> d.comment) shouldBe List(
       "airflow_load"      -> "Scheduled **load** DAG.",
       "airflow_transform" -> "transform dag"
@@ -92,7 +101,7 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     List("Only **French** rows.")
     model.groups.dags.map(d => d.name -> d.nodes) shouldBe List(
       "airflow_load"      -> List("load:sales.customers", "load:sales.orders"),
-      "airflow_transform" -> List("transform:kpi.revenue")
+      "airflow_transform" -> List("transform:kpi.revenue", "transform:reporting.fx_report")
     )
     model.docs.keySet shouldBe Set(
       "customers_desc",

@@ -36,6 +36,16 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
     res.nodes("external:refdata.fx_rates").domain shouldBe "refdata"
   }
 
+  it should "ignore table lineage for a task that is not a node" in {
+    val res = LineageBuilder.build(
+      nodes,
+      Map("transform:kpi.unknown" -> List("sales.orders", "refdata.fx_rates")),
+      Map.empty
+    )
+    res.edges.filter(_.kind == "lineage") shouldBe Nil
+    res.nodes.keySet shouldBe nodes.keySet
+  }
+
   it should "resolve single-part references by table name" in {
     val res = LineageBuilder.build(nodes, Map(revenue.id -> List("ORDERS")), Map.empty)
     res.edges.filter(_.kind == "lineage") shouldBe

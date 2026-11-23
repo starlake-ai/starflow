@@ -35,7 +35,7 @@ class ModelBuilder(
 
     val loadNodes = domains.flatMap(d => d.tables.map(t => loadNode(d, t, docBlocks)))
     val tasks = jobs.flatMap(j => j.tasks.map(t => j -> t))
-    val transformNodes = tasks.map { case (_, t) => transformNode(t, docBlocks) }
+    val transformNodes = tasks.map { case (j, t) => transformNode(j, t, docBlocks) }
     val declared = TreeMap((loadNodes ++ transformNodes).map(n => n.id -> n): _*)
 
     val (deps, depWarnings) = ModelBuilder.extractTaskDeps(
@@ -144,6 +144,13 @@ class ModelBuilder(
       Try(storage.exists(new Path(DatasetArea.metadata, rel))).getOrElse(false)
     )
 
+  /** Path relative to the metadata folder, so no local absolute path reaches the site. */
+  private def relativeToMetadata(path: Path): String = {
+    val root = DatasetArea.metadata.toUri.getPath.stripSuffix("/") + "/"
+    val full = path.toUri.getPath
+    if (full.startsWith(root)) full.stripPrefix(root) else path.getName
+  }
+
   private def dagName(ref: String): String =
     ref.split('/').last.stripSuffix(".sl.yml").stripSuffix(".yml")
 
@@ -190,7 +197,7 @@ class ModelBuilder(
     )
   }
 
-  private def transformNode(task: AutoTaskInfo, docs: DocBlocks): SiteNode = {
+  private def transformNode(job: AutoJobInfo, task: AutoTaskInfo, docs: DocBlocks): SiteNode = {
     val connectionRef = Try(task.getRunConnectionRef()).toOption
     val engine = engineOf(connectionRef)
     val (desc, descWarnings) = describe(task.comment, docs)
@@ -216,11 +223,14 @@ class ModelBuilder(
       engine = engine,
       description = desc,
       tags = task.tags.toList.sorted,
-      filePath = existingPath(
-        s"transform/${task.domain}/${task.name}.sl.yml",
-        s"transform/${task.domain}/${task.name}.sql",
-        s"transform/${task.domain}/${task.name}.py"
-      ),
+      filePath = {
+        val prefix = if (task._filenamePrefix.isEmpty) task.name else task._filenamePrefix
+        existingPath(
+          s"transform/${job.name}/$prefix.sl.yml",
+          s"transform/${job.name}/$prefix.sql",
+          s"transform/${job.name}/$prefix.py"
+        )
+      },
       columns = cols.map(_._1),
       expectations = task.expectations.map(e => SiteExpectation(e.expect, e.failOnError)),
       acl = task.acl.map(a => SiteAcl(a.role, a.grants.toList.sorted)),
@@ -232,7 +242,7 @@ class ModelBuilder(
       postsql = task.postsql,
       writeStrategy = task.writeStrategy,
       sql = task.sql.map(raw => SiteSql(Some(raw), compiled)),
-      python = task.python.map(_.toString),
+      python = task.python.map(relativeToMetadata),
       freshness = task.freshness,
       schedule = task.schedule,
       warnings =

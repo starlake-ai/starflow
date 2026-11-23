@@ -80,18 +80,19 @@ object LineageBuilder {
     val edges = List.newBuilder[SiteEdge]
 
     // Table lineage
-    taskDeps.toList.sortBy(_._1).foreach { case (taskId, refs) =>
-      refs.distinct.foreach { ref =>
-        val found = producers(nodes.values, ref, None)
-        val fromIds =
-          if (found.nonEmpty) found.map(_.id)
-          else {
-            val ext = externalNode(ref)
-            if (!allNodes.contains(ext.id)) allNodes = allNodes + (ext.id -> ext)
-            List(ext.id)
-          }
-        fromIds.filter(_ != taskId).foreach(from => edges += SiteEdge(from, taskId, "lineage"))
-      }
+    taskDeps.toList.filter { case (taskId, _) => nodes.contains(taskId) }.sortBy(_._1).foreach {
+      case (taskId, refs) =>
+        refs.distinct.foreach { ref =>
+          val found = producers(nodes.values, ref, None)
+          val fromIds =
+            if (found.nonEmpty) found.map(_.id)
+            else {
+              val ext = externalNode(ref)
+              if (!allNodes.contains(ext.id)) allNodes = allNodes + (ext.id -> ext)
+              List(ext.id)
+            }
+          fromIds.filter(_ != taskId).foreach(from => edges += SiteEdge(from, taskId, "lineage"))
+        }
     }
 
     // Foreign keys: "table", "domain.table", "table.column" or "domain.table.column"

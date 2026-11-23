@@ -124,6 +124,19 @@
         "raw" : "SELECT c.id AS customer_id, SUM(o.amount * fx.rate) AS revenue\nFROM sales.orders o\nJOIN sales.customers c ON o.customer_id = c.id\nJOIN refdata.fx_rates fx ON fx.currency = 'EUR'\nGROUP BY c.id",
         "compiled" : "TRUNCATE TABLE kpi.revenue;\nINSERT INTO kpi.revenue(\"customer_id\",\"revenue\") SELECT c.id AS customer_id, SUM(o.amount * fx.rate) AS revenue\nFROM sales.orders o\nJOIN sales.customers c ON o.customer_id = c.id\nJOIN refdata.fx_rates fx ON fx.currency = 'EUR'\nGROUP BY c.id"
       }
+    },
+    "transform:reporting.fx_report" : {
+      "id" : "transform:reporting.fx_report",
+      "kind" : "transform",
+      "name" : "fx_report",
+      "domain" : "reporting",
+      "table" : "fx_report",
+      "connectionRef" : "duckdb",
+      "engine" : "duckdb",
+      "description" : "FX report built in Python",
+      "filePath" : "transform/finance/fx_report.sl.yml",
+      "dag" : "airflow_transform",
+      "python" : "transform/finance/fx_report.py"
     }
   },
   "edges" : [ {
@@ -159,6 +172,9 @@
       "nodes" : [ "load:sales.customers", "load:sales.orders" ]
     } ],
     "jobs" : [ {
+      "name" : "finance",
+      "nodes" : [ "transform:reporting.fx_report" ]
+    }, {
       "name" : "kpi",
       "nodes" : [ "transform:kpi.revenue" ]
     } ],
@@ -171,7 +187,7 @@
       "name" : "airflow_transform",
       "template" : "transform/airflow__scheduled_task__shell.py.j2",
       "comment" : "transform dag",
-      "nodes" : [ "transform:kpi.revenue" ]
+      "nodes" : [ "transform:kpi.revenue", "transform:reporting.fx_report" ]
     } ]
   },
   "docs" : {
