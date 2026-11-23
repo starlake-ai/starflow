@@ -108,7 +108,7 @@ object ImpactRenderer {
       else "no"}"
   }
 
-  private def cols(c: Columns): String = s"[${c.label}]"
+  private def cols(c: Columns): String = if (c.label.isEmpty) "" else s" [${c.label}]"
 
   private def directLines(d: DirectChange): List[String] =
     d.details.map(_.describe) ++ d.reasons ++ shownUnresolved(d).map(u => s"unresolved: $u")
@@ -149,14 +149,14 @@ object ImpactRenderer {
     }
     sb ++= s"Direct changes (${r.direct.size})\n"
     r.direct.foreach { d =>
-      sb ++= f"  ${d.changeClass.label}%-13s ${d.kind.label}%-5s ${d.node.name} ${cols(d.columns)}\n"
+      sb ++= f"  ${d.changeClass.label}%-13s ${d.kind.label}%-5s ${d.node.name}${cols(d.columns)}\n"
       directLines(d).foreach(line => sb ++= s"                $line\n")
     }
     sb ++= s"\nImpacted downstream (${r.impacted.size})\n"
     r.impacted.foreach { n =>
       val flag = if (n.likelyFailure) "  likely failure" else ""
       val via = if (n.viaUnresolvedEdge) "  (table level)" else ""
-      sb ++= f"  ${n.changeClass.label}%-13s ${n.kind.label}%-5s ${n.node.name} ${cols(n.columns)}$flag$via\n"
+      sb ++= f"  ${n.changeClass.label}%-13s ${n.kind.label}%-5s ${n.node.name}${cols(n.columns)}$flag$via\n"
       sb ++= s"                path: ${n.path.mkString(" -> ")}\n"
     }
     sb ++= textUnresolved(r)
