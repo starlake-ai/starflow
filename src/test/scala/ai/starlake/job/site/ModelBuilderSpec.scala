@@ -4,7 +4,7 @@ import ai.starlake.config.Settings
 import ai.starlake.integration.IntegrationTestBase
 import better.files.File
 
-import ai.starlake.schema.model.{AutoTaskInfo, TableAttribute}
+import ai.starlake.schema.model.{AutoTaskInfo, Freshness, TableAttribute}
 
 import scala.util.{Failure, Success, Try}
 
@@ -317,6 +317,56 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
           "crm"     -> Some("The **sales** domain."),
           "refdata" -> Some("Reference data maintained outside the pipeline.")
         )
+      }
+    } finally root.delete(swallowIOExceptions = true)
+  }
+
+  it should "expose the freshness of declared externals from table and domain metadata" in {
+    val root = File.newTemporaryDirectory("sl-site-ext-fresh-")
+    try {
+      File("src/test/resources/site/fixture").copyTo(root)(File.CopyOptions(overwrite = true))
+      val dir = (root / "metadata" / "external" / "fresh").createDirectories()
+      (dir / "_config.sl.yml").overwrite(
+        """version: 1
+          |load:
+          |  name: "fresh"
+          |  metadata:
+          |    freshness:
+          |      warn: "1 day"
+          |      error: "2 days"
+          |""".stripMargin
+      )
+      (dir / "inherits.sl.yml").overwrite(
+        """version: 1
+          |table:
+          |  name: "inherits"
+          |  pattern: "inherits.*"
+          |  attributes:
+          |    - name: "id"
+          |      type: "long"
+          |""".stripMargin
+      )
+      (dir / "own.sl.yml").overwrite(
+        """version: 1
+          |table:
+          |  name: "own"
+          |  pattern: "own.*"
+          |  metadata:
+          |    freshness:
+          |      warn: "3 hours"
+          |      error: "6 hours"
+          |  attributes:
+          |    - name: "id"
+          |      type: "long"
+          |""".stripMargin
+      )
+      withEnvs("SL_ROOT" -> root.pathAsString, "SL_ENV" -> "") {
+        val model = build()(settings)
+        model.nodes("external:fresh.inherits").freshness shouldBe
+        Some(Freshness(Some("1 day"), Some("2 days")))
+        model.nodes("external:fresh.own").freshness shouldBe
+        Some(Freshness(Some("3 hours"), Some("6 hours")))
+        model.nodes("external:refdata.fx_rates").freshness shouldBe None
       }
     } finally root.delete(swallowIOExceptions = true)
   }

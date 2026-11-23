@@ -236,7 +236,7 @@ class ModelBuilder(
       domain,
       table,
       docs
-    )
+    ).copy(freshness = table.mergedMetadata(domain.metadata).freshness)
 
   private def transformNode(job: AutoJobInfo, task: AutoTaskInfo, docs: DocBlocks): SiteNode = {
     val connectionRef = Try(task.getRunConnectionRef()).toOption
