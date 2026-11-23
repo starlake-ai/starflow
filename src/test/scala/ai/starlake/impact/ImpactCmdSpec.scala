@@ -713,6 +713,8 @@ class ImpactCmdSpec extends TestHelper {
         .foreach { s =>
           page should include(s)
         }
+      // checkConfig validations are parser entries without a name: they are not parameters
+      page should not include "\n-- `"
     }
   }
 
