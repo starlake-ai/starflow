@@ -41,6 +41,22 @@ object SiteCmd extends Cmd[SiteConfig] {
         .opt[Unit]("clean")
         .action((_, c) => c.copy(clean = Some(true)))
         .text("Delete the output directory before generating the site")
+        .optional(),
+      builder
+        .opt[Unit]("stats")
+        .action((_, c) => c.copy(stats = true))
+        .text(
+          "Query each connection's metadata (row count, size, last modified, actual column types) and write sl-stats.json. Never reads table data."
+        )
+        .optional(),
+      builder
+        .opt[Int]("statsTimeout")
+        .action((x, c) => c.copy(statsTimeoutSeconds = x))
+        .validate(x =>
+          if (x > 0) builder.success
+          else builder.failure("statsTimeout must be a positive number of seconds")
+        )
+        .text("Per-connection timeout in seconds for --stats (default: 120)")
         .optional()
     )
   }

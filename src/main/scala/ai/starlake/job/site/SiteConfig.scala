@@ -8,10 +8,16 @@ import better.files.File
   *   output directory
   * @param clean
   *   delete the output directory before generating
+  * @param stats
+  *   also query the warehouses and write sl-stats.json
+  * @param statsTimeoutSeconds
+  *   per-connection timeout for stats collection
   */
 case class SiteConfig(
   outputPath: File = File(".") / "site",
-  clean: Option[Boolean] = Some(false)
+  clean: Option[Boolean] = Some(false),
+  stats: Boolean = false,
+  statsTimeoutSeconds: Int = 120
 ) extends ReportFormatConfig {
   def reportFormat: Option[String] = None
 }
