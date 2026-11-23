@@ -16,4 +16,4 @@ loadData()
       </ErrorBoundary>,
     ),
   )
-  .catch((e: Error) => root.render(<div className="fatal">{e.message}</div>));
+  .catch((e: Error) => root.render(<div className="fatal" role="alert">{e.message}</div>));

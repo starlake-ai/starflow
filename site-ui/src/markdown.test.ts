@@ -62,6 +62,44 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('[x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)')).not.toMatch(/href="data:/);
   });
 
+  it('removes svg and math subtrees, including remote image references', () => {
+    const cases = [
+      '<svg><image href="https://e.com/a.png"/></svg>',
+      '<svg xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="https://e.com/a.png"/></svg>',
+      '<svg><filter><feImage href="https://e.com/a.png"/></filter></svg>',
+      '<svg><filter><feImage xlink:href="https://e.com/a.png"/></filter></svg>',
+      '<math><mi xlink:href="https://e.com/a">x</mi></math>',
+    ];
+    for (const c of cases) {
+      const html = renderMarkdown(c + 'after');
+      expect(html).not.toMatch(/<svg|<image|<feimage|<math|e\.com/i);
+      expect(html).toContain('after');
+    }
+  });
+
+  it('removes remote-loading attributes', () => {
+    expect(renderMarkdown('<table background="https://e.com/a.png"><tr><td>x</td></tr></table>')).not.toMatch(/background|e\.com/);
+    expect(renderMarkdown('<p poster="https://e.com/a.png">x</p>')).not.toMatch(/poster|e\.com/);
+    expect(renderMarkdown('<a href="#a" ping="https://e.com/p">x</a>')).not.toMatch(/ping|e\.com/);
+    expect(renderMarkdown('<p formaction="https://e.com/p">x</p>')).not.toMatch(/formaction|e\.com/);
+    expect(renderMarkdown('<a xlink:href="https://e.com/p">x</a>')).not.toMatch(/xlink|e\.com/);
+  });
+
+  it('still renders ordinary Markdown', () => {
+    const html = renderMarkdown(
+      '# Title\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n`code`\n\n```\nblock\n```\n\n[in](#/node/x) [out](https://starlake.ai)\n\n![d](data:image/png;base64,iVBORw0KGgo=) ![r](img/a.png)',
+    );
+    expect(html).toContain('<h1>Title</h1>');
+    expect(html).toContain('<li>one</li>');
+    expect(html).toContain('<table>');
+    expect(html).toContain('<code>code</code>');
+    expect(html).toContain('<pre>');
+    expect(html).toContain('href="#/node/x"');
+    expect(html).toContain('href="https://starlake.ai"');
+    expect(html).toContain('src="data:image/png;base64,iVBORw0KGgo="');
+    expect(html).toContain('src="img/a.png"');
+  });
+
   it('returns an empty string for missing input', () => {
     expect(renderMarkdown(null)).toBe('');
     expect(renderMarkdown(undefined)).toBe('');

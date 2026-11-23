@@ -21,9 +21,10 @@ purify.addHook('afterSanitizeAttributes', (node) => {
 
 const OPTIONS = {
   // Styles can hide or spoof content; form controls and media elements have no place in docs.
-  FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select', 'audio', 'video', 'source', 'track', 'picture'],
+  FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select', 'audio', 'video', 'source', 'track', 'picture', 'svg', 'math'],
+  // svg and math are never needed in descriptions and can reference remote resources.
   // srcset would let an img load a remote candidate behind a local src.
-  FORBID_ATTR: ['style', 'srcset'],
+  FORBID_ATTR: ['style', 'srcset', 'background', 'poster', 'ping', 'formaction', 'xlink:href'],
 };
 
 export function renderMarkdown(src: string | null | undefined): string {
