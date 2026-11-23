@@ -1,6 +1,9 @@
 package ai.starlake.utils
 
+import ai.starlake.config.ConnectionInfo
+import ai.starlake.jdbc.StarlakeConnection
 import com.typesafe.scalalogging.StrictLogging
+import org.duckdb.DuckDBConnection
 
 import java.sql.Connection
 import java.time.Instant
@@ -10,20 +13,45 @@ object StarlakeJdbcOps extends StrictLogging {
 
   case class BranchStatement(sql: String, ts: Instant)
 
-  def isBranchActive(connection: Connection, branchName: Option[String]): Boolean = {
-    val slConn = connection.asInstanceOf[ai.starlake.jdbc.StarlakeConnection]
-    branchName match {
-      case Some(b) =>
-        slConn.currentSession != null && slConn.currentSession.getSessionId == b
-      case None =>
-        slConn.currentSession != null
+  def isBranchActive(connection: Connection, branchName: Option[String]): Boolean =
+    connection match {
+      case slConn: StarlakeConnection if slConn.currentSession != null =>
+        branchName.forall(_ == slConn.currentSession.getSessionId)
+      case _ => false
     }
-  }
 
-  def currentBranch(connection: Connection): Option[String] = {
-    val slConn = connection.asInstanceOf[ai.starlake.jdbc.StarlakeConnection]
-    if (slConn.currentSession != null) Some(slConn.currentSession.getSessionId) else None
-  }
+  def currentBranch(connection: Connection): Option[String] =
+    connection match {
+      case slConn: StarlakeConnection if slConn.currentSession != null =>
+        Some(slConn.currentSession.getSessionId)
+      case _ => None
+    }
+
+  /** The connection to run a job's statements on when a data branch is active.
+    *
+    * Called once the connection preActions have run, so that the branch schema lands in the catalog
+    * they select (a DuckLake `ATTACH ... ; USE lake` for instance) and they are not themselves
+    * rewritten. A Snowflake, BigQuery or Flight SQL (QoD) connection is already a
+    * StarlakeConnection (see [[driverAndUrl]]). A DuckDB connection comes from the in-process pool
+    * rather than the DriverManager, so it is wrapped here. Other engines do not branch.
+    */
+  def enterBranch(dataBranch: Option[String], connection: Connection): Connection =
+    dataBranch.filter(_.nonEmpty) match {
+      case None => connection
+      case Some(branch) =>
+        val branchConnection = connection match {
+          case slConn: StarlakeConnection => Some(slConn)
+          case duckConn: DuckDBConnection => Some(new StarlakeConnection(duckConn))
+          case _                          => None
+        }
+        branchConnection match {
+          case Some(slConn) =>
+            branchStart(branch, slConn)
+            slConn
+          case None =>
+            connection
+        }
+    }
 
   /** Start a branch if not already started
     * @param dataBranch
@@ -89,7 +117,9 @@ object StarlakeJdbcOps extends StrictLogging {
       case Some(_) =>
         val engine = url.split(':')(1).toLowerCase()
         engine match {
-          case "snowflake" | "bigquery" =>
+          // arrow-flight-sql is QoD, which serves DuckDB and DuckLake. A DuckDB connection is
+          // wrapped by enterBranch: it does not go through the DriverManager
+          case "snowflake" | "bigquery" | ConnectionInfo.FlightSqlScheme =>
             val finalDriver = "ai.starlake.jdbc.StarlakeDriver"
             val finalUrl = "jdbc:starlake:" + url.substring("jdbc:".length)
             logger.info(s"Using StarlakeDriver for $engine: $finalUrl")
