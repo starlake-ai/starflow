@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { SiteData } from '../types';
 import { buildGraph } from '../graph/graph';
 import { buildSearchIndex } from '../search/index';
-import { useHashRoute } from '../hooks';
+import { memo, useHashRoute } from '../hooks';
 import { TopBar } from './TopBar';
 import { Sidebar } from './Sidebar';
 import { SearchDialog } from './SearchDialog';
@@ -14,7 +14,8 @@ import { ErrorBoundary } from './ErrorBoundary';
 export function App({ data }: { data: SiteData }) {
   const { model, stats } = data;
   const graph = useMemo(() => buildGraph(model), [model]);
-  const index = useMemo(() => buildSearchIndex(model), [model]);
+  // Built on the first search only: large projects should not pay for it at page load.
+  const searchIndex = useMemo(() => memo(() => buildSearchIndex(model)), [model]);
   const route = useHashRoute();
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -53,7 +54,7 @@ export function App({ data }: { data: SiteData }) {
           <ErrorBoundary resetKey={JSON.stringify(route)}>{page}</ErrorBoundary>
         </main>
       </div>
-      {searchOpen && <SearchDialog index={index} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && <SearchDialog index={searchIndex()} onClose={() => setSearchOpen(false)} />}
     </div>
   );
 }

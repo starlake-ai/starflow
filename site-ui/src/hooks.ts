@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { parseHash, type Route } from './router';
 
+/** Calls `f` on first use only and returns the same value afterwards. */
+export function memo<T>(f: () => T): () => T {
+  let done = false;
+  let value: T;
+  return () => {
+    if (!done) {
+      value = f();
+      done = true;
+    }
+    return value;
+  };
+}
+
 export function useHashRoute(): Route {
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   useEffect(() => {
@@ -11,7 +24,10 @@ export function useHashRoute(): Route {
   return route;
 }
 
-export function usePersistentSet(key: string, initial: string[]): [Set<string>, (k: string) => void] {
+export function usePersistentSet(
+  key: string,
+  initial: string[],
+): [Set<string>, (k: string) => void, (keys: string[]) => void] {
   const [set, setSet] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(key);
@@ -20,12 +36,12 @@ export function usePersistentSet(key: string, initial: string[]): [Set<string>, 
       return new Set(initial);
     }
   });
-  const toggle = useCallback(
-    (k: string) =>
+  const update = useCallback(
+    (change: (next: Set<string>) => void) =>
       setSet((prev) => {
         const next = new Set(prev);
-        if (next.has(k)) next.delete(k);
-        else next.add(k);
+        change(next);
+        if (next.size === prev.size && [...next].every((k) => prev.has(k))) return prev;
         try {
           localStorage.setItem(key, JSON.stringify([...next]));
         } catch {
@@ -35,5 +51,10 @@ export function usePersistentSet(key: string, initial: string[]): [Set<string>, 
       }),
     [key],
   );
-  return [set, toggle];
+  const toggle = useCallback(
+    (k: string) => update((next) => (next.has(k) ? next.delete(k) : next.add(k))),
+    [update],
+  );
+  const expand = useCallback((keys: string[]) => update((next) => keys.forEach((k) => next.add(k))), [update]);
+  return [set, toggle, expand];
 }

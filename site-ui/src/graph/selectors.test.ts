@@ -89,3 +89,12 @@ describe('selectWithExclude', () => {
     expect(selectWithExclude(model, g, 'revenue', ' ').ids.size).toBe(1);
   });
 });
+
+describe('nodes without a domain', () => {
+  it('never match a literal "undefined." qualifier', () => {
+    const m = { ...model, nodes: { 'external:x': { id: 'external:x', kind: 'external' as const, name: 'x', table: 'x' } } };
+    const gx = buildGraph(m);
+    expect([...select(m, gx, 'undefined.x').ids]).toEqual([]);
+    expect([...select(m, gx, 'x').ids]).toEqual(['external:x']);
+  });
+});

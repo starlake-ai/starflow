@@ -17,7 +17,7 @@ function matchName(model: SiteModel, value: string): string[] {
   const v = value.toLowerCase();
   if (KINDS.some((k) => v.startsWith(`${k}:`))) return model.nodes[v] ? [v] : [];
   const nodes = Object.values(model.nodes);
-  const qualified = nodes.filter((n) => `${n.domain}.${n.table}`.toLowerCase() === v);
+  const qualified = nodes.filter((n) => !!n.domain && `${n.domain}.${n.table}`.toLowerCase() === v);
   if (qualified.length > 0) return qualified.map((n) => n.id);
   return nodes.filter((n) => n.table.toLowerCase() === v || n.name.toLowerCase() === v).map((n) => n.id);
 }

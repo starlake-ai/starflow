@@ -31,7 +31,8 @@ export type SiteNode = {
   id: string;
   kind: NodeKind;
   name: string;
-  domain: string;
+  /** Absent for an external table referenced without a schema. */
+  domain?: string;
   table: string;
   database?: string | null;
   connectionRef?: string | null;

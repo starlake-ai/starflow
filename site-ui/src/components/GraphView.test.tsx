@@ -3,6 +3,7 @@ import { renderToString } from 'react-dom/server';
 import { GraphView } from './GraphView';
 import { buildGraph } from '../graph/graph';
 import type { SiteModel, SiteNode } from '../types';
+import { renderPage } from '../test/render';
 
 // A chain of n load nodes in one domain, linked by lineage edges.
 function big(n: number): SiteModel {
@@ -42,5 +43,14 @@ describe('GraphView size guard', () => {
 
   it('shows the layout state while ELK runs', () => {
     expect(render(big(3), '')).toContain('Laying out...');
+  });
+});
+
+describe('GraphView selector errors', () => {
+  it('lists repeated errors without a duplicate key error', () => {
+    const m = big(3);
+    const { container, errors } = renderPage(<GraphView model={m} graph={buildGraph(m)} select="nope nope" exclude="" />);
+    expect(container.querySelectorAll('ul.warnings li')).toHaveLength(2);
+    expect(errors().filter((e) => e.includes('same key'))).toEqual([]);
   });
 });

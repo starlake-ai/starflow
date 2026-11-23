@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { SiteModel, SiteStats } from '../types';
 import { currentTheme, toggleTheme } from '../theme';
 import { graphHref } from '../router';
+import { searchShortcut } from '../platform';
 
 export function TopBar({ model, stats, onSearch }: { model: SiteModel; stats: SiteStats | null; onSearch: () => void }) {
   const [theme, setTheme] = useState(currentTheme());
@@ -15,7 +16,7 @@ export function TopBar({ model, stats, onSearch }: { model: SiteModel; stats: Si
       <span className="project">{model.project.name}</span>
       {model.project.env && <span className="pill">env {model.project.env}</span>}
       <button className="search-btn" onClick={onSearch}>
-        Search <kbd>Ctrl K</kbd>
+        Search <kbd>{searchShortcut()}</kbd>
       </button>
       <a className="nav" href={graphHref()}>
         Graph

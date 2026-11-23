@@ -97,7 +97,7 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
     let cancelled = false;
     const ids = [...result.ids].sort();
     const colsByNode = columnsByNode(model, ids);
-    const group = (id: string) => model.nodes[id].domain || '(none)';
+    const group = (id: string) => model.nodes[id]?.domain || '(none)';
     const lineage = lineageEdges(model, result.ids);
     const sized = layoutInput(model, ids, colsByNode, cols);
     layout(sized, lineage, groupByDomain).then(({ positions, groups }) => {
@@ -206,8 +206,8 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
       {layoutError && <div className="warnings" role="alert">{layoutError}</div>}
       {result.errors.length > 0 && (
         <ul className="warnings">
-          {result.errors.map((e) => (
-            <li key={e}>{e}</li>
+          {result.errors.map((e, i) => (
+            <li key={`${i}-${e}`}>{e}</li>
           ))}
         </ul>
       )}

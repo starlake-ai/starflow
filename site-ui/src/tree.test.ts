@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { databaseTree, filterTree, projectTree, type TreeNode } from './tree';
+import { databaseTree, filterTree, pathTo, projectTree, type TreeNode } from './tree';
 import { model } from './test/fixture';
 
 const labels = (nodes: TreeNode[]) => nodes.map((n) => n.label);
@@ -46,5 +46,14 @@ describe('filterTree', () => {
   it('returns the tree unchanged for an empty query', () => {
     const tree = projectTree(model);
     expect(filterTree(tree, ' ')).toBe(tree);
+  });
+});
+
+describe('pathTo', () => {
+  it('returns the keys of every branch leading to a node', () => {
+    expect(pathTo(projectTree(model), 'transform:kpi.revenue').sort()).toEqual(
+      ['dags', 'dags/airflow_transform', 'transform', 'transform/kpi'].sort(),
+    );
+    expect(pathTo(projectTree(model), 'nope')).toEqual([]);
   });
 });

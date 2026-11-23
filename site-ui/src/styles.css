@@ -82,11 +82,15 @@ pre.hljs { background: var(--panel); border: 1px solid var(--border); border-rad
 .health h3 { font-size: 13px; margin: 12px 0 4px; }
 .empty, .fatal { padding: 32px; color: var(--muted); }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; justify-content: center; padding-top: 10vh; z-index: 10; }
-.modal { width: 640px; max-height: 70vh; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
+.modal { width: min(640px, 92vw); max-height: 70vh; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
 .modal input { border: none; border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; padding: 12px; font-size: 15px; }
 .hits { list-style: none; margin: 0; padding: 4px; overflow: auto; }
 .hits li { padding: 6px 8px; border-radius: 4px; cursor: pointer; }
 .hits li.active { background: var(--panel); }
+.modal .no-hits { margin: 0; padding: 6px 12px 10px; }
+.node-list.groups .markdown { color: var(--muted); }
+.node-list.groups .markdown > :first-child { margin-top: 2px; }
+.node-list.groups .markdown > :last-child { margin-bottom: 0; }
 .graph { height: calc(100vh - 60px); display: flex; flex-direction: column; }
 .graph.compact { height: 320px; border: 1px solid var(--border); border-radius: 4px; }
 .graph-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }

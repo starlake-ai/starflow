@@ -90,15 +90,45 @@ export function Overview({ model, stats }: { model: SiteModel; stats: SiteStats 
       </section>
       {engines.length > 0 && <p className="muted">Engines: {engines.map(([e, c]) => `${e} (${c})`).join(', ')}</p>}
       <Section title="Domains">
-        <ul className="node-list">
+        <ul className="node-list groups">
           {(model.groups.domains ?? []).map((d) => (
             <li key={d.name}>
               <a href={graphHref(`domain:${d.name}`)}>{d.name}</a> <span className="muted">{d.nodes.length} tables</span>
-              {d.description && <span className="muted">: {d.description}</span>}
+              {d.description && <Markdown source={d.description} />}
             </li>
           ))}
         </ul>
       </Section>
+      {(model.groups.jobs ?? []).length > 0 && (
+        <Section title="Jobs">
+          <ul className="node-list groups">
+            {(model.groups.jobs ?? []).map((j) => (
+              <li key={j.name}>
+                <a href={graphHref(`job:${j.name}`)}>{j.name}</a> <span className="muted">{j.nodes.length} tasks</span>
+                {j.description && <Markdown source={j.description} />}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {(model.groups.dags ?? []).length > 0 && (
+        <Section title="DAGs">
+          <ul className="node-list groups">
+            {(model.groups.dags ?? []).map((d) => (
+              <li key={d.name}>
+                <a href={graphHref(`dag:${d.name}`)}>{d.name}</a> <span className="muted">{d.nodes.length} nodes</span>
+                {d.template && (
+                  <>
+                    {' '}
+                    <code className="small">{d.template}</code>
+                  </>
+                )}
+                {d.comment && <Markdown source={d.comment} />}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
       <Section title="Health">
         <HealthPanel health={health} hasStats={stats != null} />
       </Section>

@@ -73,3 +73,17 @@ export function filterTree(nodes: TreeNode[], q: string): TreeNode[] {
   };
   return nodes.map(keep).filter((n): n is TreeNode => n !== null);
 }
+
+/** Keys of every branch on a path to the leaf of `nodeId` (a node can sit under several branches). */
+export function pathTo(nodes: TreeNode[], nodeId: string): string[] {
+  const keys: string[] = [];
+  const visit = (n: TreeNode): boolean => {
+    if (n.nodeId) return n.nodeId === nodeId;
+    let found = false;
+    for (const c of n.children) if (visit(c)) found = true;
+    if (found) keys.push(n.key);
+    return found;
+  };
+  nodes.forEach(visit);
+  return keys;
+}

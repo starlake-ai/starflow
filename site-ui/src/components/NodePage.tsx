@@ -112,8 +112,8 @@ export function NodePage({ model, stats, graph, node, column }: Props) {
         </div>
         {warnings.length > 0 && (
           <ul className="warnings">
-            {warnings.map((w) => (
-              <li key={w}>{w}</li>
+            {warnings.map((w, i) => (
+              <li key={`${i}-${w}`}>{w}</li>
             ))}
           </ul>
         )}
@@ -189,7 +189,9 @@ export function NodePage({ model, stats, graph, node, column }: Props) {
                       <code>{r.predicate}</code>
                     </td>
                     <td>{(r.grants ?? []).join(', ')}</td>
-                    <td>{r.description}</td>
+                    <td>
+                      <Markdown source={r.description} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -197,7 +199,7 @@ export function NodePage({ model, stats, graph, node, column }: Props) {
           )}
         </Section>
       )}
-      {(hasCode || node.filePath) && (
+      {hasCode && (
         <Section title="Code">
           <CodeTabs node={node} />
         </Section>

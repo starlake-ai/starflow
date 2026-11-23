@@ -35,11 +35,6 @@ export function CodeTabs({ node }: { node: SiteNode }) {
           Python script: <code>{node.python}</code>
         </p>
       )}
-      {node.filePath && (
-        <p className="muted small">
-          Defined in <code>metadata/{node.filePath}</code>
-        </p>
-      )}
     </div>
   );
 }

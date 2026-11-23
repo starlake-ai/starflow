@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { renderPage } from '../test/render';
 import { renderToString } from 'react-dom/server';
 import { NodePage } from './NodePage';
 import { buildGraph } from '../graph/graph';
@@ -29,5 +30,25 @@ describe('NodePage', () => {
     const s: SiteStats = structuredClone(stats);
     s.connections!.duckdb = { engine: 'duckdb', status: 'unsupported', durationMs: 1 };
     expect(render(s)).toContain('stats not supported for this engine');
+  });
+
+  it('shows the source file once', () => {
+    const html = render(null).replace(/<!-- -->/g, '');
+    expect(html.split('metadata/load/sales/customers.sl.yml').length - 1).toBe(1);
+  });
+
+  it('renders row level policy descriptions as Markdown', () => {
+    const m: SiteModel = structuredClone(renamed);
+    m.nodes[ID].rls = [{ name: 'eu', predicate: "region = 'EU'", description: 'Only **EU** rows' }];
+    const html = renderToString(<NodePage model={m} stats={null} graph={graph} node={m.nodes[ID]} />);
+    expect(html).toContain('<strong>EU</strong>');
+  });
+
+  it('renders duplicate warnings without a duplicate key error', () => {
+    const m: SiteModel = structuredClone(renamed);
+    m.nodes[ID].warnings = ['same', 'same'];
+    const { container, errors } = renderPage(<NodePage model={m} stats={null} graph={graph} node={m.nodes[ID]} />);
+    expect(container.querySelectorAll('.warnings li')).toHaveLength(2);
+    expect(errors().filter((e) => e.includes('same key'))).toEqual([]);
   });
 });
