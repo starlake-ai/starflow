@@ -1,0 +1,5 @@
+version: 1
+dag:
+  comment: "transform dag"
+  template: "transform/airflow__scheduled_task__shell.py.j2"
+  filename: "airflow_transform.py"

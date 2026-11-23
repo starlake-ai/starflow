@@ -861,6 +861,12 @@ jdk_major() {
 
 # The packages that Spark opens, for the JVMs started without spark-submit. JDK 24 removed
 # sun.security.action, and opening it there prints a warning on every command.
+# From JDK 24 on, Netty stops using sun.misc.Unsafe unless its memory access is allowed, and
+# Arrow's allocator then fails (NoClassDefFoundError on RootAllocator), so every Arrow Flight
+# SQL JDBC call fails. spark-submit passes --sun-misc-unsafe-memory-access=allow; a JDK older
+# than 23 refuses that flag, hence the guard. The Flight SQL JDBC driver bundles its own Netty,
+# which also reads its relocated noUnsafe property: false turns Unsafe on for that copy alone,
+# and every JDK takes it, so it also covers a JDK whose version the launcher cannot read.
 java_module_flags() {
   local major
   major="$(jdk_major)"
@@ -877,8 +883,10 @@ java_module_flags() {
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
     --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
     --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
-    --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
+    --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+    -Dorg.apache.arrow.driver.jdbc.shaded.io.netty.noUnsafe=false
   if [ -z "$major" ] || [ "$major" -lt 24 ]; then printf '%s ' --add-opens=java.base/sun.security.action=ALL-UNNAMED; fi
+  if [ -n "$major" ] && [ "$major" -ge 24 ]; then printf '%s ' --sun-misc-unsafe-memory-access=allow; fi
 }
 
 launch_main() {
@@ -950,11 +958,11 @@ launch_starlake() {
   then
     check_jdk_supported || exit 1
     if  [ -n "$SL_LOG_LEVEL" ] && [ "$SL_LOG_LEVEL" != "error" ]; then
-      echo "- JAVA_HOME=$JAVA_HOME"
-      echo "- SL_ROOT=$SL_ROOT"
+      echo "- JAVA_HOME=$JAVA_HOME" >&2
+      echo "- SL_ROOT=$SL_ROOT" >&2
     fi
     if [ "$SL_ENV" != "" ]; then
-      echo "- SL_ENV=$SL_ENV"
+      echo "- SL_ENV=$SL_ENV" >&2
     fi
 #    echo "- SL_MAIN=$SL_MAIN"
 #    echo "- SL_VALIDATE_ON_LOAD=$SL_VALIDATE_ON_LOAD"
@@ -1159,6 +1167,15 @@ case "$1" in
     build_appcds_archive
     ;;
   serve)
+    # The server takes no arguments: without this, --help started it.
+    case "$2" in
+      -h|--help|help)
+        echo "Usage: starlake.sh serve"
+        echo "Starts the Starflow API and web UI on port ${SL_API_HTTP_PORT:-9900} (SL_API_HTTP_PORT). Takes no arguments."
+        echo "SL_API_DEBUG=1 makes the JVM wait for a debugger on port 5005."
+        exit 0
+        ;;
+    esac
     chmod +x $SCRIPT_DIR/bin/api/git/*.sh
     chmod +x $SCRIPT_DIR/bin/api/bin/*
     JAVA_OPTS="$(java_module_flags)$JAVA_OPTS"

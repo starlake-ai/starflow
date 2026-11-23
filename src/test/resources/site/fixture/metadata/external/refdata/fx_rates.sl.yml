@@ -1,0 +1,15 @@
+version: 1
+table:
+  name: "fx_rates"
+  # required by the table schema, never used: Starlake does not load externals
+  pattern: "fx_rates.*"
+  comment: '{{ doc("fx_rates_desc") }}'
+  tags: ["reference"]
+  attributes:
+    - name: "currency"
+      type: "string"
+      required: true
+    - name: "rate"
+      type: "decimal"
+    - name: "rate_date"
+      type: "date"

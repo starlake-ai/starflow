@@ -3,12 +3,11 @@ package ai.starlake.schema
 import ai.starlake.config.Settings
 import ai.starlake.job.Cmd
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.utils.{JobResult, Utils}
+import ai.starlake.utils.{GitSnapshot, JobResult}
 import better.files.File
 import scopt.OParser
 
-import scala.sys.process.Process
-import scala.util.{Success, Try}
+import scala.util.{Failure, Success, Try}
 
 /** Command to compare two Starflow project versions.
   *
@@ -83,49 +82,16 @@ object ProjectCompareCmd extends Cmd[ProjectCompareConfig] {
     if (args.count(_.nonEmpty) != 1)
       throw new IllegalArgumentException(errorMessage)
 
-  private def getCommitFromTag(tag: String, gitWorkTree: String): String = {
-    val tagName =
-      if (tag == "latest") {
-        val latestTagCommand = Array(
-          "git",
-          "-C",
-          gitWorkTree,
-          "describe",
-          "--abbrev=0"
-        )
-        Utils.runCommand(latestTagCommand.toIndexedSeq) match {
-          case Success(cmdOutput) => cmdOutput.output.trim
-          case _                  => throw new IllegalArgumentException("latest tag not found!")
-        }
-      } else
-        tag
-    val commitOfTagCommand = Array(
-      "git",
-      "-C",
-      gitWorkTree,
-      "rev-list",
-      "-n",
-      "1",
-      s"tags/${tagName}"
-    )
-    Utils.runCommand(commitOfTagCommand.toIndexedSeq) match {
-      case Success(cmdOutput) => cmdOutput.output.trim
-      case _                  => throw new IllegalArgumentException("Invalid tag")
+  private def getCommitFromTag(tag: String, gitWorkTree: String): String =
+    GitSnapshot.commitOfTag(File(gitWorkTree), tag) match {
+      case Success(commit) => commit
+      case Failure(_) =>
+        if (tag == "latest") throw new IllegalArgumentException("latest tag not found!")
+        else throw new IllegalArgumentException("Invalid tag")
     }
-  }
 
-  private def getPathFromCommit(commit: String, gitWorkTree: String): String = {
-    val path = File.newTemporaryDirectory().pathAsString
-    val result =
-      (Process(Seq("git", "-C", gitWorkTree, "archive", commit)) #| Process(
-        Seq("tar", "-x", "-C", path)
-      )).!
-    if (result != 0) {
-      File(path).delete()
-      throw new IllegalArgumentException(s"Failed to extract commit $commit")
-    }
-    path
-  }
+  private def getPathFromCommit(commit: String, gitWorkTree: String): String =
+    GitSnapshot.archive(File(gitWorkTree), commit).get.pathAsString
 
   private def getPathFromCommitOrTag(
     gitWorkTree: String,
