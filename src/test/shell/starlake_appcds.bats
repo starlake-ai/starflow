@@ -1577,9 +1577,19 @@ with_sl_version() {
   done
 }
 
+@test "SL_RUN_MODE=main turns Unsafe on for the Flight SQL JDBC driver's Netty on every JDK" {
+  export SL_SKIP_JDK_CHECK=1
+  for version in 17.0.9 21.0.11 23.0.2 24.0.2 25.0.5 27-ea; do
+    set_java_version "$version"
+    main validate
+    [[ "$(last_java)" == *"-Dorg.apache.arrow.driver.jdbc.shaded.io.netty.noUnsafe=false"* ]]
+  done
+}
+
 @test "a JDK without a version gets no sun.misc.Unsafe flag, which a JDK before 23 refuses" {
   main validate
   [[ "$(last_java)" != *"--sun-misc-unsafe-memory-access"* ]]
+  [[ "$(last_java)" == *"-Dorg.apache.arrow.driver.jdbc.shaded.io.netty.noUnsafe=false"* ]]
 }
 
 @test "serve --help prints its usage and does not start the server" {

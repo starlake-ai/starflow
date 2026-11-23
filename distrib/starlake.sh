@@ -864,7 +864,9 @@ jdk_major() {
 # From JDK 24 on, Netty stops using sun.misc.Unsafe unless its memory access is allowed, and
 # Arrow's allocator then fails (NoClassDefFoundError on RootAllocator), so every Arrow Flight
 # SQL JDBC call fails. spark-submit passes --sun-misc-unsafe-memory-access=allow; a JDK older
-# than 23 refuses that flag, hence the guard.
+# than 23 refuses that flag, hence the guard. The Flight SQL JDBC driver bundles its own Netty,
+# which also reads its relocated noUnsafe property: false turns Unsafe on for that copy alone,
+# and every JDK takes it, so it also covers a JDK whose version the launcher cannot read.
 java_module_flags() {
   local major
   major="$(jdk_major)"
@@ -881,7 +883,8 @@ java_module_flags() {
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
     --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
     --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
-    --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
+    --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+    -Dorg.apache.arrow.driver.jdbc.shaded.io.netty.noUnsafe=false
   if [ -z "$major" ] || [ "$major" -lt 24 ]; then printf '%s ' --add-opens=java.base/sun.security.action=ALL-UNNAMED; fi
   if [ -n "$major" ] && [ "$major" -ge 24 ]; then printf '%s ' --sun-misc-unsafe-memory-access=allow; fi
 }

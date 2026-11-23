@@ -707,9 +707,11 @@ rem JDK 24 removed sun.security.action, and opening it there prints a warning on
 rem From JDK 24 on, Netty stops using sun.misc.Unsafe unless its memory access is allowed, and
 rem Arrow's allocator then fails (NoClassDefFoundError on RootAllocator), so every Arrow Flight
 rem SQL JDBC call fails. spark-submit passes --sun-misc-unsafe-memory-access=allow; a JDK older
-rem than 23 refuses that flag, hence the guard.
+rem than 23 refuses that flag, hence the guard. The Flight SQL JDBC driver bundles its own Netty,
+rem which also reads its relocated noUnsafe property: false turns Unsafe on for that copy alone,
+rem and every JDK takes it, so it also covers a JDK whose version the launcher cannot read.
 :java_module_flags
-    set "_module_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+    set "_module_flags=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Dorg.apache.arrow.driver.jdbc.shaded.io.netty.noUnsafe=false"
     call :jdk_major
     set "_open_security_action=1"
     if defined _jdk_major_number if !_jdk_major_number! GEQ 24 set "_open_security_action="
