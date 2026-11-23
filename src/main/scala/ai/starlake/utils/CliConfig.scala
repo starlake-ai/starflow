@@ -29,7 +29,9 @@ trait CliConfig[T] extends CommandConfig {
     val programNameOptionDef = optionDefs.headOption
     val synopsisOptionDef = programNameOptionDef.flatMap(_ => optionDefs.drop(1).headOption)
     val descriptionOptionDef = synopsisOptionDef.flatMap(_ => optionDefs.drop(2).headOption)
-    val options = descriptionOptionDef.map(_ => optionDefs.drop(3)).getOrElse(Nil)
+    // checkConfig validations are parser entries without a name: they are not parameters
+    val options =
+      descriptionOptionDef.map(_ => optionDefs.drop(3)).getOrElse(Nil).filter(_.name.nonEmpty)
 
     val programName = programNameOptionDef.map(_.desc.substring("starlake ".length)).getOrElse("")
     val synopsis = synopsisOptionDef.map(_.desc).getOrElse("")

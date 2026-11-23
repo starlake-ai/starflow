@@ -1,0 +1,46 @@
+{
+  "oldSide" : "origin/master (abc1234)",
+  "newSide" : "working tree",
+  "summary" : {
+    "direct" : {
+      "METADATA" : 0,
+      "ADDED" : 0,
+      "NON_BREAKING" : 0,
+      "BREAKING" : 1
+    },
+    "impacted" : {
+      "METADATA" : 0,
+      "ADDED" : 0,
+      "NON_BREAKING" : 0,
+      "BREAKING" : 1
+    },
+    "likelyFailures" : 1,
+    "hasBreaking" : true,
+    "hasNonMetadata" : true
+  },
+  "direct" : [ {
+    "node" : "raw.orders",
+    "kind" : "load",
+    "class" : "BREAKING",
+    "columns" : "amount",
+    "details" : [ "column amount removed" ],
+    "reasons" : [ ],
+    "unresolved" : null,
+    "deleted" : false
+  } ],
+  "impacted" : [ {
+    "node" : "stg.orders",
+    "kind" : "task",
+    "class" : "BREAKING",
+    "columns" : "*",
+    "path" : [ "raw.orders[amount]", "stg.orders" ],
+    "likelyFailure" : true,
+    "viaUnresolvedEdge" : false
+  } ],
+  "unresolved" : [ {
+    "from" : "stg.orders",
+    "to" : "kpi.py",
+    "reason" : "python task"
+  } ],
+  "otherChanges" : [ "dags/default.sl.yml (changed)" ]
+}
