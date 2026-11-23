@@ -176,6 +176,7 @@
       "nodes" : [ "transform:reporting.fx_report" ]
     }, {
       "name" : "kpi",
+      "description" : "KPIs built from the sales domain",
       "nodes" : [ "transform:kpi.revenue" ]
     } ],
     "dags" : [ {

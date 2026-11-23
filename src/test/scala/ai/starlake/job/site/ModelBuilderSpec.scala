@@ -94,6 +94,12 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
       "finance" -> List("transform:reporting.fx_report"),
       "kpi"     -> List("transform:kpi.revenue")
     )
+    model.groups.jobs.map(j => j.name -> j.description) shouldBe List(
+      "finance" -> None,
+      "kpi"     -> Some("KPIs built from the sales domain")
+    )
+    settings.schemaHandler().jobs().find(_.name == "kpi").flatMap(_.comment) shouldBe
+    Some("KPIs built from the sales domain")
     model.groups.dags.map(d => d.name -> d.comment) shouldBe List(
       "airflow_load"      -> "Scheduled **load** DAG.",
       "airflow_transform" -> "transform dag"

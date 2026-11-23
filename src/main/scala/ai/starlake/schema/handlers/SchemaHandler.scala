@@ -1352,11 +1352,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           postsql = task.postsql.map(sql => SQLUtils.stripComments(sql))
         )
       }
-      AutoJobInfo(
-        name = jobName,
-        tasks = mergedTasksWithStrippedComments,
-        default = jobDesc.default
-      )
+      // copy so that comment and any other field read from _config.sl.yml survive
+      jobDesc.copy(name = jobName, tasks = mergedTasksWithStrippedComments)
     } match {
       case Success(value) => Success(value)
       case Failure(exception) =>

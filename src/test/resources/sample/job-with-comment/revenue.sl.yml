@@ -1,0 +1,5 @@
+version: 1
+task:
+  sql: "select 1 as id"
+  domain: "finance"
+  table: "revenue"
