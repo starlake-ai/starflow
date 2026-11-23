@@ -2,10 +2,24 @@
 # Release notes
 
 # 1.7.11:
+__Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
+- **`starlake site`** generates a new documentation site (#2004): `--template`, `--format` and `--json` are removed, and so are the per-table HTML pages. These options now fail as unknown options: remove them from scripts. The output folder holds `index.html` and its `assets` folder, `sl-model.json` and, with `--stats`, `sl-stats.json`; the pages of the former site stay in it unless `--clean` is passed. `sl-model.json` is a new single-file format: tools that read the former JSON output must be adapted. The separate `starlake-site-builder` portal, which read it, is archived: the new site replaces it.
+
+__Improvement__:
+- **`starlake site` builds a full documentation site** (#2004), as a single page that opens from the file system with no network access:
+  - search over tables, tasks, columns, tags and SQL, a project tree and a database tree;
+  - a lineage graph of the whole project, down to the column, with selectors (`+orders`, `orders+`, `2+orders+1`, `@orders`, `tag:`, `domain:`, `job:`, `dag:`, `kind:`, `engine:`), export to SVG or PNG;
+  - Markdown descriptions and reusable doc blocks (`{% docs name %}` in the `.md` files under `metadata/docs`, subfolders included, referenced with `{{ doc("name") }}` from any `comment`), with `__overview__` as the home page. A YAML file loaded with such a reference no longer fails on an unknown `doc` function: the descriptions that a load or a transform writes to the warehouse get the marker `<!--sl-doc:name-->` instead;
+  - node pages with columns, keys, expectations, ACL and row level security, raw and compiled SQL, upstream and downstream nodes, for the tasks, the tables of `metadata/load` and those declared in `metadata/external`.
+  - Without `--stats`, the site never connects to a warehouse: column lineage uses the declared tables only.
+  - `--stats` adds `sl-stats.json`: row counts, sizes, last modification times and actual column types, compared with the declared ones, read from the metadata of BigQuery, Spark connections (Delta Lake, Iceberg) and JDBC connections with a `url` option (Snowflake needs the `url` form; PostgreSQL, Redshift, DuckDB and Snowflake have their own queries, other JDBC databases report column types only). Other connections show "stats not supported for this engine". No query counts rows: PostgreSQL, Redshift and DuckDB counts are estimates, and Delta Lake has no row count. A connection or a schema that fails does not stop the generation: the site shows its error, without credentials or local paths. `--statsTimeout` sets the time each connection gets (120 seconds by default).
+  - `--serve` serves the site on `http://127.0.0.1:8080/`, `--port` changes the port.
+
 __Bug fix__:
 - **The tables that a task reads are taken from its parsed SQL**: they were found by a regular expression, which also took for tables the names of the common table expressions of the task (`WITH recent AS (...) SELECT ... FROM recent`), the column of an `EXTRACT(YEAR FROM order_date)`, names in comments and string literals, and the target of an `INSERT INTO t SELECT ... FROM t`. A common table expression or a comment that named a table made `dag-generate` and the lineage add a dependency on that table, and a BigQuery transform looked for the descriptions of its columns in these names. The SQL of the task is now parsed, the tables of its common table expressions and subqueries included and its target excluded; a SQL that does not parse, because of unresolved Jinja or a syntax that the parser does not know, still goes through the regular expression, without the names of its common table expressions.
   - A cycle of three tasks or more (`a` reads `b`, `b` reads `c`, `c` reads `a`) made the lineage of the tasks recurse until the stack overflowed: the walk now stops on a task that it has already visited.
   - The table references that a transform resolves in its SQL are replaced as whole names: a `sales.orders` reference also rewrote `salesXorders`, and a resolved name holding a `$`, such as a BigQuery partition decorator (`orders$20260101`), failed the task.
+- **The `comment` of a job `_config.sl.yml` is kept** (#2004): a job read from its folder lost the `comment` of its `_config.sl.yml`.
 
 # 1.7.10:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.

@@ -184,3 +184,7 @@ samples/starbake/datasets
 .claude/
 .vscode/
 .env
+
+site-ui/node_modules/
+site-ui/dist/
+site-ui/public/sl-*.json
