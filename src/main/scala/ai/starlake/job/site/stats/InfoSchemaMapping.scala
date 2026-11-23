@@ -5,7 +5,17 @@ import Rows._
 object InfoSchemaMapping {
   private val decimalTypes = Set("numeric", "decimal", "number")
   private val charTypes =
-    Set("character varying", "varchar", "character", "char", "nvarchar", "nchar", "text", "string", "bpchar")
+    Set(
+      "character varying",
+      "varchar",
+      "character",
+      "char",
+      "nvarchar",
+      "nchar",
+      "text",
+      "string",
+      "bpchar"
+    )
 
   def formatType(
     dataType: String,

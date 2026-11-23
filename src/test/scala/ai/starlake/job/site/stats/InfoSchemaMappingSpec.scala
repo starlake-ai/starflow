@@ -30,16 +30,33 @@ class InfoSchemaMappingSpec extends AnyFlatSpec with Matchers {
   "merge" should "combine table, stats and column rows" in {
     val ts = Timestamp.from(Instant.parse("2026-11-22T03:10:00Z"))
     val tableRows = List(
-      Map[String, Any]("table_name" -> "Orders", "table_type" -> "BASE TABLE"),
+      Map[String, Any]("table_name" -> "Orders", "table_type"   -> "BASE TABLE"),
       Map[String, Any]("table_name" -> "v_orders", "table_type" -> "VIEW")
     )
     val statsRows = List(
-      Map[String, Any]("table_name" -> "orders", "row_count" -> java.lang.Long.valueOf(120345L), "bytes" -> "9123456", "last_modified" -> ts),
+      Map[String, Any](
+        "table_name"    -> "orders",
+        "row_count"     -> java.lang.Long.valueOf(120345L),
+        "bytes"         -> "9123456",
+        "last_modified" -> ts
+      ),
       Map[String, Any]("table_name" -> "ghost", "row_count" -> 1L)
     )
     val columnRows = List(
-      Map[String, Any]("table_name" -> "orders", "column_name" -> "id", "data_type" -> "bigint", "is_nullable" -> "NO"),
-      Map[String, Any]("table_name" -> "orders", "column_name" -> "amount", "data_type" -> "numeric", "is_nullable" -> "YES", "numeric_precision" -> 18, "numeric_scale" -> 2)
+      Map[String, Any](
+        "table_name"  -> "orders",
+        "column_name" -> "id",
+        "data_type"   -> "bigint",
+        "is_nullable" -> "NO"
+      ),
+      Map[String, Any](
+        "table_name"        -> "orders",
+        "column_name"       -> "amount",
+        "data_type"         -> "numeric",
+        "is_nullable"       -> "YES",
+        "numeric_precision" -> 18,
+        "numeric_scale"     -> 2
+      )
     )
     val merged = merge(tableRows, statsRows, columnRows, estimated = true)
     merged.keySet shouldBe Set("orders", "v_orders")
@@ -51,7 +68,10 @@ class InfoSchemaMappingSpec extends AnyFlatSpec with Matchers {
       rowCountEstimated = true,
       bytes = Some(9123456L),
       lastModified = Some("2026-11-22T03:10:00Z"),
-      columns = List(ColumnStat("id", "bigint", nullable = false), ColumnStat("amount", "numeric(18,2)", nullable = true))
+      columns = List(
+        ColumnStat("id", "bigint", nullable = false),
+        ColumnStat("amount", "numeric(18,2)", nullable = true)
+      )
     )
     merged("v_orders").rowCount shouldBe None
     merged("v_orders").rowCountEstimated shouldBe false
@@ -69,10 +89,34 @@ class InfoSchemaMappingSpec extends AnyFlatSpec with Matchers {
     merged("t").bytes shouldBe Some(8192L)
   }
 
+  it should "report null bytes (partitioned parents, foreign tables) as None" in {
+    val merged = merge(
+      List(Map[String, Any]("table_name" -> "p", "table_type" -> "BASE TABLE")),
+      List(Map[String, Any]("table_name" -> "p", "row_count" -> 10L, "bytes" -> null)),
+      Nil,
+      estimated = true
+    )
+    merged("p").bytes shouldBe None
+    merged("p").rowCount shouldBe Some(10L)
+  }
+
   "columns" should "build the full spelling from length, precision and scale rows" in {
     val rows = List(
-      Map[String, Any]("table_name" -> "T", "column_name" -> "name", "data_type" -> "character varying", "is_nullable" -> "YES", "character_maximum_length" -> 256),
-      Map[String, Any]("table_name" -> "T", "column_name" -> "amt", "data_type" -> "NUMBER", "is_nullable" -> "NO", "numeric_precision" -> java.math.BigDecimal.valueOf(38), "numeric_scale" -> java.math.BigDecimal.valueOf(0))
+      Map[String, Any](
+        "table_name"               -> "T",
+        "column_name"              -> "name",
+        "data_type"                -> "character varying",
+        "is_nullable"              -> "YES",
+        "character_maximum_length" -> 256
+      ),
+      Map[String, Any](
+        "table_name"        -> "T",
+        "column_name"       -> "amt",
+        "data_type"         -> "NUMBER",
+        "is_nullable"       -> "NO",
+        "numeric_precision" -> java.math.BigDecimal.valueOf(38),
+        "numeric_scale"     -> java.math.BigDecimal.valueOf(0)
+      )
     )
     columns(rows)("t") shouldBe List(
       ColumnStat("name", "character varying(256)", nullable = true),

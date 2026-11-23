@@ -41,7 +41,9 @@ class JdbcDialectStatsSpec extends AnyFlatSpec with Matchers {
     stats should include("duckdb_tables()")
     stats should include("estimated_size")
     stats should include("database_name = current_database()")
-    DuckDb.statsSql(Some("other"), "sales").get should include("lower(database_name) = lower('other')")
+    DuckDb.statsSql(Some("other"), "sales").get should include(
+      "lower(database_name) = lower('other')"
+    )
     DuckDb.tablesSql(None, "sales") should include("table_catalog = current_database()")
   }
 
@@ -64,5 +66,31 @@ class JdbcDialectStatsSpec extends AnyFlatSpec with Matchers {
     }
     DuckDb.statsSql(Some("d'b"), "s").get should include("lower('d''b')")
     Snowflake.tablesSql(Some("a\"b"), "s") should include("\"a\"\"b\".information_schema")
+  }
+
+  "Literal quoting" should "escape backslashes on Snowflake and Redshift only" in {
+    val name = "x\\' OR 1=1 --"
+    Snowflake.tablesSql(None, name) should include("lower('x\\\\'' OR 1=1 --')")
+    Snowflake.columnsSql(None, name) should include("lower('x\\\\'' OR 1=1 --')")
+    Redshift.tablesSql(None, name) should include("lower('x\\\\'' OR 1=1 --')")
+    Redshift.statsSql(None, name).get should include("lower('x\\\\'' OR 1=1 --')")
+    Postgres.tablesSql(None, name) should include("lower('x\\'' OR 1=1 --')")
+    Postgres.statsSql(None, name).get should include("lower('x\\'' OR 1=1 --')")
+    DuckDb.tablesSql(None, name) should include("lower('x\\'' OR 1=1 --')")
+    DuckDb.statsSql(Some(name), "s").get should include("lower('x\\'' OR 1=1 --')")
+    Snowflake.lit("a\\b") shouldBe "'a\\\\b'"
+    Postgres.lit("a\\b") shouldBe "'a\\b'"
+  }
+
+  "Postgres matviews and sizes" should "list materialized views and null the size of partitioned parents and foreign tables" in {
+    val tables = Postgres.tablesSql(None, "sales")
+    tables should include("pg_matviews")
+    tables should include("'MATERIALIZED VIEW'")
+    tables should include("UNION ALL")
+    tables should include("lower(schemaname) = lower('sales')")
+    val stats = Postgres.statsSql(None, "sales").get
+    stats should include(
+      "CASE WHEN c.relkind IN ('p', 'f') THEN NULL ELSE pg_total_relation_size(c.oid) END AS bytes"
+    )
   }
 }
