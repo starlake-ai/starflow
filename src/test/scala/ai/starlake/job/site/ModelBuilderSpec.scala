@@ -200,4 +200,26 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
       sqlType("long", "bigquery") shouldBe Some("INT64")
       sqlType("string", "snowflake") shouldBe Some("STRING")
   }
+
+  "column" should "flag ignored attributes only" in withFixture { implicit settings =>
+    val builder = ModelBuilder(settings.schemaHandler())
+    def col(attr: TableAttribute) =
+      builder.column(attr, Nil, Some("duckdb"), DocBlocks(Map.empty))._1
+    col(TableAttribute("raw", "string", ignore = Some(true))).ignore shouldBe Some(true)
+    col(TableAttribute("kept", "string", ignore = Some(false))).ignore shouldBe None
+    col(TableAttribute("plain", "string")).ignore shouldBe None
+  }
+
+  it should "leave the SQL type of an array leaf unknown except on Spark" in withFixture {
+    implicit settings =>
+      val builder = ModelBuilder(settings.schemaHandler())
+      def sqlType(attr: TableAttribute, engine: String) =
+        builder.column(attr, Nil, Some(engine), DocBlocks(Map.empty))._1.sqlType
+      val tags = TableAttribute("tags", "string", array = Some(true))
+      List("duckdb", "bigquery", "snowflake", "postgresql", "redshift").foreach { engine =>
+        withClue(engine) { sqlType(tags, engine) shouldBe None }
+      }
+      sqlType(tags, "spark") shouldBe Some("ARRAY<STRING>")
+      sqlType(TableAttribute("name", "string"), "duckdb") shouldBe Some("VARCHAR")
+  }
 }

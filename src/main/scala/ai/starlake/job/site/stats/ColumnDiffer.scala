@@ -6,10 +6,15 @@ import java.util.Locale
 
 object ColumnDiffer {
 
-  /** Compares top-level declared columns with the warehouse columns. Empty when nothing is
-    * declared.
+  /** Compares top-level declared columns with the warehouse columns. Ignored columns are left out
+    * (core drops them from the table). Empty when nothing else is declared.
     */
-  def diff(declared: List[SiteColumn], actual: List[ColumnStat], engine: String): List[ColumnDiff] =
+  def diff(
+    allDeclared: List[SiteColumn],
+    actual: List[ColumnStat],
+    engine: String
+  ): List[ColumnDiff] = {
+    val declared = allDeclared.filterNot(_.ignore.contains(true))
     if (declared.isEmpty) Nil
     else {
       val actualByName = actual.map(c => c.name.toLowerCase(Locale.ROOT) -> c).toMap
@@ -32,4 +37,5 @@ object ColumnDiffer {
         .map(a => ColumnDiff(a.name, None, Some(a.`type`), "extraInWarehouse"))
       fromDeclared ++ extras
     }
+  }
 }

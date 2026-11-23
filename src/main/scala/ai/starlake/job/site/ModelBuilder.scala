@@ -103,7 +103,7 @@ class ModelBuilder(
   private def sqlTypeOf(attr: TableAttribute, engine: Option[String]): Option[String] =
     engine.flatMap(ModelBuilder.declaredSqlType(attr, _, schemaHandler))
 
-  private def column(
+  private[site] def column(
     attr: TableAttribute,
     pk: List[String],
     engine: Option[String],
@@ -116,7 +116,7 @@ class ModelBuilder(
         name = attr.name,
         rename = attr.rename,
         `type` = attr.`type`,
-        sqlType = if (attr.attributes.isEmpty) sqlTypeOf(attr, engine) else None,
+        sqlType = if (ModelBuilder.hasLeafSqlType(attr, engine)) sqlTypeOf(attr, engine) else None,
         required = attr.resolveRequired(),
         primaryKey = pk.exists(_.equalsIgnoreCase(attr.getFinalName())),
         foreignKey = attr.foreignKey,
@@ -126,7 +126,8 @@ class ModelBuilder(
         metricType = attr.metricType.map(_.value),
         description = desc,
         tags = attr.tags.toList.sorted,
-        columns = children.map(_._1)
+        columns = children.map(_._1),
+        ignore = if (attr.resolveIgnore()) Some(true) else None
       ),
       w ++ children.flatMap(_._2)
     )
@@ -293,6 +294,14 @@ class ModelBuilder(
 }
 
 object ModelBuilder {
+
+  /** Whether the declared SQL type of the attribute can be compared with the warehouse: only for
+    * leaves, and for array leaves only on Spark, whose type keeps the array wrapper. On the other
+    * engines the ddlMapping of an array leaf is its element type, which the warehouse never
+    * reports.
+    */
+  private[site] def hasLeafSqlType(attr: TableAttribute, engine: Option[String]): Boolean =
+    attr.attributes.isEmpty && (!attr.resolveArray() || engine.contains("spark"))
 
   /** The SQL type core gives the column of a declared leaf attribute on this engine.
     *   - postgresql, redshift: like SparkUtils.sqlSchema, the ddlMapping of the attribute's own

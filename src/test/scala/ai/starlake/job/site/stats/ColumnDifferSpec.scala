@@ -46,4 +46,19 @@ class ColumnDifferSpec extends AnyFlatSpec with Matchers {
       ColumnDiff("src_name", None, Some("text"), "extraInWarehouse")
     )
   }
+
+  it should "skip ignored columns, which core drops from the table" in {
+    val d = List(
+      SiteColumn("id", sqlType = Some("BIGINT")),
+      SiteColumn("raw_line", sqlType = Some("VARCHAR"), ignore = Some(true))
+    )
+    ColumnDiffer.diff(d, List(ColumnStat("id", "bigint", nullable = true)), "duckdb") shouldBe List(
+      ColumnDiff("id", Some("BIGINT"), Some("bigint"), "match")
+    )
+    ColumnDiffer.diff(
+      List(SiteColumn("raw_line", ignore = Some(true))),
+      List(ColumnStat("id", "bigint", nullable = true)),
+      "duckdb"
+    ) shouldBe Nil
+  }
 }

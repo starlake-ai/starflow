@@ -26,7 +26,10 @@ case class SiteColumn(
   metricType: Option[String] = None,
   description: Option[String] = None,
   tags: List[String] = Nil,
-  columns: List[SiteColumn] = Nil
+  columns: List[SiteColumn] = Nil,
+  // Some(true) for an attribute core drops from the table (SchemaInfo.exceptIgnoreAttributes),
+  // absent otherwise
+  ignore: Option[Boolean] = None
 )
 
 case class SiteSql(raw: Option[String], compiled: Option[String])
