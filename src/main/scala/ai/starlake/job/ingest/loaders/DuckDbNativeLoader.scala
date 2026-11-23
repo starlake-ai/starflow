@@ -102,7 +102,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               val countSql =
                 s"SELECT COUNT(*) AS cnt FROM ${domain.finalName}.${schema.finalName};"
               val res = JdbcDbUtils.executeQueryAsMap(countSql, conn)
-              val count = res.head("cnt").toInt
+              val count = res.head("cnt").toLong
               logger
                 .info(
                   s"Table ${domain.finalName}.${schema.finalName} already exists with $count records"
@@ -119,7 +119,8 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         logger.warn(
           s"${domain.finalName}.${schema.finalName} loads in one step: its expectations run after the write, not before its commit"
         )
-      val rejected: RejectCapture = if (twoSteps) {
+      // The rejected rows, and the counters of a load in two steps
+      val (rejected, secondStep): (RejectCapture, Option[IngestionCounters]) = if (twoSteps) {
         // Registered before each CREATE so a first-step failure (create ok but insert
         // failed, or a later file's load failed) still drops every zztmp table already
         // left behind; dropTable is IF EXISTS, so a name whose CREATE never ran is a no-op.
@@ -239,19 +240,14 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
             syncSchema = false
           )(settings, storageHandler, schemaHandler)
           val job = TransformContext.createJdbcTask(context, None)
-          // The counters of the load, before its write: the audit row counts the rows of the
-          // table instead
+          // The counters of the load, before its write, for its audit row and its expectations:
+          // the rows that its second step reads, as it renders them, whatever the table holds
+          // before (#1980)
           val counters =
-            if (settings.appConfig.expectations.active && schema.expectations.nonEmpty)
-              Some(
-                secondStepCounters(
-                  sqlWithTransformedFields,
-                  parquetRejected + rejectedLines.count
-                )
-              )
-            else None
-          counters.filter(_.acceptedCount >= 0).foreach(ingestionJob.countedBeforeWrite)
-          if (taskDesc.expectations.nonEmpty) ingestionJob.handOverExpectations(job, counters)
+            secondStepCounters(job.buildSelectStatement(), parquetRejected + rejectedLines.count)
+          if (counters.acceptedCount >= 0) ingestionJob.countedBeforeWrite(counters)
+          if (taskDesc.expectations.nonEmpty)
+            ingestionJob.handOverExpectations(job, Some(counters))
           val incomingSchema = schema.sparkSchemaWithoutIgnore(
             schemaHandler,
             withFinalName = true
@@ -287,7 +283,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
               cleanupRejectArtifacts(replayFilePath, rejectedLines.nonEmpty)
               throw e
           }
-          rejectedLines
+          (rejectedLines, Some(counters))
         } finally {
           createdTempTables.foreach { tempTable =>
             Try {
@@ -305,10 +301,13 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           }
         }
       } else {
-        singleStepLoad(domain.finalName, schema.finalName, schemaWithMergedMetadata, path)
+        (
+          singleStepLoad(domain.finalName, schema.finalName, schemaWithMergedMetadata, path),
+          None
+        )
       }
-      (initialRowCount, rejected)
-    }.map { case (initialRowCount, rejected) =>
+      (initialRowCount, rejected, secondStep)
+    }.map { case (initialRowCount, rejected, secondStep) =>
       // The two step path has already reported them, before it wrote its target rows, so
       // only the single step path is left here. That path is reachable only for a variant
       // schema, which in practice means JSON, and DuckDB captures no rejects for JSON, so
@@ -323,35 +322,37 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
           conn =>
             val res = JdbcDbUtils.executeQueryAsMap(countSql, conn)
-            val count = res.head("cnt").toInt
+            val count = res.head("cnt").toLong
             logger.info(
               s"Table ${domain.finalName}.${schema.finalName} now has $count records"
             )
             count
         }
-      // OVERWRITE replaces the target's previous contents (singleStepLoad drops and
-      // recreates the table, and the two step path's AutoTask replaces the rows), so
-      // initialRowCount no longer describes what was there before this load's rows landed.
-      // currentRowCount alone is the accepted count in that case. Do not turn this back into
-      // a delta: for OVERWRITE the delta undercounts, or goes negative, whenever the
-      // replaced table held rows before this load.
-      // Known gap, pre-existing and out of scope here: OVERWRITE_BY_PARTITION,
-      // DELETE_THEN_INSERT and SCD2 can shrink the table too, so they can still report a
-      // negative delta, which inputCount now carries as well.
-      val acceptedCount =
-        if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE) currentRowCount.toLong
-        else (currentRowCount - initialRowCount).toLong
-      // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count. The
-      // Parquet loads find their rejected rows in the first step (#1952)
-      val format = mergedMetadata.resolveFormat()
-      val rejectsSupported =
-        format == Format.DSV || format == Format.POSITION || format == Format.PARQUET
-      val rejectedCount =
-        if (format == Format.PARQUET) parquetRejects.map(_.count).sum
-        else if (rejectsSupported) rejected.count
-        else -1L
-      val inputCount = if (rejectsSupported) acceptedCount + rejectedCount else acceptedCount
-      List(
+      List(secondStep.filter(_.acceptedCount >= 0).getOrElse {
+        // Without the counters of the second step: a load in one step, or a load in two steps whose
+        // rows could not be counted (#1980).
+        // OVERWRITE replaces the target's previous contents (singleStepLoad drops and
+        // recreates the table, and the two step path's AutoTask replaces the rows), so
+        // initialRowCount no longer describes what was there before this load's rows landed.
+        // currentRowCount alone is the accepted count in that case. Do not turn this back into
+        // a delta: for OVERWRITE the delta undercounts, or goes negative, whenever the
+        // replaced table held rows before this load.
+        // Known gap, pre-existing and out of scope here: OVERWRITE_BY_PARTITION,
+        // DELETE_THEN_INSERT and SCD2 can shrink the table too, so they can still report a
+        // negative delta, which inputCount now carries as well.
+        val acceptedCount =
+          if (strategy.getEffectiveType() == WriteStrategyType.OVERWRITE) currentRowCount
+          else currentRowCount - initialRowCount
+        // JSON has no reject capture in DuckDB, so it keeps reporting an unknown count. The
+        // Parquet loads find their rejected rows in the first step (#1952)
+        val format = mergedMetadata.resolveFormat()
+        val rejectsSupported =
+          format == Format.DSV || format == Format.POSITION || format == Format.PARQUET
+        val rejectedCount =
+          if (format == Format.PARQUET) parquetRejects.map(_.count).sum
+          else if (rejectsSupported) rejected.count
+          else -1L
+        val inputCount = if (rejectsSupported) acceptedCount + rejectedCount else acceptedCount
         IngestionCounters(
           inputCount = inputCount,
           acceptedCount = acceptedCount,
@@ -359,7 +360,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
           paths = path.map(_.toString),
           jobid = ingestionJob.applicationId()
         )
-      )
+      })
     }.recoverWith { case e: RejectThresholdExceededException =>
       // The load is going to fail, but the user still gets the replay file and the audit
       // rejected rows so they can fix the input and load it again. recoverWith takes a
@@ -575,16 +576,18 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
   }
 
   /** @param secondStepSql
-    *   the SELECT of the second step, over the tables of the first step
+    *   the SELECT of the second step, over the tables of the first step, as the second step renders
+    *   it: evaluated in the count, whose failure it may cause
     * @param rejected
     *   the rows that the first step rejected
     * @return
-    *   the counters of the load, before its second step writes the rows that it accepts: those of
-    *   the SELECT of the second step, without the rows that its filter drops, as a native BigQuery
-    *   load counts them. -1 for the rejected rows of JSON files, which DuckDB does not capture, as
-    *   in the audit, and for the rows that cannot be counted.
+    *   the counters of the load, for its audit row and its expectations, before its second step
+    *   writes the rows that it accepts: those of the SELECT of the second step, without the rows
+    *   that its filter drops, as a native BigQuery load counts them, whatever the write strategy
+    *   does with them (#1980). -1 for the rejected rows of JSON files, which DuckDB does not
+    *   capture, as in the audit, and for the rows that cannot be counted.
     */
-  private def secondStepCounters(secondStepSql: String, rejected: Long): IngestionCounters = {
+  private def secondStepCounters(secondStepSql: => String, rejected: Long): IngestionCounters = {
     val accepted =
       Try {
         JdbcDbUtils.withJDBCConnection(this.schemaHandler.dataBranch(), sinkConnection.options) {
@@ -599,7 +602,7 @@ class DuckDbNativeLoader(ingestionJob: IngestionJob)(implicit
         }
       }.recover { case exception =>
         logger.warn(
-          s"The rows that the load of ${domain.finalName}.${schema.finalName} accepts cannot be counted for its expectations: ${exception.getMessage}"
+          s"The rows that the load of ${domain.finalName}.${schema.finalName} accepts cannot be counted for its audit and its expectations: ${exception.getMessage}"
         )
         -1L
       }.get

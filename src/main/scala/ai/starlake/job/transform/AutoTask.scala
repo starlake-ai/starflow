@@ -291,10 +291,29 @@ abstract class AutoTask(
     case None     => taskDesc.domain
   }
 
-  def aclSQL(): List[String] = {
+  /** The GRANT statements of the acl of the task: none when access policies are not applied, or on
+    * an engine that has no GRANT statement (#1985)
+    *
+    * @param forceApply
+    *   the statements even when access policies are not applied
+    * @param databricks
+    *   the statements of a Spark sink run on Databricks, as those of the databricks orchestrator,
+    *   even when the connection of the task does not say so
+    */
+  def aclSQL(forceApply: Boolean = false, databricks: Boolean = false): List[String] = {
     val sinkEngineName = sinkConnection.getJdbcEngineName()
-    taskDesc.acl.flatMap { ace =>
-      ace.asSql(fullTableName, sinkEngineName)
+    if (taskDesc.acl.isEmpty || !(forceApply || settings.appConfig.accessPolicies.apply))
+      Nil
+    else if (!AccessControlEntry.supportsGrants(sinkEngineName)) {
+      logger.info(
+        s"$sinkEngineName has no GRANT statement: the acl of $fullTableName is not applied"
+      )
+      Nil
+    } else {
+      val onDatabricks = databricks || AccessControlEntry.runsOnDatabricks(sinkConnection)
+      taskDesc.acl.flatMap { ace =>
+        ace.asSql(fullTableName, sinkEngineName, onDatabricks)
+      }
     }
   }
 
@@ -437,9 +456,10 @@ abstract class AutoTask(
   private val taskSQL = SQLUtils.stripComments(taskDesc.getSql())
 
   /** Builds the task's main SELECT statement with macros instantiated, refs substituted and
-    * transpiled to the target dialect when needed (test mode / transpile dialect).
+    * transpiled to the target dialect when needed (test mode / transpile dialect). The native
+    * DuckDB loader counts the rows of its second step with it (#1980).
     */
-  protected def buildSelectStatement(): String = {
+  private[starlake] def buildSelectStatement(): String = {
     val inputSQL =
       SQLUtils.instantiateMacrosInSql(
         taskSQL,

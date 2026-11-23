@@ -98,6 +98,9 @@ import scala.jdk.CollectionConverters._
   *   replaced by the nullValue. If false, empty values are kept as is.
   * @param fillWithDefaultValue:
   *   if true, then it getters return default value, otherwise return currently defined value only
+  * @param archive:
+  *   Should the files of a successful load be moved to the archive area rather than deleted ? The
+  *   `archive` setting of the application (SL_ARCHIVE) when not defined (#1986).
   */
 case class Metadata(
   format: Option[Format] = None,
@@ -119,7 +122,8 @@ case class Metadata(
   nullValue: Option[String] = None,
   fillWithDefaultValue: Boolean = true,
   schedule: Option[String] = None,
-  writeStrategy: Option[WriteStrategy] = None
+  writeStrategy: Option[WriteStrategy] = None,
+  archive: Option[Boolean] = None
 ) {
 
   def this() = this(None) // Should never be called. Here for Jackson deserialization only
@@ -238,6 +242,7 @@ case class Metadata(
        |nullValue:${resolveNullValue()}
        |emptyIsNull:${emptyIsNull}
        |dag:$dagRef
+       |archive:$archive
        |fillWithDefaultValue:$fillWithDefaultValue""".stripMargin
 
   @JsonIgnore
@@ -380,7 +385,8 @@ case class Metadata(
       nullValue = merge(this.nullValue, child.nullValue),
       emptyIsNull = merge(this.emptyIsNull, child.emptyIsNull),
       schedule = mergedSchedule,
-      writeStrategy = merge(this.writeStrategy, child.writeStrategy)
+      writeStrategy = merge(this.writeStrategy, child.writeStrategy),
+      archive = merge(this.archive, child.archive)
       // fillWithDefaultValue = merge(this.fillWithDefaultValue, child.fillWithDefaultValue)
     )
   }
@@ -411,7 +417,8 @@ case class Metadata(
       freshness = if (parent.freshness != this.freshness) this.freshness else None,
       nullValue = if (parent.nullValue != this.nullValue) this.nullValue else None,
       emptyIsNull = if (parent.emptyIsNull != this.emptyIsNull) this.emptyIsNull else None,
-      writeStrategy = if (parent.writeStrategy != this.writeStrategy) this.writeStrategy else None
+      writeStrategy = if (parent.writeStrategy != this.writeStrategy) this.writeStrategy else None,
+      archive = if (parent.archive != this.archive) this.archive else None
       // fillWithDefaultValue = if (parent.fillWithDefaultValue != this.fillWithDefaultValue) this.fillWithDefaultValue else None
     )
   }
@@ -425,7 +432,7 @@ case class Metadata(
       withHeader.nonEmpty || separator.nonEmpty || quote.nonEmpty || escape.nonEmpty || writeStrategy.nonEmpty ||
       sink.nonEmpty || directory.nonEmpty ||
       ack.nonEmpty || options.nonEmpty || loader.nonEmpty || dagRef.nonEmpty ||
-      freshness.nonEmpty || nullValue.nonEmpty || emptyIsNull.nonEmpty
+      freshness.nonEmpty || nullValue.nonEmpty || emptyIsNull.nonEmpty || archive.nonEmpty
     )
       Some(this)
     else

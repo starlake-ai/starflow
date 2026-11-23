@@ -4,7 +4,7 @@ import ai.starlake.config.Settings
 import ai.starlake.schema.model._
 import ai.starlake.utils.SparkUtils
 
-import scala.util.Try
+import scala.util.{Success, Try}
 
 /** ACL management concerns for ingestion jobs. */
 trait IngestionAcl { self: IngestionJob =>
@@ -30,14 +30,22 @@ trait IngestionAcl { self: IngestionJob =>
 
   def applyJdbcAcl(connection: Settings.ConnectionInfo, forceApply: Boolean = false): Try[Unit] = {
     val fullTableName = schemaHandler.getFullTableName(domain, schema)
-    val sqls =
-      schema.acl.flatMap { ace =>
-        ace.asSql(fullTableName, connection.getJdbcEngineName())
+    val engine = connection.getJdbcEngineName()
+    if (schema.acl.isEmpty || !(forceApply || settings.appConfig.accessPolicies.apply))
+      Success(())
+    else if (!AccessControlEntry.supportsGrants(engine)) {
+      logger.info(s"$engine has no GRANT statement: the acl of $fullTableName is not applied")
+      Success(())
+    } else
+      Try {
+        val databricks = AccessControlEntry.runsOnDatabricks(connection)
+        schema.acl.flatMap(_.asSql(fullTableName, engine, databricks))
+      }.flatMap { sqls =>
+        AccessControlEntry.applyJdbcAcl(
+          connection,
+          sqls,
+          forceApply
+        )
       }
-    AccessControlEntry.applyJdbcAcl(
-      connection,
-      sqls,
-      forceApply
-    )
   }
 }

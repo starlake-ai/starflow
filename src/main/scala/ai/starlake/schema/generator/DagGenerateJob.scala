@@ -120,6 +120,16 @@ class DagGenerateJob(schemaHandler: SchemaHandler) extends LazyLogging {
       allTaskDepsFullNames(dep.children)
     }.distinct // avoid duplicates
   }
+
+  /** Whether the options of the DAG run its dependencies within it, as the orchestration library
+    * reads them
+    */
+  private def runsDependenciesFirst(dagConfig: DagInfo): Boolean =
+    dagConfig.options.get("run_dependencies_first").exists(_.trim.equalsIgnoreCase("true"))
+
+  private def withoutExternalTables(node: TaskViewDependencyNode): TaskViewDependencyNode =
+    node.copy(children = node.children.filterNot(_.data.external).map(withoutExternalTables))
+
   def generateTaskDags(
     config: DagGenerateConfig
   )(implicit settings: Settings): Unit = {
@@ -178,7 +188,12 @@ class DagGenerateJob(schemaHandler: SchemaHandler) extends LazyLogging {
         val cronIfNone = if (cron == "None") null else cron
         val configs = taskConfigs.map { case (_, config) => config.taskDesc.fullName() }
         val autoTaskDepsConfig = AutoTaskDependenciesConfig(tasks = Some(configs))
-        val deps = depsEngine.jobsDependencyTree(autoTaskDepsConfig)
+        val deps = {
+          val tree = depsEngine.jobsDependencyTree(autoTaskDepsConfig)
+          // Such a DAG runs its table dependencies as loads, and this project does not load the
+          // tables declared in metadata/external (#1984)
+          if (runsDependenciesFirst(dagConfig)) tree.map(withoutExternalTables) else tree
+        }
         val orchestratorName = orchestratorFromTemplate(dagConfig.template).toLowerCase()
         val nativeOrchestrator = Set("snowflake", "databricks").contains(orchestratorName)
 
@@ -213,7 +228,8 @@ class DagGenerateJob(schemaHandler: SchemaHandler) extends LazyLogging {
               )(settings, settings.storageHandler(), schemaHandler)
               val task = transformContext.toTask(taskDep.getRunEngine())
               Try {
-                AutoTaskQueries(task)
+                // The databricks orchestrator runs them on Databricks, in its syntax (#1985)
+                AutoTaskQueries(task, databricks = orchestratorName == "databricks")
               } match {
                 case scala.util.Success(value) => value
                 case scala.util.Failure(exception) =>
