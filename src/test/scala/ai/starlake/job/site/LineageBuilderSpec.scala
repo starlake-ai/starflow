@@ -116,6 +116,23 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
     res.nodes.contains("external:fx") shouldBe false
   }
 
+  it should "resolve a column source with a null domain by table name" in {
+    val lineage = ColLineage.Lineage(
+      Nil,
+      List(
+        ColLineage.Relation(
+          ColLineage.Column(null, "customers", "id"),
+          ColLineage.Column("kpi", "revenue", "customer_id"),
+          None
+        )
+      )
+    )
+    val res = LineageBuilder.build(nodes, Map.empty, Map(revenue.id -> lineage))
+    res.columnEdges shouldBe List(
+      SiteColumnEdge("load:sales.customers#id", "transform:kpi.revenue#customer_id", revenue.id)
+    )
+  }
+
   it should "map an empty-domain source to an external node registered by the table pass" in {
     val res = LineageBuilder.build(
       nodes,
