@@ -18,14 +18,11 @@ object Sanitize {
     "passwd",
     "secret",
     "token",
-    "private_key",
-    "privatekey",
-    "api_key",
-    "apikey",
-    "access_key",
-    "accesskey",
-    "account_key",
-    "accountkey",
+    // compound words, spelled with an underscore, a dash, a dot or nothing (x-api-key, account.key)
+    "private[_.-]?key",
+    "api[_.-]?key",
+    "access[_.-]?key",
+    "account[_.-]?key",
     "signature",
     "credential"
   )
@@ -47,7 +44,7 @@ object Sanitize {
 
   // The separator follows the key directly, after an optional closing quote and whitespace, so
   // `Column private_key not found: x` is not a pair. `%3D` and `%3A` are URL encoded `=` and `:`.
-  private val separator = """(["']?)\s*(?:=|:|%3D|%3A)\s*"""
+  private val separator = """(\\?["']?)\s*(?:=|:|%3D|%3A)\s*"""
 
   private val value = List(
     // an already redacted value, so that redaction is idempotent
@@ -55,6 +52,8 @@ object Sanitize {
     // a PEM block, quoted or not, up to its END line or, when cut, to the end of the message
     """["']?-----BEGIN [^-]*-----(?s:.*?)-----END [^-]*-----(?:\\n)*["']?""",
     """["']?-----BEGIN (?s:.*)""",
+    // a quoted string inside an escaped JSON body: \"..\"
+    """\\"(?s:.*?)\\"""",
     // quoted strings with backslash escapes
     """"[^"\\]*(?:\\.[^"\\]*)*"""",
     """'[^'\\]*(?:\\.[^'\\]*)*'""",
@@ -64,14 +63,18 @@ object Sanitize {
     """[^\s&;]+"""
   ).mkString("(?:", "|", ")")
 
+  // A private key PEM block, wherever it appears: to its END line or, when cut, to the end
+  private val pemPrivateKey =
+    """-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.*?)(?:-----END [A-Z ]*PRIVATE KEY-----|\z)""".r
+
   private val keyedSecret = ("(?i)" + keyToken + separator + value).r
 
   // Authorization headers; the token charset leaves `<redacted>` alone (idempotence)
   private val tokenChars = """[\w.~+/=-]+"""
   private val authorizationHeader =
     ("""(?i)\b(authorization|proxy-authorization)(["']?)\s*[:=]\s*["']?""" +
-      "(?:(?:Bearer|Basic|Digest|Token)\\s+)?" + tokenChars + "[\"']?").r
-  private val bearer = ("""\bBearer\s+""" + tokenChars).r
+      "(?:Digest[ \\t]+[^\\r\\n]*|(?:(?:Bearer|Basic|Token)\\s+)?" + tokenChars + "[\"']?)").r
+  private val bearer = ("""(?i)\b(bearer)\s+""" + tokenChars).r
 
   // user:password@ in a URL; the password runs to the last @ before the next /, whitespace or end
   private val urlUserInfo = """(?<=//)[^/@\s:]+:[^\s/]*@""".r
@@ -95,12 +98,16 @@ object Sanitize {
     *     positive.
     */
   def redact(s: String): String = {
+    val noPem = pemPrivateKey.replaceAllIn(s, Matcher.quoteReplacement(SecretPlaceholder))
     val noHeaders = authorizationHeader.replaceAllIn(
-      s,
+      noPem,
       m => Matcher.quoteReplacement(m.group(1) + m.group(2) + ": " + SecretPlaceholder)
     )
     val noBearer =
-      bearer.replaceAllIn(noHeaders, Matcher.quoteReplacement("Bearer " + SecretPlaceholder))
+      bearer.replaceAllIn(
+        noHeaders,
+        m => Matcher.quoteReplacement(m.group(1) + " " + SecretPlaceholder)
+      )
     val noUserInfo =
       urlUserInfo.replaceAllIn(noBearer, Matcher.quoteReplacement(SecretPlaceholder + "@"))
     keyedSecret.replaceAllIn(

@@ -249,6 +249,56 @@ class SanitizeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "redact escaped quote JSON, as found in a message that embeds a JSON body" in {
+    val a = Sanitize.message("""body {\"password\":\"hunter2\"}""")
+    a should not include "hunter2"
+    val b = Sanitize.message(
+      """creds {\"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIEabc\\n""" +
+      """-----END PRIVATE KEY-----\\n\", \"x\": 1}"""
+    )
+    b should not include "MIIEabc"
+    b should not include "BEGIN PRIVATE"
+  }
+
+  it should "redact a PEM block wherever it appears" in {
+    val a = Sanitize.message(
+      "bad -----BEGIN RSA PRIVATE KEY-----\nMIIEpA\n-----END RSA PRIVATE KEY----- after"
+    )
+    a shouldBe "bad <redacted> after"
+    Sanitize.message("bad -----BEGIN EC PRIVATE KEY-----\nMIIEpA") shouldBe "bad <redacted>"
+    Sanitize.message("bad -----BEGIN PRIVATE KEY-----MIIEpA") shouldBe "bad <redacted>"
+  }
+
+  it should "redact dash and dot spellings of compound key words" in {
+    List(
+      "x-api-key: k9",
+      "X-API-KEY=k9",
+      "x-goog-api-key: k9",
+      "private-key: PK",
+      "access-key=AK",
+      "spark.hadoop.fs.azure.account.key.acct.dfs.core.windows.net=AZKEY",
+      "fs.gs.auth.service.account.private.key=PK"
+    ).foreach { s =>
+      val msg = Sanitize.message(s)
+      List("k9", "PK", "AK", "AZKEY").foreach(v => msg should not include v)
+      msg should include("=<redacted>")
+    }
+  }
+
+  it should "redact Digest headers to the end of the line and a lowercase bearer" in {
+    val d = Sanitize.message("""Authorization: Digest username="bob", response="6629"""")
+    d should not include "bob"
+    d should not include "6629"
+    Sanitize.message("sent bearer abc") shouldBe "sent bearer <redacted>"
+  }
+
+  it should "keep the false positives readable" in {
+    Sanitize.message("table password_history not found") shouldBe
+    "table password_history not found"
+    Sanitize.message("p.auth.tokens failed: Access Denied") shouldBe
+    "p.auth.tokens failed: Access Denied"
+  }
+
   "StatsCollector.message" should "sanitize exception messages and fall back to the class name" in {
     StatsCollector.message(
       new IllegalStateException("corrupt /tmp/delta/_delta_log\n  dump")
