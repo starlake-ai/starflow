@@ -1,6 +1,8 @@
 package ai.starlake.job.site.stats
 
+import ai.starlake.config.ConnectionInfo
 import ai.starlake.job.site.{NodeId, SiteNode}
+import ai.starlake.schema.model.{AllSinks, ConnectionType}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -45,5 +47,83 @@ class PhysicalTablesSpec extends AnyFlatSpec with Matchers {
   it should "skip an external node even when it carries a connection" in {
     val ext = SiteNode("external:a.b", "external", "b", "a", "b", connectionRef = Some("pg"))
     PhysicalTables.group(List(ext)) shouldBe empty
+  }
+
+  it should "collect a transform on its sink connection, not its run connection" in {
+    val t = node("transform", "kpi", "revenue", Some("run")).copy(
+      sink = Some(AllSinks(connectionRef = Some("warehouse")))
+    )
+    val load = node("load", "sales", "orders", Some("pg")).copy(
+      sink = Some(AllSinks(connectionRef = Some("pg")))
+    )
+    val groups = PhysicalTables.group(List(t, load))
+    groups.keySet shouldBe Set("warehouse", "pg")
+    groups("warehouse") shouldBe List(
+      PhysicalTable(None, "kpi", "revenue") -> List("transform:kpi.revenue")
+    )
+    PhysicalTables.connectionRefOf(t) shouldBe Some("warehouse")
+    PhysicalTables.connectionRefOf(node("transform", "kpi", "x", Some("run"))) shouldBe Some("run")
+  }
+
+  private val bq = ConnectionInfo(ConnectionType.BQ, options = Map("projectId" -> "conn-project"))
+  private val spark = ConnectionInfo(ConnectionType.FS)
+  private val duck =
+    ConnectionInfo(ConnectionType.JDBC, options = Map("url" -> "jdbc:duckdb:", "driver" -> "d"))
+  private val connections = Map("bq" -> bq, "spark" -> spark, "duck" -> duck)
+
+  private def locate(n: SiteNode, defaultDb: Option[String]) =
+    PhysicalTables.locate(n, connections.get, defaultDb)
+
+  "locate" should "resolve the BigQuery project like core: database, SL_DATABASE, projectId" in {
+    val withDb = node("load", "hr", "staff", Some("bq"), Some("own"))
+    val noDb = node("load", "hr", "staff", Some("bq"))
+    val task = node("transform", "kpi", "rev", Some("bq"))
+    locate(withDb, Some("default-db")).map(_.table.database) shouldBe Some(Some("own"))
+    locate(noDb, Some("default-db")).map(_.table.database) shouldBe Some(Some("default-db"))
+    locate(noDb, None).map(_.table.database) shouldBe Some(Some("conn-project"))
+    locate(task, Some("default-db")).map(_.table.database) shouldBe Some(Some("default-db"))
+    locate(task, None).map(_.table.database) shouldBe Some(Some("conn-project"))
+  }
+
+  it should "drop the database on Spark, which writes domain.table" in {
+    val n = node("load", "sales", "orders", Some("spark"), Some("catalog"))
+    locate(n, Some("default-db")) shouldBe Some(
+      PhysicalLocation("spark", PhysicalTable(None, "sales", "orders"))
+    )
+  }
+
+  it should "use the default database for JDBC loads only, as the native loaders do" in {
+    val load = node("load", "sales", "orders", Some("duck"))
+    val task = node("transform", "kpi", "rev", Some("duck"))
+    locate(load, Some("lake")).map(_.table.database) shouldBe Some(Some("lake"))
+    locate(load.copy(database = Some("own")), Some("lake")).map(_.table.database) shouldBe
+    Some(Some("own"))
+    locate(task, Some("lake")).map(_.table.database) shouldBe Some(None)
+    locate(task.copy(database = Some("own")), Some("lake")).map(_.table.database) shouldBe
+    Some(Some("own"))
+  }
+
+  it should "keep the declared database when the connection cannot be read" in {
+    val n = node("load", "a", "b", Some("missing"), Some("db"))
+    PhysicalTables.locate(n, _ => throw new IllegalStateException("boom"), None) shouldBe Some(
+      PhysicalLocation("missing", PhysicalTable(Some("db"), "a", "b"))
+    )
+    PhysicalTables.locate(n.copy(connectionRef = None), connections.get, None) shouldBe None
+    PhysicalTables.locate(n.copy(kind = "external"), connections.get, None) shouldBe None
+  }
+
+  it should "group with the resolved databases" in {
+    val nodes = List(
+      node("load", "sales", "orders", Some("spark"), Some("c1")),
+      node("transform", "sales", "orders", Some("spark"))
+    )
+    PhysicalTables.group(nodes, connections.get, None) shouldBe Map(
+      "spark" -> List(
+        PhysicalTable(None, "sales", "orders") -> List(
+          "load:sales.orders",
+          "transform:sales.orders"
+        )
+      )
+    )
   }
 }

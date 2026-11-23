@@ -15,8 +15,9 @@ import scala.util.{Failure, Success, Try}
 
 /** Collects warehouse stats for every connection referenced by the nodes, at most `parallelism`
   * connections at a time, each bounded by `timeout`. A failing, unsupported or slow connection gets
-  * a status and an error message, never an exception: the other connections are not affected.
-  * Physical tables are collected once and fanned out to every node id that points at them.
+  * a status and an error message, never an exception: the other connections are not affected. Each
+  * node is located on the connection its table is written to ([[PhysicalTables.locate]]); physical
+  * tables are collected once and fanned out to every node id that points at them.
   */
 class StatsRunner(
   connections: String => Option[ConnectionInfo],
@@ -41,7 +42,8 @@ class StatsRunner(
     java.math.BigDecimal.valueOf(timeout.toMillis, 3).stripTrailingZeros.toPlainString + "s"
 
   def run(nodes: TreeMap[String, SiteNode]): SiteStats = {
-    val groups = PhysicalTables.group(nodes.values)
+    val groups =
+      PhysicalTables.group(nodes.values, connections, settings.appConfig.getDefaultDatabase())
     // `pool` bounds the number of connections collected at once; each collection runs on a
     // `workers` thread so that its pool thread can stop waiting for it after the timeout.
     val pool = Executors.newFixedThreadPool(parallelism, daemonThreads("sl-stats"))

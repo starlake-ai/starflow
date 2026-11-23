@@ -204,6 +204,21 @@ class StatsRunnerSpec extends TestHelper {
     }
   }
 
+  it should "collect a transform on its sink connection and report that connection" in {
+    new WithSettings() {
+      val t = node(NodeId.transform("sales.orders"), "transform", "sales", "orders", "run")
+        .copy(sink = Some(ai.starlake.schema.model.AllSinks(connectionRef = Some("ok"))))
+      val stats = new StatsRunner(
+        Map("run" -> withRef("boom"), "ok" -> withRef("ok")).get,
+        collectorFor(refOption),
+        timeout = 10.seconds
+      ).run(treeOf(t))
+      stats.connections.keySet shouldBe Set("ok")
+      stats.tables("transform:sales.orders").connectionRef shouldBe "ok"
+      stats.tables("transform:sales.orders").exists shouldBe true
+    }
+  }
+
   it should "report error when the connection lookup or collector selection throws" in {
     new WithSettings() {
       val ns = treeOf(
