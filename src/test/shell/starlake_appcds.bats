@@ -909,6 +909,18 @@ assert_no_c1() { [[ "$(last_submit)" != *"TieredStopAtLevel"* ]]; }
   assert_c1
 }
 
+@test "the launcher prints its settings on stderr, so stdout carries only the command output" {
+  bats_require_minimum_version 1.5.0
+  write_project
+  SL_ENV=DUCKDB SL_LOG_LEVEL=info run --separate-stderr "$INSTALL/starlake.sh" transform --name dom.t
+  [ "$status" -eq 0 ]
+  # "|| false": on bash 3.2 a failing [[ ]] only fails a bats test when it is the last command
+  [[ "$output" != *"- SL_ENV="* ]] || false
+  [[ "$output" != *"- SL_ROOT="* ]] || false
+  [[ "$output" != *"- JAVA_HOME="* ]] || false
+  [[ "$stderr" == *"- SL_ENV=DUCKDB"* ]] || false
+}
+
 @test "SL_ENV defined in the default env file selects the env file" {
   write_project
   printf 'env:\n  SL_ENV: DUCKDB\n  connectionRef: sparkLocal\n' >metadata/env.sl.yml

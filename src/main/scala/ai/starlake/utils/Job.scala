@@ -100,6 +100,13 @@ trait JobResult {
     baos.toString
   }
 }
+
+/** A result that decides the process exit code itself. Used by commands such as `impact` whose
+  * successful run can still mean "fail the CI step" (1) or "could not analyze" (2).
+  */
+trait ExitCodeJobResult extends JobResult {
+  def exitCode: Int
+}
 /*
           val values = rows.iterateAll().asScala.toList.map { row =>
             val fields = row

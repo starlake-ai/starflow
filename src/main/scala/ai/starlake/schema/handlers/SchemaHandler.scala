@@ -93,6 +93,34 @@ case class DomainWithNameOnly(name: String, tables: List[TableWithNameAndType]) 
 }
 
 object SchemaHandler {
+
+  /** The `sl_*` date variables (sl_date, sl_datetime, sl_epoch_milli ...) as of `today`. */
+  def slDateVars(today: LocalDateTime): Map[String, String] = {
+    val dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
+    val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+    val yearFormatter = DateTimeFormatter.ofPattern("yyyy")
+    val monthFormatter = DateTimeFormatter.ofPattern("MM")
+    val dayFormatter = DateTimeFormatter.ofPattern("dd")
+    val hourFormatter = DateTimeFormatter.ofPattern("HH")
+    val minuteFormatter = DateTimeFormatter.ofPattern("mm")
+    val secondFormatter = DateTimeFormatter.ofPattern("ss")
+    val milliFormatter = DateTimeFormatter.ofPattern("SSS")
+    val epochMillis = today.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli
+    Map(
+      "sl_date"         -> today.format(dateFormatter),
+      "sl_datetime"     -> today.format(dateTimeFormatter),
+      "sl_year"         -> today.format(yearFormatter),
+      "sl_month"        -> today.format(monthFormatter),
+      "sl_day"          -> today.format(dayFormatter),
+      "sl_hour"         -> today.format(hourFormatter),
+      "sl_minute"       -> today.format(minuteFormatter),
+      "sl_second"       -> today.format(secondFormatter),
+      "sl_milli"        -> today.format(milliFormatter),
+      "sl_epoch_second" -> (epochMillis / 1000).toString,
+      "sl_epoch_milli"  -> epochMillis.toString
+    )
+  }
+
   private val watcherMap: scala.collection.concurrent.TrieMap[String, Settings] =
     scala.collection.concurrent.TrieMap.empty
 
@@ -551,32 +579,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     allFiles
   }
 
-  lazy val slDateVars: Map[String, String] = {
-    val today = LocalDateTime.now
-    val dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
-    val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
-    val yearFormatter = DateTimeFormatter.ofPattern("yyyy")
-    val monthFormatter = DateTimeFormatter.ofPattern("MM")
-    val dayFormatter = DateTimeFormatter.ofPattern("dd")
-    val hourFormatter = DateTimeFormatter.ofPattern("HH")
-    val minuteFormatter = DateTimeFormatter.ofPattern("mm")
-    val secondFormatter = DateTimeFormatter.ofPattern("ss")
-    val milliFormatter = DateTimeFormatter.ofPattern("SSS")
-    val epochMillis = today.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli
-    Map(
-      "sl_date"         -> today.format(dateFormatter),
-      "sl_datetime"     -> today.format(dateTimeFormatter),
-      "sl_year"         -> today.format(yearFormatter),
-      "sl_month"        -> today.format(monthFormatter),
-      "sl_day"          -> today.format(dayFormatter),
-      "sl_hour"         -> today.format(hourFormatter),
-      "sl_minute"       -> today.format(minuteFormatter),
-      "sl_second"       -> today.format(secondFormatter),
-      "sl_milli"        -> today.format(milliFormatter),
-      "sl_epoch_second" -> (epochMillis / 1000).toString,
-      "sl_epoch_milli"  -> epochMillis.toString
-    )
-  }
+  /** The `sl_*` date variables, as of the first use of this handler. */
+  lazy val slDateVars: Map[String, String] = SchemaHandler.slDateVars(LocalDateTime.now)
 
   def dataBranch(connectionOptions: Map[String, String] = Map.empty): Option[String] = {
     val envVars = this.activeEnvVars()
