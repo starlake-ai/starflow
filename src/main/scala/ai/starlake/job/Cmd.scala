@@ -22,10 +22,15 @@ trait Cmd[T <: ReportFormatConfig] extends CliConfig[T] {
   )(implicit settings: Settings): Try[JobResult] = {
     parse(args) match {
       case Some(config) => run(config, schemaHandler)
-      case None =>
-        Failure(new IllegalArgumentException(usage()))
+      case None         => onParseFailure()
     }
   }
+
+  /** What a command returns when its arguments do not parse. Main reports a Failure with an
+    * IllegalArgumentException as a usage error (exit 1); a command that needs another exit code
+    * returns an ExitCodeJobResult instead.
+    */
+  def onParseFailure(): Try[JobResult] = Failure(new IllegalArgumentException(usage()))
 
   def run(config: T, schemaHandler: SchemaHandler)(implicit settings: Settings): Try[JobResult]
 
