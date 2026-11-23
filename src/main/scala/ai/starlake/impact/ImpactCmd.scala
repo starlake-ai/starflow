@@ -6,7 +6,6 @@ import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.utils.{ExitCodeJobResult, GitSnapshot, JobResult, ProjectCheckout}
 import better.files.File
 import com.typesafe.scalalogging.LazyLogging
-import org.apache.hadoop.fs.Path
 import scopt.{DefaultOEffectSetup, OEffectSetup, OParser}
 
 import java.time.LocalDateTime
@@ -82,7 +81,9 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
         .opt[String]("output")
         .action((x, c) => c.copy(output = Some(x)))
         .optional()
-        .text("write the report to this file instead of stdout"),
+        .text(
+          "write the report to this local file instead of stdout; recommended in CI, where the launcher may print to stdout too"
+        ),
       builder
         .opt[String]("template")
         .action((x, c) => c.copy(template = Some(x)))
@@ -258,8 +259,12 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
             rendered <- Try(ImpactRenderer.render(report, config.format, config.template))
             _ <- Try {
               config.output match {
-                case Some(out) => settings.storageHandler().write(rendered, new Path(out))
-                case None      => println(rendered) // scalastyle:ignore
+                case Some(out) =>
+                  // a local file, whatever the file system of the project (it may be remote)
+                  val file = File(out)
+                  file.parent.createDirectories()
+                  file.writeText(rendered)
+                case None => println(rendered) // scalastyle:ignore
               }
             }
           } yield report

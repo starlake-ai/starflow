@@ -56,16 +56,16 @@ object Main extends LazyLogging {
 
   final val shell: String = "starlake"
 
+  /** True when the command named by the first argument is read-only (see Cmd.readOnly). */
+  def isReadOnly(args: List[String]): Boolean =
+    args.headOption.exists(name => commands.exists(c => c.command == name && c.readOnly))
+
   /** Process exit code for a finished command. `run` returns the command's own result, so this is
     * the single place where a result becomes the Int handed to System.exit.
     *
     * FailedJobResult and an empty PreLoadJobResult are soft failures: the command did not throw but
     * did not succeed either, so they must not report 0.
     */
-  /** True when the command named by the first argument is read-only (see Cmd.readOnly). */
-  def isReadOnly(args: List[String]): Boolean =
-    args.headOption.exists(name => commands.exists(c => c.command == name && c.readOnly))
-
   def exitCodeOf(result: Try[Any]): Int =
     result match {
       case Success(r: ExitCodeJobResult)           => r.exitCode

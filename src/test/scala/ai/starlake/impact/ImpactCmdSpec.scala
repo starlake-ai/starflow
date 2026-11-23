@@ -331,6 +331,39 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "read the template and write the output as plain local files" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, n) =>
+        val outDir = File.newTemporaryDirectory("impact-out-")
+        deleting(outDir) {
+          val template = (outDir / "report.html.j2").writeText("breaking: {{ breaking }}\n")
+          val out = outDir / "report.html"
+          val r = result(
+            ImpactCmd.run(
+              Seq(
+                "--path1",
+                o.pathAsString,
+                "--path2",
+                n.pathAsString,
+                "--format",
+                "html",
+                "--template",
+                template.pathAsString,
+                "--output",
+                out.pathAsString
+              ),
+              settings.schemaHandler()
+            )
+          )
+          r.exitCode shouldBe 0
+          out.contentAsString should startWith("breaking: yes")
+          // no checksum or other file next to them
+          outDir.list.map(_.name).toSet shouldBe Set("report.html.j2", "report.html")
+        }
+      }
+    }
+  }
+
   it should "return exit code 2 on usage errors" in {
     new WithSettings() {
       val usageErrors = List(
@@ -651,9 +684,18 @@ class ImpactCmdSpec extends TestHelper {
       ai.starlake.job.Main.isReadOnly(List("transform", "--name", "x")) shouldBe false
       ai.starlake.job.Main.isReadOnly(Nil) shouldBe false
       val page = ImpactCmd.markdown(1)
-      List("--base", "--head", "--path1", "--path2", "--fail-on", "HTML-escaped").foreach { s =>
-        page should include(s)
-      }
+      List(
+        "--base",
+        "--head",
+        "--path1",
+        "--path2",
+        "--fail-on",
+        "HTML-escaped",
+        "recommended in CI"
+      )
+        .foreach { s =>
+          page should include(s)
+        }
     }
   }
 

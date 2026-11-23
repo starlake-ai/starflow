@@ -3,7 +3,7 @@ package ai.starlake.impact
 import ai.starlake.config.Settings
 import ai.starlake.utils.Utils
 import com.fasterxml.jackson.databind.ObjectMapper
-import org.apache.hadoop.fs.Path
+import better.files.File
 
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
@@ -201,10 +201,10 @@ object ImpactRenderer {
   ): String = {
     val content = template match {
       case Some(path) =>
-        val p = new Path(path)
-        if (!settings.storageHandler().exists(p))
-          throw new IllegalArgumentException(s"Template not found: $path")
-        settings.storageHandler().read(p)
+        // a local file, whatever the file system of the project (it may be remote)
+        val f = File(path)
+        if (!f.isRegularFile) throw new IllegalArgumentException(s"Template not found: $path")
+        f.contentAsString
       case None =>
         val resource = "/templates/impact/index.html.j2"
         val stream = Option(getClass.getResourceAsStream(resource)).getOrElse(
