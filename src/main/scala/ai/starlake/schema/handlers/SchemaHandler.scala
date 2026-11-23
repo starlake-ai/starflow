@@ -910,9 +910,14 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     tablesFromDomainOrTasks
   }
 
+  /** Columns of the given tables, looked up in the declared domains and task outputs. A table that
+    * is not declared is read from the warehouse, unless `declaredOnly` is set, in which case it is
+    * left out.
+    */
   def getTablesWithColumnNames(
     tableNames: List[String],
-    accessToken: Option[String]
+    accessToken: Option[String],
+    declaredOnly: Boolean = false
   ): List[(String, TableWithNameAndType)] = {
     val objects = objectNames()
     tableNames.flatMap { tableFullName =>
@@ -946,56 +951,61 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                 (domainName, t)
               }
               .orElse {
-                val connectionInfo =
-                  settings.appConfig.getConnection(settings.appConfig.connectionRef)
-                // getting metadata from snowflake is definitely too slow
-                if (connectionInfo.isSnowflake()) {
-                  JdbcDbUtils
-                    .extractColumnsUsingInformationSchema(
-                      connectionInfo,
-                      domainName,
-                      tableName
-                    )
-                    .toOption
-                    .map { colsAndTypes =>
-                      val t = TableWithNameAndType(
-                        tableName,
-                        colsAndTypes
-                          .map(it =>
-                            (
-                              it._1,
-                              PrimitiveType
-                                .fromSQLType(
-                                  connectionInfo.getJdbcEngineName().toString,
-                                  it._2,
-                                  this
-                                )
-                                .toString,
-                              None
-                            )
-                          )
+                if (declaredOnly) None
+                else {
+                  val connectionInfo =
+                    settings.appConfig.getConnection(settings.appConfig.connectionRef)
+                  // getting metadata from snowflake is definitely too slow
+                  if (connectionInfo.isSnowflake()) {
+                    JdbcDbUtils
+                      .extractColumnsUsingInformationSchema(
+                        connectionInfo,
+                        domainName,
+                        tableName
                       )
-                      (domainName, t)
-                    }
-                } else {
-
-                  val attrs =
-                    new ExtractSchema(this)
-                      .extractTable(domainName, tableName, None, accessToken)
                       .toOption
-                      .filter(_.tables.nonEmpty)
-                      .map { it =>
-                        logger.info(s"Extracted schema for $domainName.$tableName from DB source")
-                        val attrs =
-                          it.tables.head.attributes.map(attr => (attr.name, attr.`type`, None))
-                        attrs
+                      .map { colsAndTypes =>
+                        val t = TableWithNameAndType(
+                          tableName,
+                          colsAndTypes
+                            .map(it =>
+                              (
+                                it._1,
+                                PrimitiveType
+                                  .fromSQLType(
+                                    connectionInfo.getJdbcEngineName().toString,
+                                    it._2,
+                                    this
+                                  )
+                                  .toString,
+                                None
+                              )
+                            )
+                        )
+                        (domainName, t)
                       }
-                      .getOrElse {
-                        logger.warn(s"Table $domainName.$tableNames not found in external schemas")
-                        Nil
-                      }
+                  } else {
 
-                  Some((domainName, TableWithNameAndType(tableName, attrs)))
+                    val attrs =
+                      new ExtractSchema(this)
+                        .extractTable(domainName, tableName, None, accessToken)
+                        .toOption
+                        .filter(_.tables.nonEmpty)
+                        .map { it =>
+                          logger.info(s"Extracted schema for $domainName.$tableName from DB source")
+                          val attrs =
+                            it.tables.head.attributes.map(attr => (attr.name, attr.`type`, None))
+                          attrs
+                        }
+                        .getOrElse {
+                          logger.warn(
+                            s"Table $domainName.$tableNames not found in external schemas"
+                          )
+                          Nil
+                        }
+
+                    Some((domainName, TableWithNameAndType(tableName, attrs)))
+                  }
                 }
               }
         }
@@ -1346,11 +1356,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           postsql = task.postsql.map(sql => SQLUtils.stripComments(sql))
         )
       }
-      AutoJobInfo(
-        name = jobName,
-        tasks = mergedTasksWithStrippedComments,
-        default = jobDesc.default
-      )
+      // copy so that comment and any other field read from _config.sl.yml survive
+      jobDesc.copy(name = jobName, tasks = mergedTasksWithStrippedComments)
     } match {
       case Success(value) => Success(value)
       case Failure(exception) =>

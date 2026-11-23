@@ -1,0 +1,29 @@
+version: 1
+table:
+  name: "customers"
+  pattern: "customers.*.csv"
+  comment: '{{ doc("customers_desc") }}'
+  primaryKey: ["id"]
+  tags: ["pii"]
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "email"
+      type: "string"
+      comment: "Customer email"
+  acl:
+    - role: "roles/viewer"
+      grants: ["user:a@example.com"]
+  rls:
+    - name: "fr_only"
+      predicate: "country = 'FR'"
+      grants: ["group:fr"]
+      description: '{{ doc("fr_only_desc") }}'
+  expectations:
+    - expect: "is_unique('id')"
+      failOnError: true
+  metadata:
+    format: "DSV"
+    separator: ";"
+    withHeader: true

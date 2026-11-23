@@ -1,0 +1,17 @@
+version: 1
+table:
+  name: "orders"
+  pattern: "orders.*.csv"
+  comment: "Orders, see {{ doc('missing_block') }}"
+  attributes:
+    - name: "id"
+      type: "long"
+    - name: "customer_id"
+      type: "long"
+      foreignKey: "customers.id"
+    - name: "amount"
+      type: "decimal"
+  metadata:
+    format: "DSV"
+    separator: ";"
+    withHeader: true
