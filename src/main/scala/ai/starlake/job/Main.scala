@@ -63,6 +63,7 @@ object Main extends LazyLogging {
     */
   def exitCodeOf(result: Try[Any]): Int =
     result match {
+      case Success(r: ExitCodeJobResult)           => r.exitCode
       case Success(r: PreLoadJobResult) if r.empty => 1
       case Success(FailedJobResult)                => 1
       case Success(_)                              => 0
@@ -286,6 +287,11 @@ class Main extends LazyLogging {
               0
           if (settings.appConfig.forceHalt) {
             Runtime.getRuntime.halt(status)
+          }
+        case Success(result: ExitCodeJobResult) =>
+          logger.info(s"Finished $executedCommand with exit code ${result.exitCode}")
+          if (settings.appConfig.forceHalt) {
+            Runtime.getRuntime.halt(result.exitCode)
           }
         case Success(_) =>
           logger.info(s"Successfully $executedCommand")
