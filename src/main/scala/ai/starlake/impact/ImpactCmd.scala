@@ -138,7 +138,7 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
         direct,
         impacted,
         unresolved,
-        ChangeDetector.otherChanges(oldView, newView)
+        ChangeDetector.otherChanges(oldView, newView, direct)
       )
     }
 

@@ -113,7 +113,7 @@ class ChangeDetectorSpec extends AnyFlatSpec with Matchers {
     c.changeClass shouldBe Breaking
     c.columns shouldBe AllColumns
     c.reasons shouldBe List(
-      "write strategy / partition / merge key / pre-post SQL / parsing / required attributes changed"
+      "write strategy / merge key / sink / connection / pre-post SQL / pattern / parsing / required attributes changed"
     )
   }
 

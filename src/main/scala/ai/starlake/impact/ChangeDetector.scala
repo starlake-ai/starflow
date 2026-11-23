@@ -20,16 +20,37 @@ object ChangeDetector {
     }
   }
 
-  def otherChanges(oldView: SnapshotView, newView: SnapshotView): List[String] = {
-    val paths = (oldView.otherFiles.keySet ++ newView.otherFiles.keySet).toList.sorted
-    paths.flatMap { p =>
-      (oldView.otherFiles.get(p), newView.otherFiles.get(p)) match {
-        case (None, Some(_))              => Some(s"$p (added)")
-        case (Some(_), None)              => Some(s"$p (deleted)")
-        case (Some(a), Some(b)) if a != b => Some(s"$p (changed)")
-        case _                            => None
-      }
+  /** Changed files that are not traced (DAGs, types, connections ...), and the files under
+    * `metadata/load` and `metadata/transform` whose change no direct change of the nodes they
+    * define explains (a field the snapshot does not read, a file of another kind): "not
+    * classified". Sorted by path.
+    */
+  def otherChanges(
+    oldView: SnapshotView,
+    newView: SnapshotView,
+    direct: List[DirectChange] = Nil
+  ): List[String] = {
+    def status(a: Option[String], b: Option[String]): Option[String] = (a, b) match {
+      case (None, Some(_))              => Some("added")
+      case (Some(_), None)              => Some("deleted")
+      case (Some(a), Some(b)) if a != b => Some("changed")
+      case _                            => None
     }
+    val other = (oldView.otherFiles.keySet ++ newView.otherFiles.keySet).toList.flatMap { p =>
+      status(oldView.otherFiles.get(p), newView.otherFiles.get(p)).map(s => p -> s"$p ($s)")
+    }
+    val explained = direct.map(_.node).toSet
+    val definitions =
+      (oldView.definitionFiles.keySet ++ newView.definitionFiles.keySet).toList.flatMap { p =>
+        val before = oldView.definitionFiles.get(p)
+        val after = newView.definitionFiles.get(p)
+        val nodes = before.toSet.flatMap((f: DefinitionFile) => f.nodes) ++
+          after.toSet.flatMap((f: DefinitionFile) => f.nodes)
+        status(before.map(_.hash), after.map(_.hash))
+          .filterNot(_ => nodes.exists(explained))
+          .map(s => p -> s"$p ($s, not classified)")
+      }
+    (other ++ definitions).sortBy(_._1).map(_._2)
   }
 
   private def compare(o: NodeView, n: NodeView): Option[DirectChange] = {
@@ -85,7 +106,7 @@ object ChangeDetector {
           AllColumns,
           Nil,
           List(
-            "write strategy / partition / merge key / pre-post SQL / parsing / required attributes changed"
+            "write strategy / merge key / sink / connection / pre-post SQL / pattern / parsing / required attributes changed"
           )
         )
       )

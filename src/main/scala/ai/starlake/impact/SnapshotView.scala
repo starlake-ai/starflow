@@ -78,13 +78,24 @@ final case class NodeView(
     shape.map(_.columns.map(_.name)).filter(_.nonEmpty).getOrElse(attributes.map(_.finalName))
 }
 
+/** A file under `metadata/load` or `metadata/transform`, with the nodes it defines by the file name
+  * convention: a table or task file defines the node of the same name, a `_config.sl.yml` every
+  * node of its domain or transform.
+  */
+final case class DefinitionFile(hash: String, nodes: Set[NodeRef])
+
 /** @param otherFiles
-  *   relative path to content hash, for files listed but not traced
+  *   relative path to content hash, for files listed but not traced: everything under `metadata/`
+  *   but `load/` and `transform/`
+  * @param definitionFiles
+  *   relative path of every file under `metadata/load` and `metadata/transform`: a change no direct
+  *   change of its nodes explains is listed as not classified
   */
 final case class SnapshotView(
   label: String,
   nodes: Map[NodeRef, NodeView],
-  otherFiles: Map[String, String]
+  otherFiles: Map[String, String],
+  definitionFiles: Map[String, DefinitionFile] = Map.empty
 ) {
   def consumersOf(ref: NodeRef): List[NodeView] =
     nodes.values

@@ -119,7 +119,9 @@ final case class ImpactSummary(
 )
 
 /** `otherChanges` lists changed files that are not traced downstream (DAGs, connections,
-  * application.sl.yml, env files, expectation macros).
+  * application.sl.yml, env files, expectation macros, extract and mapping files ...), and the
+  * changed files under `load/` and `transform/` that no direct change explains, marked "not
+  * classified".
   */
 final case class ImpactReport(
   oldSide: String,

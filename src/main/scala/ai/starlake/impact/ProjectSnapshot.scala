@@ -2,7 +2,14 @@ package ai.starlake.impact
 
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.schema.model.{AutoTaskInfo, DomainInfo, Metadata, SchemaInfo, TableAttribute}
+import ai.starlake.schema.model.{
+  AllSinks,
+  AutoTaskInfo,
+  DomainInfo,
+  Metadata,
+  SchemaInfo,
+  TableAttribute
+}
 import ai.starlake.utils.{Utils, YamlSerde}
 import better.files.File
 import com.hubspot.jinjava.interpret.FatalTemplateErrorsException
@@ -252,7 +259,7 @@ object ProjectSnapshot {
       table.attributes.map(attributeView(neutralize)),
       None,
       neutralize(structural(table, domain)),
-      neutralize(metadataFingerprint(table))
+      neutralize(metadataFingerprint(table, domain))
     )
 
     val taskByRef: Map[NodeRef, AutoTaskInfo] =
@@ -345,7 +352,12 @@ object ProjectSnapshot {
     SnapshotView(
       label,
       (loadNodes ++ taskNodes).map(n => n.ref -> n).toMap,
-      otherFiles(projectDir)
+      otherFiles(projectDir),
+      definitionFiles(
+        projectDir,
+        loadByRef.keySet,
+        taskByRef.map { case (ref, t) => ref -> (taskDirs(ref).getName -> t._filenamePrefix) }
+      )
     )
   }
 
@@ -409,38 +421,90 @@ object ProjectSnapshot {
       requiredAttributes(a.attributes, s"$name.")
     }
 
+  /** The sink fields that change where the data lands or how it is laid out. */
+  private def sinkStructural(sink: Option[AllSinks]): String = {
+    // no sink and an empty one are the same
+    val s = sink.getOrElse(AllSinks())
+    List(
+      s.connectionRef,
+      s.sharding,
+      s.clustering,
+      s.days,
+      s.requirePartitionFilter,
+      s.materializedView,
+      s.id,
+      s.format,
+      s.extension,
+      s.partition,
+      s.path,
+      s.options.map(_.toList.sorted)
+    ).mkString(",")
+  }
+
+  /** The other sink fields: they change neither the rows nor where they land. */
+  private def sinkMetadata(sink: Option[AllSinks]): String = {
+    val s = sink.getOrElse(AllSinks())
+    List(s.enableRefresh, s.refreshIntervalMs, s.coalesce).mkString(",")
+  }
+
   private def structural(table: SchemaInfo, domain: DomainInfo): String = {
     val metadata = table.mergedMetadata(domain.metadata)
     List(
       metadata.writeStrategy.map(_.toString).getOrElse(""),
-      metadata.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
+      sinkStructural(metadata.sink),
       table.filter.getOrElse(""),
       parsing(metadata),
-      requiredAttributes(table.attributes).sorted.mkString("required=[", ",", "]")
+      requiredAttributes(table.attributes).sorted.mkString("required=[", ",", "]"),
+      table.presql.mkString(";"),
+      table.postsql.mkString(";"),
+      // which files are loaded
+      table.pattern.toString,
+      metadata.directory,
+      metadata.ack,
+      // the merge key, when the write strategy does not name one
+      table.primaryKey.mkString(","),
+      domain.database
     ).mkString("|")
   }
 
   private def structural(task: AutoTaskInfo): String =
     List(
       task.writeStrategy.map(_.toString).getOrElse(""),
-      task.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
+      sinkStructural(task.sink),
       task.presql.mkString(";"),
-      task.postsql.mkString(";")
+      task.postsql.mkString(";"),
+      // where the table is written
+      task.connectionRef,
+      task.database,
+      task.parseSQL,
+      task.syncStrategy,
+      task.primaryKey.mkString(",")
     ).mkString("|")
 
   /** Privacy is left out: it changes the values of the column, see [[attributeData]]. */
   private def attributeMetadata(attrs: List[TableAttribute]): String =
     attrs.map(a => s"${a.name}:${a.comment}:${a.tags.toList.sorted}").mkString(";")
 
-  private def metadataFingerprint(table: SchemaInfo): String =
+  private def metadataFingerprint(table: SchemaInfo, domain: DomainInfo): String = {
+    val metadata = table.mergedMetadata(domain.metadata)
     List(
       table.comment,
       table.tags.toList.sorted,
       table.acl,
       table.rls,
       table.expectations,
-      attributeMetadata(table.attributes)
+      attributeMetadata(table.attributes),
+      table.streams,
+      table.sample,
+      table.patternSample,
+      metadata.dagRef,
+      metadata.freshness,
+      metadata.schedule,
+      sinkMetadata(metadata.sink),
+      domain.comment,
+      domain.tags.toList.sorted
     ).mkString("|")
+  }
 
   private def metadataFingerprint(task: AutoTaskInfo): String =
     List(
@@ -449,7 +513,14 @@ object ProjectSnapshot {
       task.acl,
       task.rls,
       task.expectations,
-      attributeMetadata(task.attributes)
+      attributeMetadata(task.attributes),
+      task.schedule,
+      task.dagRef,
+      task.freshness,
+      task.taskTimeoutMs,
+      task.streams,
+      task.assetTriggeringStrategy,
+      sinkMetadata(task.sink)
     ).mkString("|")
 
   private def sha256(bytes: Array[Byte]): String =
@@ -457,22 +528,63 @@ object ProjectSnapshot {
 
   private def sha256(text: String): String = sha256(text.getBytes(StandardCharsets.UTF_8))
 
+  /** `f` relative to `base`, its path components joined with "/" whatever the platform: the keys of
+    * the snapshot are compared across sides and tested as such.
+    */
+  private[impact] def relativePath(base: File, f: File): String =
+    base.path.relativize(f.path).iterator().asScala.map(_.toString).mkString("/")
+
+  private def filesUnder(dir: File): List[File] =
+    if (dir.isDirectory) dir.listRecursively.filter(_.isRegularFile).toList else Nil
+
+  /** Every file under `metadata/` but `load/` and `transform/`, which the nodes cover. */
   private def otherFiles(projectDir: File): Map[String, String] = {
     val metadataDir = projectDir / "metadata"
-    if (!metadataDir.exists) Map.empty
-    else {
-      val dirs =
-        List("dags", "expectations", "macros", "types", "write-strategies", "load-strategies")
-          .map(metadataDir / _)
-          .filter(_.isDirectory)
-      val topLevel = metadataDir.list.filter { f =>
-        f.isRegularFile && (f.name == "application.sl.yml" || f.name == "refs.sl.yml" ||
-        (f.name.startsWith("env") && f.name.endsWith(".sl.yml")))
-      }.toList
-      val files = dirs.flatMap(_.listRecursively.filter(_.isRegularFile).toList) ++ topLevel
-      files.map { f =>
-        metadataDir.relativize(f).toString -> sha256(f.byteArray)
-      }.toMap
+    filesUnder(metadataDir).flatMap { f =>
+      val path = relativePath(metadataDir, f)
+      if (path.startsWith("load/") || path.startsWith("transform/")) None
+      else Some(path -> sha256(f.byteArray))
+    }.toMap
+  }
+
+  /** Every file under `metadata/load` and `metadata/transform`, hashed, with the nodes it defines
+    * by the file name convention (see [[DefinitionFile]]). A table whose domain or name differs
+    * from its folder or file name falls back on the nodes of that table name.
+    */
+  private def definitionFiles(
+    projectDir: File,
+    loadRefs: Set[NodeRef],
+    taskFiles: Map[NodeRef, (String, String)]
+  ): Map[String, DefinitionFile] = {
+    val metadataDir = projectDir / "metadata"
+    def baseName(name: String): String = name.takeWhile(_ != '.')
+    def nodesOf(path: String): Set[NodeRef] = path.split('/').toList match {
+      case "load" :: folder :: rest if rest.nonEmpty =>
+        val domain = folder.toLowerCase
+        if (rest.last.startsWith("_config.")) loadRefs.filter(_.domain == domain)
+        else {
+          val table = baseName(rest.last).toLowerCase
+          val exact = loadRefs.filter(r => r.domain == domain && r.table == table)
+          if (exact.nonEmpty) exact else loadRefs.filter(_.table == table)
+        }
+      case "transform" :: folder :: rest if rest.nonEmpty =>
+        val inFolder = taskFiles.filter { case (_, (dir, _)) => dir == folder }
+        if (rest.last.startsWith("_config.")) inFolder.keySet
+        else {
+          val prefix = baseName(rest.last)
+          val exact = inFolder.collect {
+            case (ref, (_, p)) if p.equalsIgnoreCase(prefix) => ref
+          }.toSet
+          if (exact.nonEmpty) exact else taskFiles.keySet.filter(_.table == prefix.toLowerCase)
+        }
+      case _ => Set.empty
     }
+    List("load", "transform")
+      .flatMap(d => filesUnder(metadataDir / d))
+      .map { f =>
+        val path = relativePath(metadataDir, f)
+        path -> DefinitionFile(sha256(f.byteArray), nodesOf(path))
+      }
+      .toMap
   }
 }

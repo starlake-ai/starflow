@@ -418,6 +418,72 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
+  it should "classify the remaining table and task fields as structural or metadata" in {
+    new WithSettings() {
+      val stg = NodeRef("stg", "orders")
+      val raw = NodeRef("raw", "orders")
+      def stgNode(extra: String): NodeView =
+        load(
+          Map(
+            "metadata/transform/stg/orders.sl.yml" ->
+            s"version: 1\ntask:\n  name: orders\n  domain: stg\n  table: orders\n$extra"
+          )
+        ).nodes(stg)
+      def rawNode(extra: String, pattern: String = "orders.*.csv"): NodeView =
+        load(
+          Map(
+            "metadata/load/raw/orders.sl.yml" ->
+            s"""version: 1
+               |table:
+               |  name: orders
+               |  pattern: "$pattern"
+               |$extra$ordersAttributes""".stripMargin
+          )
+        ).nodes(raw)
+      def check(base: NodeView, changed: NodeView, structural: Boolean): Unit =
+        if (structural) {
+          changed.structural should not be base.structural
+          changed.metadata shouldBe base.metadata
+        } else {
+          changed.structural shouldBe base.structural
+          changed.metadata should not be base.metadata
+        }
+
+      val task = stgNode("")
+      List(
+        "  connectionRef: other\n"              -> true,
+        "  database: otherdb\n"                 -> true,
+        "  parseSQL: false\n"                   -> true,
+        "  syncStrategy: ALL\n"                 -> true,
+        "  primaryKey: [id]\n"                  -> true,
+        "  sink:\n    materializedView: VIEW\n" -> true,
+        "  sink:\n    days: 3\n"                -> true,
+        "  sink:\n    sharding: [id]\n"         -> true,
+        "  sink:\n    connectionRef: other\n"   -> true,
+        "  schedule: \"0 0 * * *\"\n"           -> false,
+        "  dagRef: other\n"                     -> false,
+        "  freshness:\n    warn: 1d\n"          -> false,
+        "  taskTimeoutMs: 1000\n"               -> false,
+        "  streams: [s]\n"                      -> false,
+        "  sink:\n    coalesce: true\n"         -> false
+      ).foreach { case (extra, structural) =>
+        withClue(s"task: $extra") { check(task, stgNode(extra), structural) }
+      }
+
+      val table = rawNode("")
+      check(table, rawNode("", pattern = "orders2.*.csv"), structural = true)
+      List(
+        "  presql:\n  - \"DELETE FROM a\"\n"  -> true,
+        "  postsql:\n  - \"DELETE FROM a\"\n" -> true,
+        "  primaryKey: [id]\n"                -> true,
+        "  streams: [s]\n"                    -> false,
+        "  sample: \"1,2,ok\"\n"              -> false
+      ).foreach { case (extra, structural) =>
+        withClue(s"table: $extra") { check(table, rawNode(extra), structural) }
+      }
+    }
+  }
+
   private def statusWith(extra: String, format: String = "DSV", comment: String = "") = Map(
     "metadata/load/raw/orders.sl.yml" -> ordersWith(
       (if (comment.isEmpty) "" else s"  comment: \"$comment\"\n") +

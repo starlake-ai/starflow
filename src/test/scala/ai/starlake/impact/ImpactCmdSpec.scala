@@ -176,6 +176,68 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "report a change of load postsql, load pattern or task connection" in {
+    new WithSettings() {
+      val orders = ImpactFixtures.baseFiles("metadata/load/raw/orders.sl.yml")
+      val stgTask = ImpactFixtures.baseFiles("metadata/transform/stg/orders.sl.yml")
+      List(
+        Map(
+          "metadata/load/raw/orders.sl.yml" ->
+          orders.replace("  attributes:", "  postsql:\n  - \"DELETE FROM x\"\n  attributes:")
+        ) -> "raw.orders",
+        Map(
+          "metadata/load/raw/orders.sl.yml" -> orders.replace("orders.*.csv", "orders2.*.csv")
+        ) -> "raw.orders",
+        Map(
+          "metadata/transform/stg/orders.sl.yml" -> (stgTask + "  connectionRef: other\n")
+        ) -> "stg.orders"
+      ).foreach { case (overrides, node) =>
+        withClue(overrides.values.head) {
+          withProjects(overrides) { (o, n) =>
+            val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+            report.direct.map(d => (d.node.name, d.changeClass)) shouldBe List(
+              node -> ChangeClass.Breaking
+            )
+          }
+        }
+      }
+    }
+  }
+
+  it should "list a load or transform file change that no node explains as not classified" in {
+    new WithSettings() {
+      val orders = ImpactFixtures.baseFiles("metadata/load/raw/orders.sl.yml")
+      withProjects(
+        Map(
+          // a YAML comment changes the file, not what the snapshot reads from it
+          "metadata/load/raw/orders.sl.yml"  -> (orders + "# reviewed\n"),
+          "metadata/load/raw/_config.sl.yml" -> "version: 1\nload:\n  name: raw\n# owner: x\n",
+          "metadata/transform/kpi/notes.txt" -> "a note\n",
+          "metadata/extract/source.sl.yml"   -> "version: 1\n",
+          "metadata/mapping/m.txt"           -> "m\n"
+        )
+      ) { (o, n) =>
+        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        report.direct shouldBe empty
+        report.otherChanges shouldBe List(
+          "extract/source.sl.yml (added)",
+          "load/raw/_config.sl.yml (changed, not classified)",
+          "load/raw/orders.sl.yml (changed, not classified)",
+          "mapping/m.txt (added)",
+          "transform/kpi/notes.txt (added, not classified)"
+        )
+      }
+      // a file whose node has a direct change is explained by it
+      withProjects(
+        Map("metadata/load/raw/orders.sl.yml" -> (orders.replace("APPEND", "OVERWRITE") + "# x\n"))
+      ) { (o, n) =>
+        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        report.direct.map(_.node.name) shouldBe List("raw.orders")
+        report.otherChanges shouldBe empty
+      }
+    }
+  }
+
   it should "return exit code 2 on usage errors" in {
     new WithSettings() {
       val usageErrors = List(
