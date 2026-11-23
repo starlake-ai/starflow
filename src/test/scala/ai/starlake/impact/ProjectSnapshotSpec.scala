@@ -374,48 +374,104 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
-  it should "treat changes of data-producing fields as structural" in {
+  it should "treat changes of data-producing table and task fields as structural" in {
     new WithSettings() {
-      def structural(ref: NodeRef, overrides: Map[String, String]): String =
-        load(overrides).nodes(ref).structural
-      def metadata(ref: NodeRef, overrides: Map[String, String]): String =
-        load(overrides).nodes(ref).metadata
       val stg = NodeRef("stg", "orders")
       val raw = NodeRef("raw", "orders")
       def stgTask(extra: String) = Map(
         "metadata/transform/stg/orders.sl.yml" ->
         s"version: 1\ntask:\n  name: orders\n  domain: stg\n  table: orders\n$extra"
       )
-      def statusWith(extra: String, format: String = "DSV") = Map(
-        "metadata/load/raw/orders.sl.yml" -> ordersWith(
-          s"""  attributes:
-             |  - name: id
-             |    type: long
-             |  - name: status
-             |    type: string
-             |$extra  metadata:
-             |    format: $format
-             |""".stripMargin
-        )
-      )
+      def structural(ref: NodeRef, overrides: Map[String, String]): String =
+        load(overrides).nodes(ref).structural
       val baseTask = structural(stg, stgTask("  postsql:\n  - \"DELETE FROM a\"\n"))
       structural(stg, stgTask("  postsql:\n  - \"DELETE FROM b\"\n")) should not be baseTask
       structural(stg, stgTask("  presql:\n  - \"DELETE FROM a\"\n")) should not be baseTask
+      structural(raw, statusWith("")) should not be structural(raw, statusWith("", "JSON"))
+    }
+  }
 
-      val baseLoad = structural(raw, statusWith(""))
-      structural(raw, statusWith("    script: \"upper(status)\"\n")) should not be baseLoad
-      structural(raw, statusWith("    required: true\n")) should not be baseLoad
-      structural(raw, statusWith("    default: \"x\"\n")) should not be baseLoad
-      structural(raw, statusWith("", format = "JSON")) should not be baseLoad
-      def nested(innerType: String) =
-        statusWith(
+  private def statusWith(extra: String, format: String = "DSV") = Map(
+    "metadata/load/raw/orders.sl.yml" -> ordersWith(
+      s"""  attributes:
+         |  - name: id
+         |    type: long
+         |  - name: status
+         |    type: string
+         |$extra  metadata:
+         |    format: $format
+         |""".stripMargin
+    )
+  )
+
+  it should "keep attribute data fields at the column level" in {
+    new WithSettings() {
+      val raw = NodeRef("raw", "orders")
+      def node(extra: String): NodeView = load(statusWith(extra)).nodes(raw)
+      def attribute(n: NodeView, name: String): AttributeView =
+        n.attributes.find(_.key == name).get
+      val base = node("")
+
+      val added = node("  - name: added\n    type: string\n    required: true\n")
+      added.structural shouldBe base.structural
+      attribute(added, "added").dataFingerprint should include("required=true")
+
+      List(
+        "    script: \"upper(status)\"\n",
+        "    required: true\n",
+        "    default: \"x\"\n",
+        "    privacy: HIDE\n"
+      ).foreach { field =>
+        withClue(field) {
+          val changed = node(field)
+          changed.structural shouldBe base.structural
+          attribute(changed, "status").dataFingerprint should not be
+          attribute(base, "status").dataFingerprint
+          attribute(changed, "id") shouldBe attribute(base, "id")
+        }
+      }
+      node("    privacy: HIDE\n").metadata shouldBe base.metadata
+
+      def nested(innerType: String): AttributeView = attribute(
+        node(
           s"  - name: nested\n    type: struct\n    attributes:\n    - name: inner\n      type: $innerType\n"
-        )
-      structural(raw, nested("string")) should not be structural(raw, nested("long"))
+        ),
+        "nested"
+      )
+      nested("string").dataFingerprint should not be nested("long").dataFingerprint
 
-      val hidden = statusWith("    privacy: HIDE\n")
-      structural(raw, hidden) should not be baseLoad
-      metadata(raw, hidden) shouldBe metadata(raw, statusWith(""))
+      val rooted = node("    default: \"{{SL_ROOT}}/d\"\n")
+      attribute(rooted, "status").dataFingerprint should include("__SL_ROOT__/d")
+      attribute(node("    default: \"{{SL_ROOT}}/d\"\n"), "status") shouldBe
+      attribute(rooted, "status")
+    }
+  }
+
+  it should "keep task attribute privacy at the column level" in {
+    new WithSettings() {
+      val stg = NodeRef("stg", "orders")
+      def node(privacy: String): NodeView =
+        load(
+          Map(
+            "metadata/transform/stg/orders.sl.yml" ->
+            s"""version: 1
+               |task:
+               |  name: orders
+               |  domain: stg
+               |  table: orders
+               |  attributes:
+               |  - name: id
+               |    type: long
+               |  - name: amount
+               |    type: decimal
+               |$privacy""".stripMargin
+          )
+        ).nodes(stg)
+      val base = node("")
+      val hidden = node("    privacy: HIDE\n")
+      hidden.structural shouldBe base.structural
+      hidden.attributes.find(_.key == "amount").get.dataFingerprint should not be
+      base.attributes.find(_.key == "amount").get.dataFingerprint
     }
   }
 }

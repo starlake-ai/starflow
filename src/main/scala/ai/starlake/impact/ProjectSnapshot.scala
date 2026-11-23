@@ -241,7 +241,7 @@ object ProjectSnapshot {
     } yield NodeView(
       NodeRef.of(domain.finalName, table.finalName),
       NodeKind.LoadTable,
-      table.attributes.map(attributeView),
+      table.attributes.map(attributeView(neutralize)),
       None,
       neutralize(structural(table, domain)),
       neutralize(metadataFingerprint(table))
@@ -323,7 +323,7 @@ object ProjectSnapshot {
       NodeView(
         ref,
         NodeKind.Task,
-        t.attributes.map(attributeView),
+        t.attributes.map(attributeView(neutralize)),
         Some(shapeOf(ref, t)),
         neutralize(structural(t)),
         neutralize(metadataFingerprint(t))
@@ -340,8 +340,8 @@ object ProjectSnapshot {
   /** Column names are compared lower case everywhere in the impact analysis. */
   private def finalNameOf(a: TableAttribute): String = a.getFinalName().toLowerCase
 
-  private def attributeView(a: TableAttribute): AttributeView =
-    AttributeView(a.name, finalNameOf(a), a.`type`)
+  private def attributeView(neutralize: String => String)(a: TableAttribute): AttributeView =
+    AttributeView(a.name, finalNameOf(a), a.`type`, neutralize(attributeData(a)))
 
   /** What changes how the files of a load table are parsed. */
   private def parsing(m: Metadata): String =
@@ -361,9 +361,9 @@ object ProjectSnapshot {
       m.fillWithDefaultValue
     ).mkString(",")
 
-  /** The fields of an attribute that change the values loaded into its column, nested attributes
-    * included. Nested attributes also carry their name and type, which [[AttributeView]] (top level
-    * only) does not see.
+  /** The fields of an attribute that change the values of its column, nested attributes included:
+    * the `dataFingerprint` of its [[AttributeView]], a column-level change. Nested attributes also
+    * carry their name and type, which [[AttributeView]] (top level only) does not see.
     */
   private def attributeData(a: TableAttribute): String = {
     val fields = List(
@@ -393,8 +393,7 @@ object ProjectSnapshot {
       metadata.writeStrategy.map(_.toString).getOrElse(""),
       metadata.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
       table.filter.getOrElse(""),
-      parsing(metadata),
-      table.attributes.map(a => s"${a.name}{${attributeData(a)}}").mkString(";")
+      parsing(metadata)
     ).mkString("|")
   }
 
@@ -403,11 +402,10 @@ object ProjectSnapshot {
       task.writeStrategy.map(_.toString).getOrElse(""),
       task.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
       task.presql.mkString(";"),
-      task.postsql.mkString(";"),
-      task.attributes.flatMap(a => a.privacy.map(p => s"${a.name}=$p")).mkString(";")
+      task.postsql.mkString(";")
     ).mkString("|")
 
-  /** Privacy is left out: it changes the values of the column, see [[structural]]. */
+  /** Privacy is left out: it changes the values of the column, see [[attributeData]]. */
   private def attributeMetadata(attrs: List[TableAttribute]): String =
     attrs.map(a => s"${a.name}:${a.comment}:${a.tags.toList.sorted}").mkString(";")
 

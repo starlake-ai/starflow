@@ -156,10 +156,26 @@ object ChangeDetector {
           else Nil
         val retype =
           if (!a.tpe.equalsIgnoreCase(b.tpe)) List(TypeChanged(a.finalName, a.tpe, b.tpe)) else Nil
-        rename ++ retype
+        rename ++ retype ++ dataChange(a, b).toList
       }
     }
     removed ++ updated ++ added
+  }
+
+  /** A field that changes the values of an existing column (script, default, privacy ...) changed.
+    * An added attribute is a [[ColumnAdded]] whatever its fields.
+    */
+  private def dataChange(before: AttributeView, after: AttributeView): Option[ColumnChange] =
+    if (before.dataFingerprint != after.dataFingerprint)
+      Some(ExpressionChanged(before.finalName.toLowerCase))
+    else None
+
+  private def attributeDataChanges(
+    before: List[AttributeView],
+    after: List[AttributeView]
+  ): List[ColumnChange] = {
+    val newByKey = after.map(a => a.key.toLowerCase -> a).toMap
+    before.flatMap(a => newByKey.get(a.key.toLowerCase).flatMap(b => dataChange(a, b)))
   }
 
   private def taskColumnChanges(o: NodeView, n: NodeView): List[ColumnChange] = {
@@ -197,6 +213,9 @@ object ChangeDetector {
         .filterNot(_.equalsIgnoreCase(a.tpe))
         .map(t => TypeChanged(a.finalName.toLowerCase, t, a.tpe))
     }
-    removed ++ renamed ++ expr ++ retyped ++ added
+    val exprColumns = expr.map(_.column).toSet
+    val dataChanged =
+      attributeDataChanges(o.attributes, n.attributes).filterNot(c => exprColumns(c.column))
+    removed ++ renamed ++ expr ++ dataChanged ++ retyped ++ added
   }
 }

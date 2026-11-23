@@ -47,9 +47,16 @@ object TaskShape {
 }
 
 /** A declared attribute. `key` is the source name (stable across a rename), `finalName` is the
-  * column name consumers see.
+  * column name consumers see. `dataFingerprint` changes when a field that changes the values of the
+  * column changes (script, default, trim, required, privacy, nested attributes ...): a change of
+  * the column, not of the whole table.
   */
-final case class AttributeView(key: String, finalName: String, tpe: String)
+final case class AttributeView(
+  key: String,
+  finalName: String,
+  tpe: String,
+  dataFingerprint: String = ""
+)
 
 /** @param structural
   *   fingerprint of what changes which rows end up in the table: write strategy, merge key,

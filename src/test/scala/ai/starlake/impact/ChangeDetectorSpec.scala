@@ -58,6 +58,35 @@ class ChangeDetectorSpec extends AnyFlatSpec with Matchers {
     c.details shouldBe List(ColumnAdded("note"))
   }
 
+  it should "classify a data change of a load attribute as BREAKING for that column only" in {
+    val scripted =
+      List(baseAttrs.head, baseAttrs(1).copy(dataFingerprint = "script=amount * 100"))
+    val c = detect(load(baseAttrs), load(scripted)).head
+    c.changeClass shouldBe Breaking
+    c.columns shouldBe Cols(Set("amount"))
+    c.details shouldBe List(ExpressionChanged("amount"))
+  }
+
+  it should "keep an added load attribute with data fields NON_BREAKING" in {
+    val added = baseAttrs :+ AttributeView("note", "note", "string", "required=true")
+    val c = detect(load(baseAttrs), load(added)).head
+    c.changeClass shouldBe NonBreaking
+    c.columns shouldBe Cols(Set("note"))
+    c.details shouldBe List(ColumnAdded("note"))
+  }
+
+  it should "classify a data change of a task attribute as BREAKING for that column only" in {
+    val attrs = List(
+      AttributeView("order_id", "order_id", "long"),
+      AttributeView("total", "total", "decimal")
+    )
+    val hidden = List(attrs.head, attrs(1).copy(dataFingerprint = "privacy=HIDE"))
+    val c = detect(task(sql).copy(attributes = attrs), task(sql).copy(attributes = hidden)).head
+    c.changeClass shouldBe Breaking
+    c.columns shouldBe Cols(Set("total"))
+    c.details shouldBe List(ExpressionChanged("total"))
+  }
+
   it should "classify a removed load attribute as BREAKING with a gone column" in {
     val c = detect(load(baseAttrs), load(baseAttrs.take(1))).head
     c.changeClass shouldBe Breaking
