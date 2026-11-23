@@ -161,14 +161,34 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
       Failure(new IllegalArgumentException(s"unknown git ref '$ref'"))
     }
 
+  private def isProject(dir: File): Boolean = (dir / "metadata").isDirectory
+
+  /** A side given as a directory must be a project: a wrong path would otherwise load as an empty
+    * project, and every node would show as added (or nothing would change).
+    */
+  private def requireProject(dir: File, shown: String): Try[File] =
+    if (isProject(dir)) Success(dir)
+    else {
+      val hint =
+        if (dir.name == "metadata") ", pass the directory that contains the metadata folder"
+        else ""
+      Failure(
+        new IllegalArgumentException(
+          s"$shown is not a project directory: it has no metadata folder$hint"
+        )
+      )
+    }
+
   /** Resolves the old side first, then the new one. A checkout already extracted is deleted when
-    * the other side fails.
+    * the other side fails. Only the old side of a git comparison may lack a project, when the
+    * merge-base predates it: everything then shows as added, and its label says so.
     */
   private def resolveSides(config: ImpactConfig)(implicit settings: Settings): Try[(Side, Side)] = {
     val projectDir = File(settings.appConfig.root)
+    val workingTree = config.path2.isEmpty && config.head.isEmpty
 
     def oldSide: Try[Side] = (config.path1, config.base) match {
-      case (Some(p), _) => Success(Side(File(p), p, None))
+      case (Some(p), _) => requireProject(File(p), p).map(Side(_, p, None))
       case (None, Some(b)) =>
         for {
           repo <- repoOf(projectDir)
@@ -176,23 +196,32 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
           head <- commitOf(repo, config.head.getOrElse("HEAD"))
           mb   <- GitSnapshot.mergeBase(repo, base, head)
           co   <- GitSnapshot.projectAt(projectDir, mb)
-        } yield Side(co.projectDir, s"merge-base of $b (${mb.take(7)})", Some(co))
+        } yield {
+          val absent = if (isProject(co.projectDir)) "" else ", no project at this commit"
+          Side(co.projectDir, s"merge-base of $b (${mb.take(7)}$absent)", Some(co))
+        }
       case (None, None) =>
         Failure(new IllegalArgumentException("one of --base or --path1 is required"))
     }
 
     def newSide: Try[Side] = (config.path2, config.head) match {
-      case (Some(p), _) => Success(Side(File(p), p, None))
+      case (Some(p), _) => requireProject(File(p), p).map(Side(_, p, None))
       case (None, Some(h)) =>
         for {
           repo   <- repoOf(projectDir)
           commit <- commitOf(repo, h)
           co     <- GitSnapshot.projectAt(projectDir, commit)
-        } yield Side(co.projectDir, s"$h (${commit.take(7)})", Some(co))
-      case (None, None) => Success(Side(projectDir, "working tree", None))
+          side <- requireProject(co.projectDir, s"$projectDir at $h (${commit.take(7)})")
+            .map(dir => Side(dir, s"$h (${commit.take(7)})", Some(co)))
+            .recoverWith { case e => co.cleanup(); Failure(e) }
+        } yield side
+      case (None, None) =>
+        requireProject(projectDir, projectDir.pathAsString).map(Side(_, "working tree", None))
     }
 
     for {
+      // checked first, so that no checkout is extracted for nothing
+      _ <- if (workingTree) requireProject(projectDir, projectDir.pathAsString) else Success(())
       o <- oldSide
       n <- newSide.recoverWith { case e => o.cleanup(); Failure(e) }
     } yield (o, n)

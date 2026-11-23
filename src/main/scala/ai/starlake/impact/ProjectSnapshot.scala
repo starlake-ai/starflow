@@ -48,6 +48,9 @@ object ProjectSnapshot {
         val metadata = projectDir / "metadata"
         if (metadata.isDirectory) metadata.copyTo(workDir / "metadata")
         else (workDir / "metadata").createDirectories()
+        // the schema handler fails on a missing load folder: a project with transforms only, or
+        // the empty old side of a commit that predates the project, has none
+        List("load", "transform").foreach(d => (workDir / "metadata" / d).createDirectories())
         // An empty default env file reads as no variable, and avoids a warning per variable lookup
         val defaultEnv = workDir / "metadata" / "env.sl.yml"
         if (!defaultEnv.exists) defaultEnv.createFile()

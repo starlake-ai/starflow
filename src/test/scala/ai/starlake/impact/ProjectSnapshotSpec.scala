@@ -103,6 +103,28 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
+  it should "load a project without a load folder, and an empty one" in {
+    new WithSettings() {
+      val transformsOnly = load(
+        Map(
+          "metadata/transform/kpi/revenue.sql" -> "SELECT 1 AS id, 2 AS total\n",
+          "metadata/transform/kpi/dashboard.sql" ->
+          "SELECT Sum(r.total) AS rev FROM kpi.revenue r\n"
+        ),
+        removed = ImpactFixtures.baseFiles.keySet.filter(p =>
+          p.startsWith("metadata/load/") || p.startsWith("metadata/transform/stg/")
+        )
+      )
+      transformsOnly.nodes.keySet shouldBe Set(
+        NodeRef("kpi", "revenue"),
+        NodeRef("kpi", "dashboard")
+      )
+      val dir = File.newTemporaryDirectory("impact-empty-")
+      try ProjectSnapshot.load(dir, "empty", None).get.nodes shouldBe empty
+      finally dir.delete(swallowIOExceptions = true)
+    }
+  }
+
   it should "not create anything in the current project" in {
     new WithSettings() {
       val stageOfRaw = File(DatasetArea.stage("raw").toUri.getPath)

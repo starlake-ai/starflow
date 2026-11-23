@@ -343,6 +343,89 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "return exit code 2 when --path1 or --path2 is not a project directory" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, n) =>
+        val missing = (o.parent / s"no-such-project-${java.util.UUID.randomUUID()}").pathAsString
+        List(
+          Seq("--path1", missing, "--path2", n.pathAsString) -> missing,
+          Seq("--path1", o.pathAsString, "--path2", missing) -> missing,
+          Seq("--path1", (o / "metadata").pathAsString, "--path2", n.pathAsString) ->
+          (o / "metadata").pathAsString
+        ).foreach { case (args, bad) =>
+          withClue(args.mkString(" ")) {
+            val r = result(
+              ImpactCmd.run(args :+ "--fail-on" :+ "breaking", settings.schemaHandler())
+            )
+            r.exitCode shouldBe 2
+            r.report shouldBe None
+            r.error.get should include(bad)
+            r.error.get should include("is not a project directory")
+          }
+        }
+      }
+    }
+  }
+
+  it should "return exit code 2 when the working tree is not a project directory" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, _) =>
+        val notAProject = File.newTemporaryDirectory("impact-notaproject-")
+        deleting(notAProject) {
+          val r = result(withSettingsRoot(notAProject) { s =>
+            ImpactCmd.run(Seq("--path1", o.pathAsString), s.schemaHandler())(s)
+          })
+          r.exitCode shouldBe 2
+          r.error.get should include(s"${notAProject.pathAsString} is not a project directory")
+        }
+      }
+    }
+  }
+
+  it should "return exit code 2 in git mode from a directory that is not the project root" in {
+    new WithSettings() {
+      val repo = gitRepo()
+      deleting(repo) {
+        ImpactFixtures.writeProject(repo / "project")
+        commitAll(repo)
+        val checkoutsBefore = gitCheckouts()
+        List(Seq("--base", "HEAD"), Seq("--base", "HEAD", "--head", "HEAD")).foreach { args =>
+          withClue(args.mkString(" ")) {
+            // the repository root, one level above the project
+            val r = result(withSettingsRoot(repo) { s =>
+              ImpactCmd.run(args, s.schemaHandler())(s)
+            })
+            r.exitCode shouldBe 2
+            r.error.get should include("is not a project directory")
+          }
+        }
+        gitCheckouts() shouldBe checkoutsBefore
+      }
+    }
+  }
+
+  it should "compare against an empty old side when the base commit predates the project" in {
+    new WithSettings() {
+      val repo = gitRepo()
+      deleting(repo) {
+        (repo / "README.md").writeText("before the project\n")
+        commitAll(repo)
+        val project = ImpactFixtures.writeProject(repo / "project")
+        commitAll(repo)
+        val r = result(withSettingsRoot(project) { s =>
+          val stdout = new ByteArrayOutputStream()
+          Console.withOut(stdout) {
+            ImpactCmd.run(Seq("--base", "HEAD~1"), s.schemaHandler())(s)
+          }
+        })
+        r.exitCode shouldBe 0
+        val report = r.report.get
+        report.oldSide should include regex "merge-base of HEAD~1 \\([0-9a-f]{7}, no project at this commit\\)"
+        report.direct.map(_.changeClass).distinct shouldBe List(ChangeClass.Added)
+      }
+    }
+  }
+
   it should "return exit code 2 with --base outside a git repository" in {
     new WithSettings() {
       val project = ImpactFixtures.writeProject(File.newTemporaryDirectory("impact-nogit-"))
