@@ -29,7 +29,7 @@ object SiteCmd extends Cmd[SiteConfig] {
       builder.head(shell, command, "[options]"),
       builder.note(
         """
-          |Generate a documentation site from your Starflow project: tables, tasks, columns, doc blocks and project-wide lineage. The output folder holds sl-model.json and a static index.html that also opens from the file system. See [Site Builder Guide](/starflow/guides/documentation/starlake-site-builder).
+          |Generate a documentation site from your Starflow project: tables, tasks, columns, doc blocks and project-wide lineage. The output folder holds sl-model.json and a static index.html that also opens from the file system. See [Documentation site guide](/starflow/guides/documentation/starlake-site-builder).
           |""".stripMargin
       ),
       builder
