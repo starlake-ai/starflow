@@ -1045,50 +1045,52 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   @volatile private[handlers] var _domainErrors: List[ValidationMessage] = Nil
   @volatile private[handlers] var _domains: Option[List[DomainInfo]] = None
 
-  private var _externals = List.empty[DomainInfo]
-  private var _externalLastUpdate = LocalDateTime.MIN
+  @volatile private var _externals = List.empty[DomainInfo]
+  @volatile private var _externalsFingerprint: Option[List[(String, Long, Long)]] = None
 
-  def externals(): List[DomainInfo] = {
-    if (_externals.isEmpty) loadExternals()
+  /** Path, modification time and size of every YAML file under the externals folder. Listing is
+    * cheap next to parsing, so it tells whether the cached externals are still current, deleted
+    * files included.
+    */
+  private def externalsFingerprint(): List[(String, Long, Long)] =
+    if (storage.exists(DatasetArea.external))
+      storage
+        .list(DatasetArea.external, extension = ".sl.yml", recursive = true)
+        .map(f => (f.path.toString, f.modificationInstant.toEpochMilli, f.fileSizeInBytes))
+        .sorted
+    else
+      Nil
+
+  /** External domains, reloaded whenever a file under the externals folder was added, changed or
+    * removed since the last load, so a long-running process such as starlake-api never serves stale
+    * externals.
+    */
+  def externals(): List[DomainInfo] = synchronized {
+    val fingerprint = externalsFingerprint()
+    if (!_externalsFingerprint.contains(fingerprint)) loadExternals(fingerprint)
     _externals
   }
 
-  def loadExternals(): List[DomainInfo] = {
-    _externals = if (storage.exists(DatasetArea.external)) {
-      val loadedDomains =
-        loadDomains(DatasetArea.external, Nil, Nil, raw = false, _externalLastUpdate) match {
-          case (list, Nil) => list.collect { case Success(domain) => domain }
-          case (list, errors) =>
-            errors.foreach {
-              case Failure(err) =>
-                logger.warn(
-                  s"There is one or more invalid Yaml files in your domains folder:${Utils.exceptionAsString(err)}"
-                )
-              case Success(_) => // ignore
-            }
-            list.collect { case Success(domain) => domain }
+  /** Reloads every external domain from disk. */
+  def loadExternals(): List[DomainInfo] = synchronized {
+    loadExternals(externalsFingerprint())
+  }
+
+  private def loadExternals(fingerprint: List[(String, Long, Long)]): List[DomainInfo] = {
+    _externals =
+      if (fingerprint.isEmpty) Nil
+      else {
+        val (valid, invalid) = loadDomains(DatasetArea.external, Nil, Nil, raw = false)
+        invalid.foreach {
+          case Failure(err) =>
+            logger.warn(
+              s"There is one or more invalid Yaml files in your externals folder:${Utils.exceptionAsString(err)}"
+            )
+          case Success(_) => // ignore
         }
-      loadedDomains.foreach { domain =>
-        domain.tables.foreach { table =>
-          _externals.find(_.name == domain.name) match {
-            case Some(existingDomain) =>
-              val otherTables = existingDomain.tables.filter(_.name != table.name)
-              _externals = _externals.map { d =>
-                if (d.name == domain.name) {
-                  d.copy(tables = otherTables :+ table)
-                } else {
-                  d
-                }
-              }
-            case None =>
-              _externals = _externals :+ domain
-          }
-        }
+        valid.collect { case Success(domain) => domain }
       }
-      _externalLastUpdate = LocalDateTime.now()
-      loadedDomains
-    } else
-      Nil
+    _externalsFingerprint = Some(fingerprint)
     _externals
   }
 
@@ -1209,8 +1211,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     area: Path,
     domainNames: List[String] = Nil,
     tableNames: List[String] = Nil,
-    raw: Boolean,
-    lastUpdated: LocalDateTime = LocalDateTime.MIN
+    raw: Boolean
   ): (List[Try[DomainInfo]], List[Try[DomainInfo]]) = {
     val (validDomainsFile, invalidDomainsFiles) =
       deserializedDomains(area, domainNames, raw)
@@ -1218,7 +1219,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           case (path, Success(domain)) =>
             logger.info(s"Loading domain from $path")
             val folder = path.getParent()
-            val schemaRefs = loadTableRefs(tableNames, raw, folder, lastUpdated)
+            val schemaRefs = loadTableRefs(tableNames, raw, folder, LocalDateTime.MIN)
             val tables = Option(domain.tables).getOrElse(Nil) ::: schemaRefs
             val finalTables =
               if (raw) tables
