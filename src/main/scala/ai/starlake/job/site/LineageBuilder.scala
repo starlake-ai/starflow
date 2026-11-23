@@ -100,9 +100,10 @@ object LineageBuilder {
       lineage.relations
         .filter(r => outputs.contains(clean(r.to.table)))
         .flatMap { r =>
-          val ref = s"${r.from.domain}.${r.from.table}"
+          val fromDomain = Option(r.from.domain).getOrElse("")
+          val ref = if (fromDomain.trim.isEmpty) r.from.table else s"$fromDomain.${r.from.table}"
           val table = clean(r.from.table)
-          val domain = clean(r.from.domain)
+          val domain = clean(fromDomain)
           val fromId: Option[String] =
             producers(finalNodes.values, ref, None).headOption.map(_.id).orElse {
               finalNodes.values
