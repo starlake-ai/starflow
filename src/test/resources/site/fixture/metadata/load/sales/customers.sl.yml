@@ -19,6 +19,7 @@ table:
     - name: "fr_only"
       predicate: "country = 'FR'"
       grants: ["group:fr"]
+      description: '{{ doc("fr_only_desc") }}'
   expectations:
     - expect: "is_unique('id')"
       failOnError: true

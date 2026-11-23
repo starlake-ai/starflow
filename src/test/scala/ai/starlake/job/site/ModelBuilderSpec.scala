@@ -68,15 +68,31 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
   it should "build groups, docs and project overview" in withFixture { implicit settings =>
     val model = build()
     model.groups.domains shouldBe List(
-      SiteGroup("sales", Some("Sales domain"), List("load:sales.customers", "load:sales.orders"))
+      SiteGroup(
+        "sales",
+        Some("The **sales** domain."),
+        List("load:sales.customers", "load:sales.orders")
+      )
     )
     model.groups.jobs.map(_.name) shouldBe List("kpi")
     model.groups.jobs.head.nodes shouldBe List("transform:kpi.revenue")
+    model.groups.dags.map(d => d.name -> d.comment) shouldBe List(
+      "airflow_load"      -> "Scheduled **load** DAG.",
+      "airflow_transform" -> "transform dag"
+    )
+    model.nodes("load:sales.customers").rls.map(_.description) shouldBe
+    List("Only **French** rows.")
     model.groups.dags.map(d => d.name -> d.nodes) shouldBe List(
       "airflow_load"      -> List("load:sales.customers", "load:sales.orders"),
       "airflow_transform" -> List("transform:kpi.revenue")
     )
-    model.docs.keySet shouldBe Set("customers_desc", "__overview__")
+    model.docs.keySet shouldBe Set(
+      "customers_desc",
+      "sales_desc",
+      "fr_only_desc",
+      "load_dag_desc",
+      "__overview__"
+    )
     model.project.overview shouldBe Some("# Fixture project")
     model.project.defaultConnection shouldBe "duckdb"
   }

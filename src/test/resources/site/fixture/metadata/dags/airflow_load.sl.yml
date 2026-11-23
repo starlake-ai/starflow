@@ -1,5 +1,5 @@
 version: 1
 dag:
-  comment: "load dag"
+  comment: '{{ doc("load_dag_desc") }}'
   template: "load/airflow__scheduled_table__shell.py.j2"
   filename: "airflow_load.py"

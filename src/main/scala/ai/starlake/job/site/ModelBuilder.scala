@@ -85,7 +85,7 @@ class ModelBuilder(
       nodes = nodes,
       edges = lineage.edges.sortBy(e => (e.kind, e.from, e.to)),
       columnEdges = lineage.columnEdges.sortBy(e => (e.task, e.from, e.to)),
-      groups = groups(domains, jobs, nodes),
+      groups = groups(domains, jobs, nodes, docBlocks),
       docs = TreeMap(docBlocks.blocks.toSeq: _*)
     )
   }
@@ -141,6 +141,11 @@ class ModelBuilder(
     )
   }
 
+  private def siteRls(r: RowLevelSecurity, docs: DocBlocks): (SiteRls, List[String]) = {
+    val (desc, w) = docs.resolve(Option(r.description).getOrElse(""))
+    (SiteRls(r.name, r.predicate, r.grants.toList.sorted, desc), w)
+  }
+
   private def existingPath(candidates: String*): Option[String] =
     candidates.find(rel =>
       Try(storage.exists(new Path(DatasetArea.metadata, rel))).getOrElse(false)
@@ -155,6 +160,7 @@ class ModelBuilder(
     val engine = engineOf(connectionRef)
     val (desc, descWarnings) = describe(table.comment, docs)
     val cols = table.attributes.map(a => column(a, table.primaryKey, engine, docs))
+    val rls = table.rls.map(r => siteRls(r, docs))
     val dag = table.metadata
       .flatMap(_.dagRef)
       .orElse(domain.metadata.flatMap(_.dagRef))
@@ -175,7 +181,7 @@ class ModelBuilder(
       columns = cols.map(_._1),
       expectations = table.expectations.map(e => SiteExpectation(e.expect, e.failOnError)),
       acl = table.acl.map(a => SiteAcl(a.role, a.grants.toList.sorted)),
-      rls = table.rls.map(r => SiteRls(r.name, r.predicate, r.grants.toList.sorted, r.description)),
+      rls = rls.map(_._1),
       sink = merged.sink,
       dag = dag,
       primaryKey = table.primaryKey,
@@ -187,7 +193,7 @@ class ModelBuilder(
       metadata = Some(merged),
       schedule = merged.schedule,
       freshness = merged.freshness,
-      warnings = (descWarnings ++ cols.flatMap(_._2)).distinct
+      warnings = (descWarnings ++ cols.flatMap(_._2) ++ rls.flatMap(_._2)).distinct
     )
   }
 
@@ -196,6 +202,7 @@ class ModelBuilder(
     val engine = engineOf(connectionRef)
     val (desc, descWarnings) = describe(task.comment, docs)
     val cols = task.attributes.map(a => column(a, task.primaryKey, engine, docs))
+    val rls = task.rls.map(r => siteRls(r, docs))
     val (compiled, compileWarnings) = task.sql match {
       case None => (None, Nil)
       case Some(_) =>
@@ -224,7 +231,7 @@ class ModelBuilder(
       columns = cols.map(_._1),
       expectations = task.expectations.map(e => SiteExpectation(e.expect, e.failOnError)),
       acl = task.acl.map(a => SiteAcl(a.role, a.grants.toList.sorted)),
-      rls = task.rls.map(r => SiteRls(r.name, r.predicate, r.grants.toList.sorted, r.description)),
+      rls = rls.map(_._1),
       sink = task.sink,
       dag = dag,
       primaryKey = task.primaryKey,
@@ -235,7 +242,8 @@ class ModelBuilder(
       python = task.python.map(_.toString),
       freshness = task.freshness,
       schedule = task.schedule,
-      warnings = (descWarnings ++ cols.flatMap(_._2) ++ compileWarnings).distinct
+      warnings =
+        (descWarnings ++ cols.flatMap(_._2) ++ rls.flatMap(_._2) ++ compileWarnings).distinct
     )
   }
 
@@ -244,17 +252,27 @@ class ModelBuilder(
   private def groups(
     domains: List[DomainInfo],
     jobs: List[AutoJobInfo],
-    nodes: TreeMap[String, SiteNode]
+    nodes: TreeMap[String, SiteNode],
+    docs: DocBlocks
   ): SiteGroups = {
+    def resolved(owner: String, text: Option[String]): Option[String] = {
+      val (desc, warnings) = describe(text, docs)
+      warnings.foreach(w => logger.warn(s"$owner: $w"))
+      desc
+    }
     val domainGroups = domains.map { d =>
       SiteGroup(
         d.finalName,
-        d.comment,
+        resolved(s"Domain ${d.finalName}", d.comment),
         d.tables.map(t => NodeId.load(d.finalName, t.finalName)).sorted
       )
     }
     val jobGroups = jobs.map { j =>
-      SiteGroup(j.name, j.comment, j.tasks.map(t => NodeId.transform(t.fullName())).sorted)
+      SiteGroup(
+        j.name,
+        resolved(s"Job ${j.name}", j.comment),
+        j.tasks.map(t => NodeId.transform(t.fullName())).sorted
+      )
     }
     val dagConfigs = Try(schemaHandler.loadDagGenerationConfigs(instantiateVars = false))
       .getOrElse(Map.empty)
@@ -265,7 +283,7 @@ class ModelBuilder(
       SiteDagGroup(
         name,
         info.map(_.template).getOrElse(""),
-        info.map(_.comment).getOrElse(""),
+        info.flatMap(i => resolved(s"DAG $name", Option(i.comment))).getOrElse(""),
         byDag.getOrElse(name, Nil).map(_._2).toList.sorted
       )
     }

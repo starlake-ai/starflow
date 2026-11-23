@@ -51,7 +51,8 @@
       "rls" : [ {
         "name" : "fr_only",
         "predicate" : "country = 'FR'",
-        "grants" : [ "group:fr" ]
+        "grants" : [ "group:fr" ],
+        "description" : "Only **French** rows."
       } ],
       "dag" : "airflow_load",
       "primaryKey" : [ "id" ],
@@ -154,7 +155,7 @@
   "groups" : {
     "domains" : [ {
       "name" : "sales",
-      "description" : "Sales domain",
+      "description" : "The **sales** domain.",
       "nodes" : [ "load:sales.customers", "load:sales.orders" ]
     } ],
     "jobs" : [ {
@@ -164,7 +165,7 @@
     "dags" : [ {
       "name" : "airflow_load",
       "template" : "load/airflow__scheduled_table__shell.py.j2",
-      "comment" : "load dag",
+      "comment" : "Scheduled **load** DAG.",
       "nodes" : [ "load:sales.customers", "load:sales.orders" ]
     }, {
       "name" : "airflow_transform",
@@ -175,6 +176,9 @@
   },
   "docs" : {
     "__overview__" : "# Fixture project",
-    "customers_desc" : "**Customers** master data."
+    "customers_desc" : "**Customers** master data.",
+    "fr_only_desc" : "Only **French** rows.",
+    "load_dag_desc" : "Scheduled **load** DAG.",
+    "sales_desc" : "The **sales** domain."
   }
 }

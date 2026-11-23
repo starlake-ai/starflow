@@ -1,4 +1,4 @@
 version: 1
 load:
   name: "sales"
-  comment: "Sales domain"
+  comment: '{{ doc("sales_desc") }}'
