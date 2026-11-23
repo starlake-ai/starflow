@@ -93,4 +93,14 @@ class JdbcDialectStatsSpec extends AnyFlatSpec with Matchers {
       "CASE WHEN c.relkind IN ('p', 'f') THEN NULL ELSE pg_total_relation_size(c.oid) END AS bytes"
     )
   }
+
+  "Postgres columns" should "read materialized view columns from pg_attribute" in {
+    val cols = Postgres.columnsSql(None, "sales")
+    cols should include("information_schema.columns")
+    cols should include("pg_attribute")
+    cols should include("c.relkind = 'm'")
+    cols should include("format_type(a.atttypid, a.atttypmod)")
+    cols should include("lower(n.nspname) = lower('sales')")
+    cols should include("ORDER BY table_name, ordinal_position")
+  }
 }

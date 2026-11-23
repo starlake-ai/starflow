@@ -61,7 +61,26 @@ object JdbcDialectStats {
       "JOIN pg_namespace n ON n.oid = c.relnamespace " +
       s"WHERE ${schemaFilter(this, "n.nspname", schema)} AND c.relkind IN ('r', 'p', 'm', 'f')"
     )
-    def columnsSql(database: Option[String], schema: String): String = infoColumns(this, "", schema)
+    // information_schema.columns does not list materialized views: read them from pg_attribute,
+    // with format_type giving the full spelling (numeric(18,2), character varying(20)).
+    def columnsSql(database: Option[String], schema: String): String =
+      "SELECT table_name, column_name, data_type, is_nullable, character_maximum_length, " +
+      "numeric_precision, numeric_scale FROM (" +
+      "SELECT table_name::text AS table_name, column_name::text AS column_name, " +
+      "data_type::text AS data_type, is_nullable::text AS is_nullable, " +
+      "character_maximum_length::int AS character_maximum_length, " +
+      "numeric_precision::int AS numeric_precision, numeric_scale::int AS numeric_scale, " +
+      "ordinal_position::int AS ordinal_position FROM information_schema.columns " +
+      s"WHERE ${schemaFilter(this, "table_schema", schema)} " +
+      "UNION ALL SELECT c.relname::text, a.attname::text, " +
+      "format_type(a.atttypid, a.atttypmod), " +
+      "CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, NULL::int, NULL::int, NULL::int, " +
+      "a.attnum::int FROM pg_attribute a " +
+      "JOIN pg_class c ON c.oid = a.attrelid " +
+      "JOIN pg_namespace n ON n.oid = c.relnamespace " +
+      s"WHERE ${schemaFilter(this, "n.nspname", schema)} AND c.relkind = 'm' " +
+      "AND a.attnum > 0 AND NOT a.attisdropped" +
+      ") cols ORDER BY table_name, ordinal_position"
   }
 
   object Redshift extends JdbcDialectStats {
