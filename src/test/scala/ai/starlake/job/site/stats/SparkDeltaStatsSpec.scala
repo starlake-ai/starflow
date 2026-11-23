@@ -2,7 +2,11 @@ package ai.starlake.job.site.stats
 
 import ai.starlake.TestHelper
 import ai.starlake.config.ConnectionInfo
+import ai.starlake.job.site.{NodeId, SiteNode}
 import ai.starlake.schema.model.ConnectionType
+
+import scala.collection.immutable.TreeMap
+import scala.concurrent.duration._
 
 class SparkDeltaStatsSpec extends TestHelper {
   "SparkStatsCollector" should "read Delta details and catalog statistics" in {
@@ -95,6 +99,37 @@ class SparkDeltaStatsSpec extends TestHelper {
         .collect("spark", ConnectionInfo(ConnectionType.FS), Nil)
       created shouldBe false
       result shouldBe CollectResult(Map.empty, Nil)
+    }
+  }
+
+  it should "collect two FS connections concurrently through the runner" in {
+    new WithSettings() {
+      val spark = sparkSession
+      spark.sql("CREATE DATABASE IF NOT EXISTS site_conc")
+      List("a", "b").foreach { n =>
+        spark.sql(s"DROP TABLE IF EXISTS site_conc.t_$n")
+        spark.sql(s"CREATE TABLE site_conc.t_$n (id BIGINT) USING parquet")
+      }
+      val conn = ConnectionInfo(ConnectionType.FS)
+      def node(n: String) =
+        SiteNode(
+          NodeId.load("site_conc", s"t_$n"),
+          "load",
+          s"t_$n",
+          "site_conc",
+          s"t_$n",
+          connectionRef = Some(s"fs_$n")
+        )
+      val nodes = TreeMap(List("a", "b").map(node).map(n => n.id -> n): _*)
+      val runner = new StatsRunner(
+        _ => Some(conn),
+        _ => Some(new SparkStatsCollector()),
+        timeout = 120.seconds
+      )
+      val stats = runner.run(nodes)
+      stats.connections.map { case (k, v) => k -> v.status } shouldBe
+      Map("fs_a" -> "ok", "fs_b" -> "ok")
+      stats.tables.values.forall(_.exists) shouldBe true
     }
   }
 }

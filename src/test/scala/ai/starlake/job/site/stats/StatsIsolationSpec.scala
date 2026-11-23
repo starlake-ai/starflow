@@ -142,10 +142,10 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     ConnectionStats("duckdb", "ok", None, 12L)
   }
 
-  it should "be ok with the joined failures when some groups failed" in {
+  it should "be ok with the first failure and a count of the others when some groups failed" in {
     val r = CollectResult(Map(orders -> found), List("hr: denied", "sales stats: no svv"))
     ConnectionStatus.from("redshift", r, 7L) shouldBe
-    ConnectionStats("redshift", "ok", Some("hr: denied; sales stats: no svv"), 7L)
+    ConnectionStats("redshift", "ok", Some("hr: denied (+1 more)"), 7L)
   }
 
   it should "keep the collector success status (unsupported) on partial results" in {
@@ -157,7 +157,7 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
   it should "be error when every group failed" in {
     val r = CollectResult(Map.empty, List("hr: denied", "sales: denied"))
     ConnectionStatus.from("postgresql", r, 5L) shouldBe
-    ConnectionStats("postgresql", "error", Some("hr: denied; sales: denied"), 5L)
+    ConnectionStats("postgresql", "error", Some("hr: denied (+1 more)"), 5L)
     ConnectionStatus.from("mysql", r, 5L, successStatus = "unsupported").status shouldBe "error"
   }
 

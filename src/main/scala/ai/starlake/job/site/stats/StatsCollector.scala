@@ -30,7 +30,8 @@ case class SchemaGroup(database: Option[String], schema: String, tables: List[Ph
 object ConnectionStatus {
 
   /** Connection-level status from a collector result: `error` when every group failed, otherwise
-    * `successStatus` with the failures (if any) as the error message.
+    * `successStatus`. The error message is the first failure followed by ` (+k more)`, capped at
+    * 300 characters; every failure is logged in full by the caller.
     */
   def from(
     engine: String,
@@ -38,7 +39,12 @@ object ConnectionStatus {
     durationMs: Long,
     successStatus: String = "ok"
   ): ConnectionStats = {
-    val error = if (result.failures.isEmpty) None else Some(result.failures.mkString("; "))
+    val error = result.failures match {
+      case Nil => None
+      case first :: rest =>
+        val more = if (rest.isEmpty) "" else s" (+${rest.size} more)"
+        Some(Sanitize.message(first + more))
+    }
     val status = if (result.allFailed) "error" else successStatus
     ConnectionStats(engine, status, error, durationMs)
   }

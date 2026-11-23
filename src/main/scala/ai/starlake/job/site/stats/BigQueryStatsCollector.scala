@@ -161,7 +161,8 @@ object BigQueryStatsCollector extends LazyLogging {
         )
       case Failure(e) =>
         logger.warn(
-          s"__TABLES__ query failed on $project.$dataset, using the API: ${StatsCollector.message(e)}"
+          s"__TABLES__ query failed on $project.$dataset, using the API: ${StatsCollector.message(e)}",
+          e
         )
         GroupResult(group.tables.map(t => t -> api(t.table)).toMap)
     }
