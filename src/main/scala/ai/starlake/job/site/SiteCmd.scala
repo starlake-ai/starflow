@@ -61,7 +61,7 @@ object SiteCmd extends Cmd[SiteConfig] {
       builder
         .opt[Unit]("serve")
         .action((_, c) => c.copy(serve = true))
-        .text("After generating, serve the site on http://127.0.0.1:<port>/ until Ctrl-C")
+        .text("After generating, serve the site on 127.0.0.1, on the --port port, until Ctrl-C")
         .optional(),
       builder
         .opt[Int]("port")
