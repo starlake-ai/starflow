@@ -28,6 +28,10 @@ export async function loadData(
   model.columnEdges ??= [];
   model.docs ??= {};
   model.groups ??= {};
+  // A group with no member node (a DAG that matches nothing) has `nodes` dropped too.
+  for (const list of [model.groups.domains, model.groups.jobs, model.groups.dags]) {
+    for (const g of list ?? []) g.nodes ??= [];
+  }
   const stats = inline<SiteStats>(doc, 'sl-stats') ?? (await fetched<SiteStats>(fetcher, './sl-stats.json'));
   return { model, stats };
 }

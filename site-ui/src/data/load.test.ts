@@ -30,6 +30,13 @@ describe('loadData', () => {
     expect(data.model.project.overview).toBe('a </script> b');
   });
 
+  it('defaults the nodes of a group the serializer left empty', async () => {
+    const m = { ...model, groups: { ...model.groups, dags: [{ name: 'empty_dag' }] } };
+    document.head.innerHTML = block('sl-model', JSON.stringify(m));
+    const data = await loadData(document, okFetch({}));
+    expect(data.model.groups.dags?.[0].nodes).toEqual([]);
+  });
+
   it('falls back to fetch when inline blocks are absent', async () => {
     const data = await loadData(document, okFetch({ './sl-model.json': model, './sl-stats.json': stats }));
     expect(Object.keys(data.model.nodes)).toHaveLength(5);
