@@ -54,14 +54,14 @@ object DocBlocks {
 
   def parse(contents: Seq[String]): (DocBlocks, List[String]) = {
     val warnings = List.newBuilder[String]
-    val blocks = contents.flatMap(BlockRe.findAllMatchIn).foldLeft(Map.empty[String, String]) {
-      (acc, m) =>
+    val blocks =
+      contents.flatMap(BlockRe.findAllMatchIn).foldLeft(Map.empty[String, String]) { (acc, m) =>
         val name = m.group(1)
         if (acc.contains(name)) {
           warnings += s"Duplicate doc block '$name' ignored"
           acc
         } else acc + (name -> m.group(2).trim)
-    }
+      }
     (DocBlocks(blocks), warnings.result())
   }
 

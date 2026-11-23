@@ -31,12 +31,12 @@ class DocBlocksSpec extends AnyFlatSpec with Matchers {
   "resolve" should "replace references, including nested ones" in {
     val (blocks, _) = DocBlocks.parse(Seq(md))
     blocks.resolve("""See {{ doc("nested") }}.""") shouldBe
-      ("See Before **Customers** master data. after.", Nil)
+    ("See Before **Customers** master data. after.", Nil)
   }
 
   it should "keep unknown references and warn" in {
     DocBlocks.Empty.resolve("""x {{ doc("missing") }}""") shouldBe
-      ("""x {{ doc("missing") }}""", List("Unknown doc block 'missing'"))
+    ("""x {{ doc("missing") }}""", List("Unknown doc block 'missing'"))
   }
 
   it should "stop on cycles and warn" in {
