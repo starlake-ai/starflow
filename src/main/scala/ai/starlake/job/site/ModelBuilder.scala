@@ -200,7 +200,9 @@ class ModelBuilder(
     val connectionRef = Try(task.getRunConnectionRef()).toOption
     val engine = engineOf(connectionRef)
     val (desc, descWarnings) = describe(task.comment, docs)
-    val cols = task.attributes.map(a => column(a, task.primaryKey, engine, docs))
+    // Core creates the table on its sink connection, so declared types follow that engine.
+    val sinkEngine = Try(task.getSinkConnectionRef()).toOption.flatMap(r => engineOf(Some(r)))
+    val cols = task.attributes.map(a => column(a, task.primaryKey, sinkEngine, docs))
     val rls = task.rls.map(r => siteRls(r, docs))
     val (compiled, compileWarnings) = task.sql match {
       case None => (None, Nil)
