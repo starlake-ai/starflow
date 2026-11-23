@@ -99,10 +99,32 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
       _ => throw new RuntimeException("Access Denied: __TABLES__"),
       _ => found
     )
-    res shouldBe GroupResult(Map(t -> found))
+    res shouldBe GroupResult(
+      Map(t -> found),
+      List("p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)")
+    )
   }
 
-  it should "fail its group when both the SQL and the API fail" in {
+  it should "leave out only the tables the API fails on" in {
+    val ok = PhysicalTable(Some("p"), "ds", "orders")
+    val ko = PhysicalTable(Some("p"), "ds", "locked")
+    val group = StatsCollector.bySchema(List(ok, ko), caseSensitive = true).head
+    val res = BigQueryStatsCollector.collectDataset(
+      "p",
+      group,
+      _ => throw new RuntimeException("Access Denied: __TABLES__"),
+      name =>
+        if (name == "locked") throw new RuntimeException("Access Denied: Table p:ds.locked")
+        else found
+    )
+    res.tables shouldBe Map(ok -> found)
+    res.failures shouldBe List(
+      "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
+      "p.ds.locked: Access Denied: Table p:ds.locked"
+    )
+  }
+
+  it should "report every table when both the SQL and the API fail" in {
     val ok = PhysicalTable(Some("p"), "ds", "orders")
     val ko = PhysicalTable(Some("p"), "secret", "orders")
     val res = StatsCollector.isolate(StatsCollector.bySchema(List(ok, ko), caseSensitive = true)) {
@@ -117,7 +139,27 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
         )
     }
     res.tables shouldBe Map(ok -> found)
-    res.failures shouldBe List("p.secret: Access Denied: Dataset p:secret")
+    res.failures shouldBe List(
+      "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
+      "p.secret: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
+      "p.secret.orders: Access Denied: Dataset p:secret"
+    )
+    res.allFailed shouldBe false
+    ConnectionStatus.from("bigquery", res, 1L).status shouldBe "ok"
+  }
+
+  it should "make the connection an error when the API fails on every table" in {
+    val t = PhysicalTable(Some("p"), "ds", "orders")
+    val res = StatsCollector.isolate(StatsCollector.bySchema(List(t), caseSensitive = true)) { g =>
+      BigQueryStatsCollector.collectDataset(
+        "p",
+        g,
+        _ => throw new RuntimeException("Access Denied: __TABLES__"),
+        _ => throw new RuntimeException("Access Denied: Table p:ds.orders")
+      )
+    }
+    res.tables shouldBe empty
+    ConnectionStatus.from("bigquery", res, 1L).status shouldBe "error"
   }
 
   it should "fail its group visibly, without the API fallback, on an unsafe dataset name" in {

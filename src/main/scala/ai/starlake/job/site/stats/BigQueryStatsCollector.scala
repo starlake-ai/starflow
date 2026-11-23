@@ -139,8 +139,10 @@ class BigQueryStatsCollector extends StatsCollector with LazyLogging {
 
 object BigQueryStatsCollector extends LazyLogging {
 
-  /** `__TABLES__` and INFORMATION_SCHEMA.COLUMNS, or the API per table when that SQL fails. Throws
-    * (failing the dataset group) only when the API fails too.
+  /** `__TABLES__` and INFORMATION_SCHEMA.COLUMNS, or the API per table when that SQL fails. The
+    * fallback adds the non-fatal note `<label>: used the API (__TABLES__ failed: <message>)`; a
+    * table the API fails on is left out and adds `<label>.<table>: <message>`, the other tables are
+    * kept.
     */
   private[stats] def collectDataset(
     project: String,
@@ -160,11 +162,24 @@ object BigQueryStatsCollector extends LazyLogging {
             .toMap
         )
       case Failure(e) =>
-        logger.warn(
-          s"__TABLES__ query failed on $project.$dataset, using the API: ${StatsCollector.message(e)}",
-          e
+        val reason = StatsCollector.message(e)
+        logger.warn(s"__TABLES__ query failed on $project.$dataset, using the API: $reason", e)
+        val note = s"${group.label}: used the API (__TABLES__ failed: $reason)"
+        val results = group.tables.map { t =>
+          Try(api(t.table)) match {
+            case Success(stats) => Right(t -> stats)
+            case Failure(apiError) =>
+              val label = s"${group.label}.${t.table}"
+              logger.warn(s"BigQuery API stats for $label failed", apiError)
+              Left(s"$label: ${StatsCollector.message(apiError)}")
+          }
+        }
+        GroupResult(
+          results.collect { case Right(r) => r }.toMap,
+          note :: results.collect { case Left(f) =>
+            f
+          }
         )
-        GroupResult(group.tables.map(t => t -> api(t.table)).toMap)
     }
   }
 }
