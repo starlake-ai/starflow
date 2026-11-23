@@ -119,7 +119,7 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
     val shape = build("SELECT o.nonexistent FROM starbake.orders o")
     shape.unresolved shouldBe None
     shape.unresolvedInputs shouldBe
-    Map(orders -> "column nonexistent could not be attributed to an input")
+    Map(orders -> "column o.nonexistent not found in starbake.orders")
   }
 
   it should "fall back to table level when an unqualified column cannot be attributed" in {
@@ -129,13 +129,30 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
     shape.column("quantity").get.sources shouldBe Set(SourceCol(orders, "quantity"))
   }
 
-  it should "put every input at table level when a column cannot be attributed" in {
+  it should "put only the input a qualified column names at table level" in {
     val shape = build(
       "SELECT o.nonexistent, p.price FROM starbake.orders o " +
       "JOIN starbake.products p ON o.product_id = p.product_id"
     )
-    shape.unresolvedInputs.keySet shouldBe Set(orders, products)
+    shape.unresolvedInputs shouldBe
+    Map(orders -> "column o.nonexistent not found in starbake.orders")
     shape.column("price").get.sources shouldBe Set(SourceCol(products, "price"))
+  }
+
+  it should "put every input at table level when an unqualified column cannot be attributed" in {
+    val shape = build(
+      "SELECT nonexistent, p.price FROM starbake.orders o " +
+      "JOIN starbake.products p ON o.product_id = p.product_id"
+    )
+    shape.unresolvedInputs.keySet shouldBe Set(orders, products)
+  }
+
+  it should "put every input at table level when the qualifier is not an input" in {
+    val shape = build(
+      "WITH d AS (SELECT o.order_id FROM starbake.orders o) " +
+      "SELECT d.nonexistent, p.price FROM d JOIN starbake.products p ON d.order_id = p.product_id"
+    )
+    shape.unresolvedInputs.keySet shouldBe Set(orders, products)
   }
 
   it should "keep the existing reason of an input already unresolved" in {
@@ -143,7 +160,7 @@ class TaskShapeBuilderSpec extends AnyFlatSpec with Matchers {
       "SELECT o.nonexistent, x.a FROM starbake.orders o JOIN other.mystery x ON o.order_id = x.id"
     )
     shape.unresolvedInputs shouldBe Map(
-      orders                      -> "column nonexistent could not be attributed to an input",
+      orders                      -> "column o.nonexistent not found in starbake.orders",
       NodeRef("other", "mystery") -> "columns unknown offline"
     )
   }

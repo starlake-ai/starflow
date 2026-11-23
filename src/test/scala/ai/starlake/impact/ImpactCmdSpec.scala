@@ -162,6 +162,25 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "report a column removed from a load table only once, as the impact on its readers" in {
+    new WithSettings() {
+      val withoutAmount = ImpactFixtures
+        .baseFiles("metadata/load/raw/orders.sl.yml")
+        .replace("  - name: amount\n    type: decimal\n", "")
+      withProjects(Map("metadata/load/raw/orders.sl.yml" -> withoutAmount)) { (o, n) =>
+        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        // stg.orders did not change: it only reads the removed column
+        report.direct.map(d => d.node.name -> d.changeClass) shouldBe
+        List("raw.orders" -> ChangeClass.Breaking)
+        val stg = report.impacted.find(_.node.name == "stg.orders").get
+        stg.likelyFailure shouldBe true
+        report.unresolved.map(e => e.from.name -> e.to.name) shouldBe
+        List("raw.orders" -> "stg.orders")
+        report.unresolved.head.reason shouldBe "column o.amount not found in raw.orders"
+      }
+    }
+  }
+
   it should "list an untraced DAG change" in {
     new WithSettings() {
       withProjects(

@@ -171,6 +171,41 @@ class ImpactPropagatorSpec extends AnyFlatSpec with Matchers {
     r(sink).changeClass shouldBe Breaking
   }
 
+  it should "show the path that made a node impacted on all its columns" in {
+    val byColumn = NodeRef("stg", "a_by_column") // reached first: consumers are sorted by name
+    val byRow = NodeRef("stg", "b_by_row")
+    val sink = NodeRef("kpi", "sink")
+    val view = SnapshotView(
+      "new",
+      List(
+        loadNode,
+        taskNode(byColumn, Set(src), List(col("x", src -> "amount"))),
+        taskNode(byRow, Set(src), List(col("id", src -> "id")), rowIds = Set("status")),
+        taskNode(
+          sink,
+          Set(byColumn, byRow),
+          List(col("v", byColumn -> "x"), col("w", byRow -> "id"))
+        )
+      ).map(n => n.ref -> n).toMap,
+      Map.empty
+    )
+    val r =
+      run(change(Breaking, Cols(Set("amount", "status")), List(ExpressionChanged("amount"))), view)
+    r(sink).columns shouldBe AllColumns
+    // the route through the row-level change explains "all columns", not the first one found
+    r(sink).path shouldBe List("raw.orders[amount, status]", "stg.b_by_row", "kpi.sink")
+  }
+
+  it should "keep the shortest path when a later route adds nothing worse" in {
+    val r = run(change(Breaking, Cols(Set("amount")), List(ExpressionChanged("amount"))))
+    r(dash).path shouldBe List(
+      "raw.orders[amount]",
+      "stg.orders[amount]",
+      "kpi.revenue[total]",
+      "kpi.dashboard[rev]"
+    )
+  }
+
   it should "terminate on cycles" in {
     val a = NodeRef("c", "a")
     val b = NodeRef("c", "b")

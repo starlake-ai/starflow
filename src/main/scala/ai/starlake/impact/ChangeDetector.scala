@@ -14,7 +14,7 @@ object ChangeDetector {
           Some(
             DirectChange(ref, o.kind, Breaking, AllColumns, Nil, List("deleted"), deleted = true)
           )
-        case (Some(o), Some(n)) => compare(o, n)
+        case (Some(o), Some(n)) => compare(o, ownShape(o, n))
         case (None, None)       => None
       }
     }
@@ -52,6 +52,17 @@ object ChangeDetector {
       }
     (other ++ definitions).sortBy(_._1).map(_._2)
   }
+
+  /** A task whose own SQL did not change keeps its old shape for the comparison: a different shape
+    * can then only come from its inputs (a column removed, renamed or retyped upstream), which
+    * propagation reports as impact, not as a change of this task.
+    */
+  private def ownShape(o: NodeView, n: NodeView): NodeView =
+    if (
+      o.kind == NodeKind.Task && n.kind == NodeKind.Task && o.definition.nonEmpty &&
+      o.definition == n.definition
+    ) n.copy(shape = o.shape)
+    else n
 
   private def compare(o: NodeView, n: NodeView): Option[DirectChange] = {
     val oldReason = o.shape.flatMap(_.unresolved)

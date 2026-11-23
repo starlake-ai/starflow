@@ -93,6 +93,26 @@ class ImpactRendererSpec extends TestHelper {
     }
   }
 
+  it should "print no column list for a change without columns" in {
+    new WithSettings() {
+      val metadataOnly = DirectChange(
+        NodeRef("raw", "products"),
+        NodeKind.LoadTable,
+        Metadata,
+        Cols(Set.empty),
+        Nil,
+        List("metadata only")
+      )
+      val text = ImpactRenderer.render(
+        ImpactReport("a", "b", List(metadataOnly), Nil, Nil, Nil),
+        "text",
+        None
+      )
+      text should include("raw.products\n")
+      text should not include "[]"
+    }
+  }
+
   it should "reject an unknown format" in {
     new WithSettings() {
       an[IllegalArgumentException] should be thrownBy ImpactRenderer.render(report, "xml", None)

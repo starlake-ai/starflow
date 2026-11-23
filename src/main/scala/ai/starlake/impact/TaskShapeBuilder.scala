@@ -436,15 +436,29 @@ object TaskShapeBuilder {
                   k == keyOf(parts) && unknownInputs.contains(node)
                 }
               }
-            def unattributed(c: JdbcColumn): List[String] = {
+
+            /** (column name, qualifier as written) of each column reference not tied to an input */
+            def unattributed(c: JdbcColumn): List[(String, Option[String])] = {
               val children = c.getChildren.asScala.toList
               if (children.nonEmpty) children.flatMap(unattributed)
               else {
                 val isColumnRef = c.getExpression == null || c.getExpression.isInstanceOf[Column]
                 val qualifier = nonEmpty(c.tableName).orElse(nonEmpty(c.scopeTable)).map(unquote)
                 if (isColumnRef && own(c).isEmpty && !qualifier.exists(coveredByUnknownInput))
-                  nonEmpty(c.columnName).orElse(nonEmpty(c.scopeColumn)).toList
+                  nonEmpty(c.columnName).orElse(nonEmpty(c.scopeColumn)).toList.map(_ -> qualifier)
                 else Nil
+              }
+            }
+            // the single input a qualifier names; None for a CTE, a subquery or an alias reused
+            // for several inputs
+            def inputOf(qualifier: String): Option[NodeRef] = {
+              val named = aliases.collect {
+                case (alias, parts) if alias == qualifier =>
+                  raw.collectFirst { case (k, node) if k == keyOf(parts) => node }
+              }
+              named.distinct match {
+                case List(Some(node)) => Some(node)
+                case _                => None
               }
             }
 
@@ -464,11 +478,21 @@ object TaskShapeBuilder {
                   )
                   .toMap
               else Map.empty[NodeRef, String]
-            val unattributedInputs = resolvedCols.flatMap(unattributed).headOption match {
-              case Some(name) =>
-                inputs.map(_ -> s"column $name could not be attributed to an input").toMap
-              case None => Map.empty[NodeRef, String]
-            }
+            // A qualified column missing from its input only makes that input table level; an
+            // unqualified one, or one whose qualifier is not an input, may come from any input.
+            val found = resolvedCols.flatMap(unattributed)
+            val located = found.map { case (name, q) => (name, q, q.flatMap(inputOf)) }
+            val unattributedInputs: Map[NodeRef, String] =
+              if (found.isEmpty) Map.empty
+              else if (located.forall(_._3.isDefined))
+                located.groupBy(_._3.get).map { case (node, cols) =>
+                  val (name, q, _) = cols.head
+                  node -> s"column ${q.getOrElse("")}.$name not found in ${node.name}"
+                }
+              else
+                inputs
+                  .map(_ -> s"column ${found.head._1} could not be attributed to an input")
+                  .toMap
             TaskShape(
               inputs = inputs,
               columns = columns,

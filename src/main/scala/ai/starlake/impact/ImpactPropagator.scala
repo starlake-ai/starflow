@@ -17,11 +17,19 @@ object ImpactPropagator {
       changeClass.rank >= other.changeClass.rank && columns.covers(other.columns) &&
       (likelyFailure || !other.likelyFailure) && (viaUnresolved || !other.viaUnresolved)
 
+    /** A route that makes the impact worse (a more severe class, all columns, a likely failure)
+      * explains the merged state better than the first, shortest one, so its path is kept.
+      */
+    private def worsens(other: State): Boolean =
+      other.changeClass.rank > changeClass.rank ||
+      (other.columns == AllColumns && columns != AllColumns) ||
+      (other.likelyFailure && !likelyFailure)
+
     def merge(other: State): State =
       State(
         worst(changeClass, other.changeClass),
         columns.union(other.columns),
-        path, // first path wins: BFS reaches a node by its shortest path first
+        if (worsens(other)) other.path else path,
         likelyFailure || other.likelyFailure,
         viaUnresolved || other.viaUnresolved
       )

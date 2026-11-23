@@ -270,6 +270,39 @@ class ChangeDetectorSpec extends AnyFlatSpec with Matchers {
     deleted.deleted shouldBe true
   }
 
+  "detect" should "not report a task whose own SQL did not change when only its inputs changed" in {
+    // the shape of the consumer differs only because its input lost a column: propagation
+    // reports it as impacted, it is not a change of its own
+    val withoutAmount: NodeRef => Option[List[String]] =
+      r => if (r == orders) Some(List("order_id", "status")) else None
+    val definition = TaskShapeBuilder.normalize(sql)
+    val before = task(sql).copy(definition = definition)
+    val after = task(sql).copy(
+      shape = Some(TaskShapeBuilder.build(sql, resolve, withoutAmount)),
+      definition = definition
+    )
+    after.shape should not be before.shape
+    detect(before, after) shouldBe empty
+  }
+
+  it should "still report the own changes of a task whose SQL did not change" in {
+    val definition = TaskShapeBuilder.normalize(sql)
+    val before = task(sql).copy(definition = definition)
+    detect(before, task(sql, metadata = "comment=x").copy(definition = definition))
+      .map(_.changeClass) shouldBe List(Metadata)
+    detect(before, task(sql, structural = "APPEND").copy(definition = definition))
+      .map(_.changeClass) shouldBe List(Breaking)
+  }
+
+  it should "report a task whose SQL changed even when its definition is set" in {
+    val edited = sql.replace("o.amount * 2", "o.amount * 3")
+    val c = detect(
+      task(sql).copy(definition = TaskShapeBuilder.normalize(sql)),
+      task(edited).copy(definition = TaskShapeBuilder.normalize(edited))
+    ).head
+    c.details shouldBe List(ExpressionChanged("total"))
+  }
+
   "otherChanges" should "list changed, added and removed untraced files" in {
     val a = SnapshotView("a", Map.empty, Map("dags/x.sl.yml" -> "1", "application.sl.yml" -> "1"))
     val b = SnapshotView("b", Map.empty, Map("dags/x.sl.yml" -> "2", "dags/y.sl.yml" -> "1"))
