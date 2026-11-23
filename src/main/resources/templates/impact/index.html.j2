@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Change impact</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #1f2328; }
+  table { border-collapse: collapse; margin-bottom: 1.5rem; }
+  th, td { border: 1px solid #d0d7de; padding: .35rem .6rem; text-align: left; vertical-align: top; }
+  .BREAKING { color: #b42318; font-weight: 600; }
+  .NON_BREAKING { color: #9a6700; }
+  .ADDED { color: #1a7f37; }
+  .METADATA { color: #57606a; }
+  .flag { color: #b42318; }
+</style>
+</head>
+<body>
+<h1>Change impact</h1>
+<p><code>{{ report.oldSide }}</code> to <code>{{ report.newSide }}</code>, generated {{ timestamp }}</p>
+<p>{{ report.direct|length }} direct, {{ report.impacted|length }} impacted, {{ report.summary.likelyFailures }} likely failures</p>
+
+<h2>Direct changes</h2>
+<table>
+<tr><th>Class</th><th>Kind</th><th>Node</th><th>Columns</th><th>Details</th></tr>
+{% for d in report.direct %}
+<tr><td class="{{ d.class }}">{{ d.class }}</td><td>{{ d.kind }}</td><td>{{ d.node }}</td><td>{{ d.columns }}</td>
+<td>{% for x in d.details %}{{ x }}<br>{% endfor %}{% for x in d.reasons %}{{ x }}<br>{% endfor %}{% if d.unresolved %}unresolved: {{ d.unresolved }}{% endif %}</td></tr>
+{% endfor %}
+</table>
+
+<h2>Impacted downstream</h2>
+<table>
+<tr><th>Class</th><th>Kind</th><th>Node</th><th>Columns</th><th>Path</th><th></th></tr>
+{% for n in report.impacted %}
+<tr><td class="{{ n.class }}">{{ n.class }}</td><td>{{ n.kind }}</td><td>{{ n.node }}</td><td>{{ n.columns }}</td>
+<td>{{ n.path|join(" &rarr; ") }}</td>
+<td class="flag">{% if n.likelyFailure %}likely failure {% endif %}{% if n.viaUnresolvedEdge %}table level{% endif %}</td></tr>
+{% endfor %}
+</table>
+
+<h2>Unresolved</h2>
+<ul>
+{% for e in report.unresolved %}<li>{{ e.from }} to {{ e.to }}: {{ e.reason }}</li>{% else %}<li>None</li>{% endfor %}
+</ul>
+
+<h2>Other changes, not traced</h2>
+<ul>
+{% for o in report.otherChanges %}<li>{{ o }}</li>{% else %}<li>None</li>{% endfor %}
+</ul>
+</body>
+</html>
