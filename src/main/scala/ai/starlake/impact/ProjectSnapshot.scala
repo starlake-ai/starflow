@@ -2,14 +2,17 @@ package ai.starlake.impact
 
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.schema.model.{AutoTaskInfo, DomainInfo, SchemaInfo, TableAttribute}
-import ai.starlake.utils.Utils
+import ai.starlake.schema.model.{AutoTaskInfo, DomainInfo, Metadata, SchemaInfo, TableAttribute}
+import ai.starlake.utils.{Utils, YamlSerde}
 import better.files.File
+import com.hubspot.jinjava.interpret.FatalTemplateErrorsException
 import org.apache.hadoop.fs.Path
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.regex.{Matcher, Pattern}
 import scala.collection.mutable
+import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
 /** Turns one version of a project on disk into a [[SnapshotView]], fully offline: no connection is
@@ -23,15 +26,24 @@ object ProjectSnapshot {
     */
   val RootToken = "__SL_ROOT__"
 
+  /** A YAML file this version cannot read: the project may predate the current layout. */
+  private final class UnreadableYaml(message: String, cause: Throwable)
+      extends Exception(message, cause)
+
   /** Loads the project from a temporary copy of its `metadata` folder: the schema handler writes
     * while loading (stage directories of each domain, a domain `_config.sl.yml` without a name is
     * rewritten), and `impact` must leave the project untouched. The copy is deleted afterwards.
+    *
+    * The Jinja engine is a singleton that resolves `{% include %}` against the metadata folder of
+    * the settings it was first used with: it is reset before, so that includes resolve against the
+    * copy, and after, so that the caller gets an engine built from its own settings again.
     */
   def load(projectDir: File, label: String, env: Option[String])(implicit
     settings: Settings
   ): Try[SnapshotView] =
     Try {
       val workDir = File.newTemporaryDirectory("starlake-impact-")
+      Utils.resetJinjaClassLoader()
       try {
         val metadata = projectDir / "metadata"
         if (metadata.isDirectory) metadata.copyTo(workDir / "metadata")
@@ -42,19 +54,28 @@ object ProjectSnapshot {
         val local = localSettings(workDir, env)
         val handler = local.schemaHandler(reload = true)
         build(projectDir, workDir, label, env, handler)(local)
-      } finally workDir.delete(swallowIOExceptions = true)
-    }.recover { case e: Throwable =>
-      throw new IllegalStateException(
-        s"Could not load project at $projectDir: ${e.getMessage}. If it predates the current layout, run 'starlake migrate' on it.",
-        e
-      )
+      } finally {
+        Utils.resetJinjaClassLoader()
+        workDir.delete(swallowIOExceptions = true)
+      }
+    }.recover {
+      case e: UnreadableYaml =>
+        throw new IllegalStateException(
+          s"Could not load project at $projectDir: ${e.getMessage}. If it predates the current layout, run 'starlake migrate' on it.",
+          e
+        )
+      case e: Throwable =>
+        throw new IllegalStateException(
+          s"Could not load project at $projectDir: ${e.getMessage}",
+          e
+        )
     }
 
   /** Every path of the work copy, not only root and metadata: types, macros, DAGs, strategies,
     * datasets and the areas would point at the current project otherwise, which the snapshot must
     * neither read nor write (the schema handler creates the stage directories of each domain).
     */
-  private def localSettings(workDir: File, env: Option[String])(implicit
+  private[impact] def localSettings(workDir: File, env: Option[String])(implicit
     settings: Settings
   ): Settings = {
     val root = workDir.pathAsString
@@ -88,44 +109,112 @@ object ProjectSnapshot {
 
   /** Replaces the root of the work copy and of the project, as written and as real paths, with
     * [[RootToken]]. Every other path variable (`SL_METADATA`, `SL_DATASETS` ...) lies under the
-    * work copy root, so it is covered too. Longest first: a real path may contain the other one
-    * (`/private/var/x` on macOS).
+    * work copy root, so it is covered too. A root is replaced only as a whole path: followed by a
+    * separator, a quote, a blank or the end (`/x/proj` is not replaced in `/x/proj2`). Longest
+    * first: a real path may contain the other one (`/private/var/x` on macOS).
     */
   private def neutralizeRoots(dirs: List[File]): String => String = {
-    val roots = dirs
+    val patterns = dirs
       .flatMap(d => List(Some(d.pathAsString), Try(d.path.toRealPath().toString).toOption).flatten)
       .filter(_.length > 1)
       .distinct
       .sortBy(-_.length)
-    sql => roots.foldLeft(sql)((acc, root) => acc.replace(root, RootToken))
+      .map(root => Pattern.compile(Pattern.quote(root) + "(?=[/\\\\'\"`\\s]|$)"))
+    val token = Matcher.quoteReplacement(RootToken)
+    text => patterns.foldLeft(text)((acc, p) => p.matcher(acc).replaceAll(token))
   }
 
-  /** The schema handler logs and skips a domain or a transform whose `_config.sl.yml` it cannot
-    * read: a project where some of them are unreadable must fail instead of yielding a partial
-    * snapshot. `SchemaHandler.checkValidity` is not used: it also validates the connections of the
-    * settings and requires a types file, which has nothing to do with reading the project offline.
-    * Returns the tasks of the project, so the transforms are read only once.
+  /** The messages of `e` and of its causes: a Jinja error says "Error rendering tag", its cause
+    * says which template is missing.
+    */
+  private def messages(e: Throwable): String =
+    Iterator
+      .iterate(e)(_.getCause)
+      .takeWhile(_ != null)
+      .flatMap {
+        case fatal: FatalTemplateErrorsException =>
+          fatal.getErrors.asScala.toList.flatMap { error =>
+            Option(error.getMessage).toList ++
+            Option(error.getException).map(messages).toList
+          }
+        case c => Option(c.getMessage).toList
+      }
+      .toList
+      .distinct
+      .mkString(": ")
+
+  /** The schema handler logs and skips the YAML files it cannot read, and fails a whole transform
+    * when one of its SQL files does not render. Before it loads anything, every domain, table,
+    * transform and task YAML file of the copy is rendered and deserialized here: a render error
+    * fails the load naming the file, a deserialization error fails it with the migrate hint. A task
+    * SQL file that does not render is emptied in the copy, so that only this task is lost, and its
+    * error and raw content are returned to mark the task unresolved.
+    */
+  private def checkFiles(metadataDir: File, handler: SchemaHandler)(implicit
+    settings: Settings
+  ): Map[File, (String, String)] = {
+    val vars = handler.activeEnvVars()
+    def subDirs(dir: File): List[File] =
+      if (dir.isDirectory) dir.list.filter(_.isDirectory).toList.sortBy(_.name) else Nil
+    def yamlFiles(dir: File): List[File] =
+      dir.listRecursively
+        .filter(f =>
+          f.isRegularFile && f.name.endsWith(".sl.yml") && !f.name.startsWith("_config.")
+        )
+        .toList
+        .sortBy(_.pathAsString)
+    def name(f: File): String = metadataDir.relativize(f).toString
+    def check(f: File)(deserialize: String => Any): Unit = {
+      val content = Try(Utils.parseJinja(f.contentAsString, vars)) match {
+        case Success(content) => content
+        case Failure(e) =>
+          throw new IllegalStateException(s"${name(f)} does not render: ${messages(e)}", e)
+      }
+      Try(deserialize(content)).failed.foreach { e =>
+        throw new UnreadableYaml(s"${name(f)} could not be read: ${e.getMessage}", e)
+      }
+    }
+    subDirs(metadataDir / "load").foreach { domain =>
+      val config = domain / "_config.sl.yml"
+      if (config.exists)
+        check(config)(YamlSerde.deserializeYamlLoadConfig(_, config.pathAsString, false).get)
+      yamlFiles(domain).foreach(f => check(f)(YamlSerde.deserializeYamlTables(_, f.pathAsString)))
+    }
+    subDirs(metadataDir / "transform").flatMap { job =>
+      val config = job / "_config.sl.yml"
+      if (config.exists)
+        check(config)(YamlSerde.deserializeYamlTransform(_, config.pathAsString).get)
+      yamlFiles(job).foreach(f => check(f)(YamlSerde.deserializeYamlTask(_, f.pathAsString)))
+      job.list
+        .filter(f => f.isRegularFile && (f.name.endsWith(".sql") || f.name.endsWith(".sql.j2")))
+        .toList
+        .flatMap { sqlFile =>
+          val raw = sqlFile.contentAsString
+          Try(Utils.parseJinja(raw, vars)).failed.toOption.map { e =>
+            sqlFile.writeText("")
+            sqlFile -> (messages(e), raw)
+          }
+        }
+    }.toMap
+  }
+
+  /** The tasks of each transform folder of the copy, with that folder. A transform the handler
+    * cannot load (all YAML files were checked before, so not a YAML error) fails the load.
     */
   private def readableTasks(handler: SchemaHandler)(implicit
     settings: Settings
-  ): List[AutoTaskInfo] = {
+  ): List[(Path, AutoTaskInfo)] = {
     val storage = settings.storageHandler()
-    val domainErrors =
-      handler.deserializedDomains(DatasetArea.load).collect { case (path, Failure(e)) =>
-        s"$path: ${e.getMessage}"
-      }
     val jobs =
       if (storage.exists(DatasetArea.transform))
         storage.listDirectories(DatasetArea.transform).map { dir =>
-          val configPath = new Path(dir, "_config.sl.yml")
-          configPath -> handler.loadJobTasksFromFile(configPath)
+          dir -> handler.loadJobTasksFromFile(new Path(dir, "_config.sl.yml"))
         }
       else Nil
-    val jobErrors = jobs.collect { case (path, Failure(e)) => s"$path: ${e.getMessage}" }
-    val errors = domainErrors ++ jobErrors
+    val errors = jobs.collect { case (dir, Failure(e)) => s"${dir.getName}: ${e.getMessage}" }
     if (errors.nonEmpty)
-      throw new IllegalStateException(s"unreadable files: ${errors.mkString("; ")}")
-    jobs.collect { case (_, Success(job)) => job.tasks }.flatten
+      throw new IllegalStateException(s"transforms not loaded: ${errors.mkString("; ")}")
+    jobs.collect { case (dir, Success(job)) => job.tasks.map(dir -> _) }.flatten
   }
 
   private def build(
@@ -138,11 +227,13 @@ object ProjectSnapshot {
     // First, so that the variables cached by the handler, with which it renders the YAML and the
     // task SQL while loading them, define SL_ROOT as the work copy root (otherwise it is the
     // SL_ROOT of the environment, unrelated to the project).
-    val vars =
-      handler.activeEnvVars(reload = true, env = env, root = Some(workDir.pathAsString))
+    handler.activeEnvVars(reload = true, env = env, root = Some(workDir.pathAsString))
     val neutralize = neutralizeRoots(List(workDir, projectDir))
+    val renderErrors = checkFiles(workDir / "metadata", handler)
     val domains: List[DomainInfo] = handler.domains(reload = true)
-    val tasks: List[AutoTaskInfo] = readableTasks(handler)
+    // sorted, so that the memoized shapes, cycles included, do not depend on the listing order
+    val tasks: List[(Path, AutoTaskInfo)] =
+      readableTasks(handler).sortBy { case (_, t) => NodeRef.of(t.domain, t.table).name }
 
     val loadNodes: List[NodeView] = for {
       domain <- domains
@@ -152,12 +243,22 @@ object ProjectSnapshot {
       NodeKind.LoadTable,
       table.attributes.map(attributeView),
       None,
-      structural(table, domain),
-      metadataFingerprint(table)
+      neutralize(structural(table, domain)),
+      neutralize(metadataFingerprint(table))
     )
 
     val taskByRef: Map[NodeRef, AutoTaskInfo] =
-      tasks.map(t => NodeRef.of(t.domain, t.table) -> t).toMap
+      tasks.map { case (_, t) => NodeRef.of(t.domain, t.table) -> t }.toMap
+    val taskDirs: Map[NodeRef, Path] =
+      tasks.map { case (dir, t) => NodeRef.of(t.domain, t.table) -> dir }.toMap
+
+    /** The file the handler reads the command of the task from (same lookup order). */
+    def commandFile(ref: NodeRef, task: AutoTaskInfo): Option[File] =
+      taskDirs.get(ref).flatMap { dir =>
+        List("sql", "sql.j2", "py")
+          .map(ext => File(new Path(dir, s"${task._filenamePrefix}.$ext").toUri.getPath))
+          .find(_.exists)
+      }
     val loadByRef = loadNodes.map(n => n.ref -> n).toMap
     val allRefs = loadByRef.keySet ++ taskByRef.keySet
 
@@ -198,14 +299,17 @@ object ProjectSnapshot {
                     .unresolved("python task", Set.empty, Set.empty)
                     .copy(rowFingerprint = sha256(settings.storageHandler().read(path)))
                 case None =>
-                  Try(Utils.parseJinja(task.sql.getOrElse(""), vars)) match {
-                    case Success(sql) =>
-                      TaskShapeBuilder.build(neutralize(sql), resolveName, knownColumns)
-                    case Failure(e) =>
-                      TaskShape.unresolved(
-                        s"SQL render failed: ${e.getMessage}",
-                        Set.empty,
-                        Set.empty
+                  commandFile(ref, task).flatMap(renderErrors.get) match {
+                    case Some((error, raw)) =>
+                      TaskShape
+                        .unresolved(s"SQL render failed: $error", Set.empty, Set.empty)
+                        .copy(rowFingerprint = TaskShapeBuilder.normalize(raw))
+                    case None =>
+                      // already rendered by the handler with the variables of the snapshot
+                      TaskShapeBuilder.build(
+                        neutralize(task.sql.getOrElse("")),
+                        resolveName,
+                        knownColumns
                       )
                   }
               }
@@ -215,14 +319,14 @@ object ProjectSnapshot {
         }
       )
 
-    val taskNodes = taskByRef.toList.map { case (ref, t) =>
+    val taskNodes = taskByRef.toList.sortBy(_._1.name).map { case (ref, t) =>
       NodeView(
         ref,
         NodeKind.Task,
         t.attributes.map(attributeView),
         Some(shapeOf(ref, t)),
-        structural(t),
-        metadataFingerprint(t)
+        neutralize(structural(t)),
+        neutralize(metadataFingerprint(t))
       )
     }
 
@@ -239,23 +343,73 @@ object ProjectSnapshot {
   private def attributeView(a: TableAttribute): AttributeView =
     AttributeView(a.name, finalNameOf(a), a.`type`)
 
+  /** What changes how the files of a load table are parsed. */
+  private def parsing(m: Metadata): String =
+    List(
+      m.format,
+      m.encoding,
+      m.multiline,
+      m.array,
+      m.withHeader,
+      m.separator,
+      m.quote,
+      m.escape,
+      m.options.map(_.toList.sorted),
+      m.loader,
+      m.emptyIsNull,
+      m.nullValue,
+      m.fillWithDefaultValue
+    ).mkString(",")
+
+  /** The fields of an attribute that change the values loaded into its column, nested attributes
+    * included. Nested attributes also carry their name and type, which [[AttributeView]] (top level
+    * only) does not see.
+    */
+  private def attributeData(a: TableAttribute): String = {
+    val fields = List(
+      "array"    -> a.array,
+      "required" -> a.required,
+      "default"  -> a.default,
+      "trim"     -> a.trim,
+      "script"   -> a.script,
+      "ignore"   -> a.ignore,
+      "position" -> a.position,
+      "privacy"  -> a.privacy
+    ).collect { case (key, Some(value)) => s"$key=$value" }
+    val nested =
+      if (a.attributes.isEmpty) Nil
+      else
+        List(
+          a.attributes
+            .map(n => s"${n.name}:${n.getFinalName()}:${n.`type`}{${attributeData(n)}}")
+            .mkString("attributes=[", ";", "]")
+        )
+    (fields ++ nested).mkString(",")
+  }
+
   private def structural(table: SchemaInfo, domain: DomainInfo): String = {
     val metadata = table.mergedMetadata(domain.metadata)
     List(
       metadata.writeStrategy.map(_.toString).getOrElse(""),
       metadata.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
-      table.filter.getOrElse("")
+      table.filter.getOrElse(""),
+      parsing(metadata),
+      table.attributes.map(a => s"${a.name}{${attributeData(a)}}").mkString(";")
     ).mkString("|")
   }
 
   private def structural(task: AutoTaskInfo): String =
     List(
       task.writeStrategy.map(_.toString).getOrElse(""),
-      task.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse("")
+      task.sink.map(s => s"${s.partition}|${s.clustering}").getOrElse(""),
+      task.presql.mkString(";"),
+      task.postsql.mkString(";"),
+      task.attributes.flatMap(a => a.privacy.map(p => s"${a.name}=$p")).mkString(";")
     ).mkString("|")
 
+  /** Privacy is left out: it changes the values of the column, see [[structural]]. */
   private def attributeMetadata(attrs: List[TableAttribute]): String =
-    attrs.map(a => s"${a.name}:${a.comment}:${a.tags.toList.sorted}:${a.privacy}").mkString(";")
+    attrs.map(a => s"${a.name}:${a.comment}:${a.tags.toList.sorted}").mkString(";")
 
   private def metadataFingerprint(table: SchemaInfo): String =
     List(
@@ -286,9 +440,12 @@ object ProjectSnapshot {
     val metadataDir = projectDir / "metadata"
     if (!metadataDir.exists) Map.empty
     else {
-      val dirs = List(metadataDir / "dags", metadataDir / "expectations").filter(_.exists)
+      val dirs =
+        List("dags", "expectations", "macros", "types", "write-strategies", "load-strategies")
+          .map(metadataDir / _)
+          .filter(_.isDirectory)
       val topLevel = metadataDir.list.filter { f =>
-        f.isRegularFile && (f.name == "application.sl.yml" ||
+        f.isRegularFile && (f.name == "application.sl.yml" || f.name == "refs.sl.yml" ||
         (f.name.startsWith("env") && f.name.endsWith(".sl.yml")))
       }.toList
       val files = dirs.flatMap(_.listRecursively.filter(_.isRegularFile).toList) ++ topLevel
