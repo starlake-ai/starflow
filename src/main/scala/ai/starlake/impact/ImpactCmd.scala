@@ -99,8 +99,8 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
       builder.checkConfig { c =>
         if (c.base.isDefined && (c.path1.isDefined || c.path2.isDefined))
           builder.failure("--base cannot be combined with --path1 / --path2")
-        else if (c.head.isDefined && c.path2.isDefined)
-          builder.failure("--head cannot be combined with --path2")
+        else if (c.head.isDefined && (c.path1.isDefined || c.path2.isDefined))
+          builder.failure("--head cannot be combined with --path1 / --path2")
         else if (c.base.isEmpty && c.path1.isEmpty)
           builder.failure("one of --base or --path1 is required")
         else if (!formats.contains(c.format))
