@@ -579,6 +579,16 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
+  it should "build file keys from path components joined with a slash" in {
+    val metadata = File.newTemporaryDirectory("impact-keys-")
+    try {
+      val sql = metadata / "transform" / "kpi" / "sub" / "dashboard.sql.j2"
+      ProjectSnapshot.relativePath(metadata, sql) shouldBe "transform/kpi/sub/dashboard.sql.j2"
+      ProjectSnapshot.relativePath(metadata, metadata / "application.sl.yml") shouldBe
+      "application.sl.yml"
+    } finally metadata.delete(swallowIOExceptions = true)
+  }
+
   it should "stop on a cycle of causes" in {
     val a = new RuntimeException("first")
     val b = new RuntimeException("second", a)

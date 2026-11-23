@@ -209,7 +209,8 @@ object ProjectSnapshot {
         )
         .toList
         .sortBy(_.pathAsString)
-    def name(f: File): String = metadataDir.relativize(f).toString
+    // "/" whatever the platform: the same key as the command file of the task, see build
+    def name(f: File): String = relativePath(metadataDir, f)
     def check(f: File)(deserialize: String => Any): Unit = {
       val content = Try(Utils.parseJinja(f.contentAsString, vars)) match {
         case Success(content) => content
