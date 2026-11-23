@@ -54,7 +54,7 @@ function ColumnRow({ col, depth, diffBy, highlight, hasStats }: RowProps) {
   useEffect(() => {
     if (isHit) row.current?.scrollIntoView?.({ block: 'center' });
   }, [isHit]);
-  const d = depth === 0 ? diffBy.get(finalName.toLowerCase()) : undefined;
+  const d = depth === 0 && !col.ignore ? diffBy.get(finalName.toLowerCase()) : undefined;
   const children = col.columns ?? [];
   return (
     <>
@@ -103,6 +103,7 @@ function ColumnRow({ col, depth, diffBy, highlight, hasStats }: RowProps) {
             ))}
         </td>
         <td>
+          {col.ignore && <span className="pill">ignored</span>}
           {col.required && <span className="pill">required</span>}
           {col.privacy && <span className="pill">{col.privacy}</span>}
           {col.script && (

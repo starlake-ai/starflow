@@ -19,6 +19,8 @@ export type SiteColumn = {
   metricType?: string | null;
   description?: string | null;
   tags?: string[];
+  /** Present only when true: declared but not created in the warehouse. */
+  ignore?: boolean;
   columns?: SiteColumn[];
 };
 

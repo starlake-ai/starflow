@@ -83,7 +83,8 @@ function NodeList({ model, ids }: { model: SiteModel; ids: string[] }) {
 
 export function NodePage({ model, stats, graph, node, column }: Props) {
   const t = stats?.tables?.[node.id];
-  const conn = node.connectionRef ? stats?.connections?.[node.connectionRef] : undefined;
+  const connRef = t?.connectionRef ?? node.connectionRef;
+  const conn = connRef ? stats?.connections?.[connRef] : undefined;
   const hasStats = stats != null;
   const { dependsOn, referencedBy, fkTo, fkFrom } = relations(model, graph, node.id);
   const columns = node.columns ?? [];

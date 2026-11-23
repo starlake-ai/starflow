@@ -32,6 +32,24 @@ describe('NodePage', () => {
     expect(render(s)).toContain('stats not supported for this engine');
   });
 
+  it('looks up the connection error under the stats connectionRef, not the node one', () => {
+    const s: SiteStats = structuredClone(stats);
+    s.tables![ID].connectionRef = 'sinkconn';
+    s.connections!.sinkconn = { engine: 'duckdb', status: 'error', error: 'sink boom', durationMs: 1 };
+    s.connections![renamed.nodes[ID].connectionRef ?? 'x'] = { engine: 'duckdb', status: 'ok', durationMs: 1 };
+    expect(render(s).replace(/<!-- -->/g, '')).toContain('stats unavailable: sink boom');
+  });
+
+  it('shows an ignored pill and no diff marker for an ignored column', () => {
+    const m: SiteModel = structuredClone(renamed);
+    m.nodes[ID].columns = [{ name: 'cust_id', type: 'long', ignore: true } as never];
+    const s: SiteStats = structuredClone(stats);
+    s.tables![ID].columnDiff = [{ name: 'cust_id', declared: 'BIGINT', actual: 'TEXT', status: 'mismatch' }];
+    const html = renderToString(<NodePage model={m} stats={s} graph={buildGraph(m)} node={m.nodes[ID]} />);
+    expect(html).toContain('ignored');
+    expect(html).not.toContain('class="marker"');
+  });
+
   it('shows the source file once', () => {
     const html = render(null).replace(/<!-- -->/g, '');
     expect(html.split('metadata/load/sales/customers.sl.yml').length - 1).toBe(1);
