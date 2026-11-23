@@ -1,20 +1,17 @@
 package ai.starlake.job.site
 
-import better.files.File
-
 import ai.starlake.job.ReportFormatConfig
+import better.files.File
 
 /** Site configuration
   * @param outputPath
-  *   output path
-  * @param templateName
-  *   template name or path to custom templates
+  *   output directory
+  * @param clean
+  *   delete the output directory before generating
   */
 case class SiteConfig(
   outputPath: File = File(".") / "site",
-  templateName: Option[String] = Some("standalone"),
-  format: Option[String] = Some("markdown"),
   clean: Option[Boolean] = Some(false)
 ) extends ReportFormatConfig {
-  def reportFormat: Option[String] = format
+  def reportFormat: Option[String] = None
 }

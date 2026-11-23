@@ -1,0 +1,180 @@
+{
+  "schemaVersion" : 1,
+  "generatedAt" : "<normalized>",
+  "starlakeVersion" : "<normalized>",
+  "project" : {
+    "name" : "<normalized>",
+    "defaultConnection" : "duckdb",
+    "overview" : "# Fixture project"
+  },
+  "nodes" : {
+    "external:refdata.fx_rates" : {
+      "id" : "external:refdata.fx_rates",
+      "kind" : "external",
+      "name" : "fx_rates",
+      "domain" : "refdata",
+      "table" : "fx_rates"
+    },
+    "load:sales.customers" : {
+      "id" : "load:sales.customers",
+      "kind" : "load",
+      "name" : "customers",
+      "domain" : "sales",
+      "table" : "customers",
+      "connectionRef" : "duckdb",
+      "engine" : "duckdb",
+      "description" : "**Customers** master data.",
+      "tags" : [ "pii" ],
+      "filePath" : "load/sales/customers.sl.yml",
+      "columns" : [ {
+        "name" : "id",
+        "type" : "long",
+        "sqlType" : "BIGINT",
+        "required" : true,
+        "primaryKey" : true
+      }, {
+        "name" : "email",
+        "type" : "string",
+        "sqlType" : "VARCHAR",
+        "required" : false,
+        "primaryKey" : false,
+        "description" : "Customer email"
+      } ],
+      "expectations" : [ {
+        "expect" : "is_unique('id')",
+        "failOnError" : true
+      } ],
+      "acl" : [ {
+        "role" : "roles/viewer",
+        "grants" : [ "user:a@example.com" ]
+      } ],
+      "rls" : [ {
+        "name" : "fr_only",
+        "predicate" : "country = 'FR'",
+        "grants" : [ "group:fr" ]
+      } ],
+      "dag" : "airflow_load",
+      "primaryKey" : [ "id" ],
+      "pattern" : "customers.*.csv",
+      "metadata" : {
+        "format" : "DSV",
+        "withHeader" : true,
+        "separator" : ";",
+        "emptyIsNull" : true
+      }
+    },
+    "load:sales.orders" : {
+      "id" : "load:sales.orders",
+      "kind" : "load",
+      "name" : "orders",
+      "domain" : "sales",
+      "table" : "orders",
+      "connectionRef" : "duckdb",
+      "engine" : "duckdb",
+      "description" : "Orders, see {{ doc(\"missing_block\") }}",
+      "filePath" : "load/sales/orders.sl.yml",
+      "columns" : [ {
+        "name" : "id",
+        "type" : "long",
+        "sqlType" : "BIGINT",
+        "required" : false,
+        "primaryKey" : false
+      }, {
+        "name" : "customer_id",
+        "type" : "long",
+        "sqlType" : "BIGINT",
+        "required" : false,
+        "primaryKey" : false,
+        "foreignKey" : "customers.id",
+        "foreignKeyNode" : "load:sales.customers"
+      }, {
+        "name" : "amount",
+        "type" : "decimal",
+        "sqlType" : "DECIMAL",
+        "required" : false,
+        "primaryKey" : false
+      } ],
+      "dag" : "airflow_load",
+      "pattern" : "orders.*.csv",
+      "metadata" : {
+        "format" : "DSV",
+        "withHeader" : true,
+        "separator" : ";",
+        "emptyIsNull" : true
+      },
+      "warnings" : [ "Unknown doc block 'missing_block'" ]
+    },
+    "transform:kpi.revenue" : {
+      "id" : "transform:kpi.revenue",
+      "kind" : "transform",
+      "name" : "revenue",
+      "domain" : "kpi",
+      "table" : "revenue",
+      "connectionRef" : "duckdb",
+      "engine" : "duckdb",
+      "description" : "Revenue per customer",
+      "tags" : [ "finance" ],
+      "filePath" : "transform/kpi/revenue.sl.yml",
+      "dag" : "airflow_transform",
+      "writeStrategy" : {
+        "type" : "OVERWRITE"
+      },
+      "sql" : {
+        "raw" : "SELECT c.id AS customer_id, SUM(o.amount * fx.rate) AS revenue\nFROM sales.orders o\nJOIN sales.customers c ON o.customer_id = c.id\nJOIN refdata.fx_rates fx ON fx.currency = 'EUR'\nGROUP BY c.id",
+        "compiled" : "TRUNCATE TABLE kpi.revenue;\nINSERT INTO kpi.revenue(\"customer_id\",\"revenue\") SELECT c.id AS customer_id, SUM(o.amount * fx.rate) AS revenue\nFROM sales.orders o\nJOIN sales.customers c ON o.customer_id = c.id\nJOIN refdata.fx_rates fx ON fx.currency = 'EUR'\nGROUP BY c.id"
+      }
+    }
+  },
+  "edges" : [ {
+    "from" : "load:sales.orders",
+    "to" : "load:sales.customers",
+    "kind" : "fk"
+  }, {
+    "from" : "external:refdata.fx_rates",
+    "to" : "transform:kpi.revenue",
+    "kind" : "lineage"
+  }, {
+    "from" : "load:sales.customers",
+    "to" : "transform:kpi.revenue",
+    "kind" : "lineage"
+  }, {
+    "from" : "load:sales.orders",
+    "to" : "transform:kpi.revenue",
+    "kind" : "lineage"
+  } ],
+  "columnEdges" : [ {
+    "from" : "load:sales.customers#id",
+    "to" : "transform:kpi.revenue#customer_id",
+    "task" : "transform:kpi.revenue"
+  }, {
+    "from" : "load:sales.orders#amount",
+    "to" : "transform:kpi.revenue#revenue",
+    "task" : "transform:kpi.revenue"
+  } ],
+  "groups" : {
+    "domains" : [ {
+      "name" : "sales",
+      "description" : "Sales domain",
+      "nodes" : [ "load:sales.customers", "load:sales.orders" ]
+    } ],
+    "jobs" : [ {
+      "name" : "kpi",
+      "nodes" : [ "transform:kpi.revenue" ]
+    } ],
+    "dags" : [ {
+      "name" : "airflow_load",
+      "template" : "load/airflow__scheduled_table__shell.py.j2",
+      "comment" : "load dag",
+      "nodes" : [ "load:sales.customers", "load:sales.orders" ]
+    }, {
+      "name" : "airflow_transform",
+      "template" : "transform/airflow__scheduled_task__shell.py.j2",
+      "comment" : "transform dag",
+      "nodes" : [ "transform:kpi.revenue" ]
+    } ]
+  },
+  "docs" : {
+    "__overview__" : "# Fixture project",
+    "customers_desc" : "**Customers** master data."
+  }
+}
