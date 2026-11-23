@@ -1,0 +1,6 @@
+version: 1
+task:
+  comment: "Revenue per customer"
+  tags: ["finance"]
+  writeStrategy:
+    type: "OVERWRITE"

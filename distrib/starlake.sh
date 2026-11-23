@@ -955,11 +955,11 @@ launch_starlake() {
   then
     check_jdk_supported || exit 1
     if  [ -n "$SL_LOG_LEVEL" ] && [ "$SL_LOG_LEVEL" != "error" ]; then
-      echo "- JAVA_HOME=$JAVA_HOME"
-      echo "- SL_ROOT=$SL_ROOT"
+      echo "- JAVA_HOME=$JAVA_HOME" >&2
+      echo "- SL_ROOT=$SL_ROOT" >&2
     fi
     if [ "$SL_ENV" != "" ]; then
-      echo "- SL_ENV=$SL_ENV"
+      echo "- SL_ENV=$SL_ENV" >&2
     fi
 #    echo "- SL_MAIN=$SL_MAIN"
 #    echo "- SL_VALIDATE_ON_LOAD=$SL_VALIDATE_ON_LOAD"
@@ -1164,6 +1164,15 @@ case "$1" in
     build_appcds_archive
     ;;
   serve)
+    # The server takes no arguments: without this, --help started it.
+    case "$2" in
+      -h|--help|help)
+        echo "Usage: starlake.sh serve"
+        echo "Starts the Starflow API and web UI on port ${SL_API_HTTP_PORT:-9900} (SL_API_HTTP_PORT). Takes no arguments."
+        echo "SL_API_DEBUG=1 makes the JVM wait for a debugger on port 5005."
+        exit 0
+        ;;
+    esac
     chmod +x $SCRIPT_DIR/bin/api/git/*.sh
     chmod +x $SCRIPT_DIR/bin/api/bin/*
     JAVA_OPTS="$(java_module_flags)$JAVA_OPTS"

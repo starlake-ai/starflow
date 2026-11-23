@@ -909,6 +909,18 @@ assert_no_c1() { [[ "$(last_submit)" != *"TieredStopAtLevel"* ]]; }
   assert_c1
 }
 
+@test "the launcher prints its settings on stderr, so stdout carries only the command output" {
+  bats_require_minimum_version 1.5.0
+  write_project
+  SL_ENV=DUCKDB SL_LOG_LEVEL=info run --separate-stderr "$INSTALL/starlake.sh" transform --name dom.t
+  [ "$status" -eq 0 ]
+  # "|| false": on bash 3.2 a failing [[ ]] only fails a bats test when it is the last command
+  [[ "$output" != *"- SL_ENV="* ]] || false
+  [[ "$output" != *"- SL_ROOT="* ]] || false
+  [[ "$output" != *"- JAVA_HOME="* ]] || false
+  [[ "$stderr" == *"- SL_ENV=DUCKDB"* ]] || false
+}
+
 @test "SL_ENV defined in the default env file selects the env file" {
   write_project
   printf 'env:\n  SL_ENV: DUCKDB\n  connectionRef: sparkLocal\n' >metadata/env.sl.yml
@@ -1568,6 +1580,22 @@ with_sl_version() {
 @test "a JDK without a version gets no sun.misc.Unsafe flag, which a JDK before 23 refuses" {
   main validate
   [[ "$(last_java)" != *"--sun-misc-unsafe-memory-access"* ]]
+}
+
+@test "serve --help prints its usage and does not start the server" {
+  mkdir -p "$INSTALL/bin/api/bin" "$INSTALL/bin/api/git"
+  touch "$INSTALL/bin/api/git/stub.sh"
+  printf '#!/usr/bin/env bash\necho SERVE >>"$STUB_LOG"\n' >"$INSTALL/bin/api/bin/local-run-api"
+  chmod +x "$INSTALL/bin/api/bin/local-run-api"
+  for flag in --help -h help; do
+    SL_API_HTTP_PORT=9911 run "$INSTALL/starlake.sh" serve "$flag"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Usage: starlake.sh serve"* ]]
+    [[ "$output" == *"port 9911"* ]]
+  done
+  [ "$(grep -c '^SERVE' "$STUB_LOG")" -eq 0 ]
+  run "$INSTALL/starlake.sh" serve
+  [ "$(grep -c '^SERVE' "$STUB_LOG")" -eq 1 ]
 }
 
 @test "the JDK check finds the java on the PATH when JAVA_HOME is not set" {

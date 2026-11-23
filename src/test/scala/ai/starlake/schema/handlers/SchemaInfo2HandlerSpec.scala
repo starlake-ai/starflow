@@ -503,6 +503,20 @@ class SchemaInfo2HandlerSpec extends TestHelper {
     }
   }
 
+  "Load Transform Job with a commented _config.sl.yml" should "keep the job comment" in {
+    new WithSettings() {
+      cleanMetadata
+      val schemaHandler = settings.schemaHandler()
+      val filename = "/sample/job-with-comment/_config.sl.yml"
+      val jobPath = new Path(getClass.getResource(filename).toURI)
+
+      val job = schemaHandler.loadJobTasksFromFile(jobPath).get
+      job.name shouldBe "job-with-comment"
+      job.comment shouldBe Some("Finance KPIs")
+      job.tasks.map(_.fullName()) shouldBe List("finance.revenue")
+    }
+  }
+
   "Extract Var from Job File" should "find all vars" in {
     new WithSettings() {
       new SpecTrait(

@@ -196,3 +196,7 @@ samples/starbake/datasets
 !/docs/static/
 /docs/static/*
 !/docs/static/img/
+
+site-ui/node_modules/
+site-ui/dist/
+site-ui/public/sl-*.json

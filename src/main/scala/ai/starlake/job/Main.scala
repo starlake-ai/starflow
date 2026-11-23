@@ -6,6 +6,7 @@ import ai.starlake.console.ConsoleCmd
 import ai.starlake.extract.*
 import ai.starlake.extract.freshness.FreshnessExtractCmd
 import ai.starlake.extract.impl.restapi.{ExtractRestAPIDataCmd, ExtractRestAPISchemaCmd}
+import ai.starlake.impact.ImpactCmd
 import ai.starlake.job.bootstrap.BootstrapCmd
 import ai.starlake.job.convert.Parquet2CSVCmd
 import ai.starlake.job.infer.InferSchemaCmd
@@ -55,6 +56,10 @@ object Main extends LazyLogging {
 
   final val shell: String = "starlake"
 
+  /** True when the command named by the first argument is read-only (see Cmd.readOnly). */
+  def isReadOnly(args: List[String]): Boolean =
+    args.headOption.exists(name => commands.exists(c => c.command == name && c.readOnly))
+
   /** Process exit code for a finished command. `run` returns the command's own result, so this is
     * the single place where a result becomes the Int handed to System.exit.
     *
@@ -63,6 +68,7 @@ object Main extends LazyLogging {
     */
   def exitCodeOf(result: Try[Any]): Int =
     result match {
+      case Success(r: ExitCodeJobResult)           => r.exitCode
       case Success(r: PreLoadJobResult) if r.empty => 1
       case Success(FailedJobResult)                => 1
       case Success(_)                              => 0
@@ -128,6 +134,7 @@ object Main extends LazyLogging {
     ExtractRestAPISchemaCmd,
     ExtractRestAPIDataCmd,
     ProjectCompareCmd,
+    ImpactCmd,
     MainServerCmd,
     DagGenerateCmd,
     DagDeployCmd,
@@ -226,7 +233,7 @@ class Main extends LazyLogging {
       StarlakeConnectionPool.preloadDuckDb()
 
     import settings.storageHandler
-    DatasetArea.initMetadata(storageHandler())
+    if (!Main.isReadOnly(argList)) DatasetArea.initMetadata(storageHandler())
 
     // extract any env var passed as --options argument
     val cliEnv = CliEnvConfig.parse(args.drop(1).toIndexedSeq) match {
@@ -287,6 +294,11 @@ class Main extends LazyLogging {
           if (settings.appConfig.forceHalt) {
             Runtime.getRuntime.halt(status)
           }
+        case Success(result: ExitCodeJobResult) =>
+          logger.info(s"Finished $executedCommand with exit code ${result.exitCode}")
+          if (settings.appConfig.forceHalt) {
+            Runtime.getRuntime.halt(result.exitCode)
+          }
         case Success(_) =>
           logger.info(s"Successfully $executedCommand")
           if (settings.appConfig.forceHalt) {
@@ -311,7 +323,9 @@ class Main extends LazyLogging {
           Failure(new IllegalArgumentException(s"Unknown command $command"))
         case Some(cmd) =>
           Main.currentCommand = cmd.command
-          if (cmd.command != BootstrapCmd.command && settings.appConfig.validateOnLoad) {
+          if (
+            cmd.command != BootstrapCmd.command && !cmd.readOnly && settings.appConfig.validateOnLoad
+          ) {
             val checkResult = schemaHandler.checkValidity()
             checkResult match {
               case Failure(e) =>

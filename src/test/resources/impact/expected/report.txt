@@ -1,0 +1,17 @@
+Change impact: origin/master (abc1234) -> working tree
+
+Direct changes (1)
+  BREAKING      load  raw.orders [amount]
+                column amount removed
+
+Impacted downstream (1)
+  BREAKING      task  stg.orders [*]  likely failure
+                path: raw.orders[amount] -> stg.orders
+
+Unresolved (1)
+  stg.orders -> kpi.py: python task
+
+Other changes, not traced (1)
+  dags/default.sl.yml (changed)
+
+Summary: 1 direct, 1 impacted, 1 likely failure, breaking: yes
