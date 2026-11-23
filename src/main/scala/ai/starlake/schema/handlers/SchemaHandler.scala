@@ -2386,10 +2386,16 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     val updatedMetadata = metadata.copy(schedule = obj.cron)
     val updatedTable = table.copy(metadata = Some(updatedMetadata))
 
-    YamlSerde.serializeToPath(
-      SchemaInfo.path(domain.name, table.name),
-      updatedTable
-    )(settings.storageHandler())
+    // Edit the file as written, so that only the schedule changes: the loaded table has its Jinja
+    // applied, doc() references resolved and the domain metadata merged in.
+    val path = SchemaInfo.path(domain.name, table.name)
+    val tableToWrite =
+      if (storage.exists(path)) {
+        val raw = YamlSerde.deserializeYamlTables(storage.read(path), path.toString).head.table
+        val rawMetadata = raw.metadata.getOrElse(Metadata())
+        raw.copy(metadata = Some(rawMetadata.copy(schedule = obj.cron)))
+      } else updatedTable
+    YamlSerde.serializeToPath(path, tableToWrite)(settings.storageHandler())
 
     val updatedDomain = domain.copy(tables = domain.tables.map {
       case t if t.name.toLowerCase() == obj.table.toLowerCase() => updatedTable
@@ -2413,10 +2419,13 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       )
     val updatedTask = task.copy(schedule = obj.cron)
 
-    YamlSerde.serializeToPath(
-      new Path(DatasetArea.transform, s"${job.name}/${obj.table}.sl.yml"),
-      updatedTask
-    )(settings.storageHandler())
+    // Edit the file as written when there is one, so that only the schedule changes
+    val path = new Path(DatasetArea.transform, s"${job.name}/${obj.table}.sl.yml")
+    val taskToWrite =
+      if (storage.exists(path))
+        YamlSerde.deserializeYamlTask(storage.read(path), path.toString).copy(schedule = obj.cron)
+      else updatedTask
+    YamlSerde.serializeToPath(path, taskToWrite)(settings.storageHandler())
 
     updateJob(job.name) { current =>
       current.copy(
