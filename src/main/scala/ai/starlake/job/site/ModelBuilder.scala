@@ -2,12 +2,13 @@ package ai.starlake.job.site
 
 import ai.starlake.buildinfo.BuildInfo
 import ai.starlake.config.{DatasetArea, Settings}
-import ai.starlake.job.transform.TransformContext
+import ai.starlake.job.transform.{AutoTask, TransformContext}
 import ai.starlake.lineage.ColLineage
 import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.schema.model._
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 
 import java.time.Instant
 import scala.collection.immutable.TreeMap
@@ -16,7 +17,8 @@ import scala.util.{Failure, Success, Try}
 class ModelBuilder(
   schemaHandler: SchemaHandler,
   compileSql: AutoTaskInfo => Try[String],
-  colLineage: AutoTaskInfo => Try[Option[ColLineage.Lineage]]
+  colLineage: AutoTaskInfo => Try[Option[ColLineage.Lineage]],
+  taskDeps: AutoTaskInfo => Try[List[String]]
 )(implicit settings: Settings)
     extends LazyLogging {
 
@@ -35,18 +37,8 @@ class ModelBuilder(
     val transformNodes = tasks.map { case (_, t) => transformNode(t, docBlocks) }
     val declared = TreeMap((loadNodes ++ transformNodes).map(n => n.id -> n): _*)
 
-    val streams = schemaHandler.streams()
-    val autoTasks = Try(
-      ai.starlake.job.transform.AutoTask
-        .unauthenticatedTasks(reload = false)(settings, storage, schemaHandler)
-    ) match {
-      case Success(tasks) => tasks
-      case Failure(e) =>
-        logger.warn(s"Table lineage unavailable, could not load tasks: ${e.getMessage}")
-        Nil
-    }
-    val (taskDeps, depWarnings) = ModelBuilder.extractTaskDeps(
-      autoTasks.map(at => NodeId.transform(at.taskDesc.fullName()) -> Try(at.dependencies(streams)))
+    val (deps, depWarnings) = ModelBuilder.extractTaskDeps(
+      tasks.map { case (_, t) => NodeId.transform(t.fullName()) -> taskDeps(t) }
     )
 
     val lineageWarnings = scala.collection.mutable.Map.empty[String, List[String]]
@@ -61,7 +53,7 @@ class ModelBuilder(
       }
     }.toMap
 
-    val lineage = LineageBuilder.build(declared, taskDeps, colLineages)
+    val lineage = LineageBuilder.build(declared, deps, colLineages)
     val nodes = lineage.nodes.map { case (id, n) =>
       id -> n.copy(warnings =
         n.warnings ++ depWarnings.getOrElse(id, Nil) ++ lineageWarnings.getOrElse(id, Nil)
@@ -304,6 +296,44 @@ object ModelBuilder {
     (deps, warnings)
   }
 
+  /** Builds the task's AutoTask and reads its input tables, each step in its own Try so one bad
+    * task only fails its own table lineage.
+    */
+  private[site] def taskDependencies(
+    task: AutoTaskInfo,
+    build: AutoTaskInfo => AutoTask,
+    streams: => CaseInsensitiveMap[String]
+  ): Try[List[String]] =
+    Try(build(task)).flatMap(autoTask => Try(autoTask.dependencies(streams)))
+
+  /** Same TransformContext as AutoTask.unauthenticatedTasks, built per task. */
+  def defaultTaskDeps(
+    schemaHandler: SchemaHandler
+  )(implicit settings: Settings): AutoTaskInfo => Try[List[String]] = {
+    lazy val streams = schemaHandler.streams()
+    taskDesc =>
+      taskDependencies(
+        taskDesc,
+        t =>
+          TransformContext(
+            appId = None,
+            taskDesc = t,
+            commandParameters = Map.empty,
+            interactive = None,
+            truncate = false,
+            test = false,
+            logExecution = true,
+            accessToken = None,
+            resultPageSize = 200,
+            resultPageNumber = 1,
+            dryRun = false,
+            scheduledDate = None,
+            syncSchema = false
+          )(settings, settings.storageHandler(), schemaHandler).toTask(Engine.SPARK),
+        streams
+      )
+  }
+
   def defaultCompiler(
     schemaHandler: SchemaHandler
   )(implicit settings: Settings): AutoTaskInfo => Try[String] = taskDesc =>
@@ -346,6 +376,7 @@ object ModelBuilder {
     new ModelBuilder(
       schemaHandler,
       defaultCompiler(schemaHandler),
-      defaultColLineage(schemaHandler)
+      defaultColLineage(schemaHandler),
+      defaultTaskDeps(schemaHandler)
     )
 }

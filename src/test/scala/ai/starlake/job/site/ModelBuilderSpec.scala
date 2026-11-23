@@ -3,16 +3,24 @@ package ai.starlake.job.site
 import ai.starlake.config.Settings
 import ai.starlake.integration.IntegrationTestBase
 
-import scala.util.{Failure, Success}
+import ai.starlake.schema.model.AutoTaskInfo
+
+import scala.util.{Failure, Success, Try}
 
 class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
 
-  private def build(compile: Boolean = true)(implicit settings: Settings): SiteModel =
+  private def build(
+    compile: Boolean = true,
+    taskDeps: Option[AutoTaskInfo => Try[List[String]]] = None
+  )(implicit settings: Settings): SiteModel = {
+    val schemaHandler = settings.schemaHandler()
     new ModelBuilder(
-      settings.schemaHandler(),
+      schemaHandler,
       _ => if (compile) Success("SELECT 1") else Failure(new Exception("boom")),
-      _ => Success(None)
+      _ => Success(None),
+      taskDeps.getOrElse(ModelBuilder.defaultTaskDeps(schemaHandler))
     ).build()
+  }
 
   "ModelBuilder" should "build load and transform nodes" in withFixture { implicit settings =>
     val model = build()
@@ -106,6 +114,24 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
     )
     deps shouldBe Map("transform:a.ok" -> List("load:x.y"))
     warnings shouldBe Map("transform:a.bad" -> List("Table lineage failed: kaboom"))
+  }
+
+  it should "turn a task that cannot be built into a table lineage warning" in withFixture {
+    implicit settings =>
+      val model = build(taskDeps = Some(_ => Failure(new Exception("cannot build task"))))
+      model.nodes("transform:kpi.revenue").warnings should contain(
+        "Table lineage failed: cannot build task"
+      )
+      model.edges.filter(_.kind == "lineage") shouldBe Nil
+  }
+
+  it should "build each task in its own Try" in {
+    val deps = ModelBuilder.taskDependencies(
+      AutoTaskInfo(name = "bad", sql = None, database = None, domain = "kpi", table = "bad"),
+      _ => throw new IllegalStateException("no engine"),
+      throw new IllegalStateException("streams must not be read")
+    )
+    deps.failed.get.getMessage shouldBe "no engine"
   }
 
   it should "build with the production defaults" in withFixture { implicit settings =>
