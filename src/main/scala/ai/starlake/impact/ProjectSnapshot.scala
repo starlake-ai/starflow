@@ -18,13 +18,31 @@ import scala.util.{Failure, Success, Try}
   */
 object ProjectSnapshot {
 
+  /** Stands for the project root in rendered SQL, so that the same SQL loaded from two directories
+    * (a temporary checkout and the working tree) renders the same.
+    */
+  val RootToken = "__SL_ROOT__"
+
+  /** Loads the project from a temporary copy of its `metadata` folder: the schema handler writes
+    * while loading (stage directories of each domain, a domain `_config.sl.yml` without a name is
+    * rewritten), and `impact` must leave the project untouched. The copy is deleted afterwards.
+    */
   def load(projectDir: File, label: String, env: Option[String])(implicit
     settings: Settings
   ): Try[SnapshotView] =
     Try {
-      val local = localSettings(projectDir, env)
-      val handler = local.schemaHandler(reload = true)
-      build(projectDir, label, env, handler)(local)
+      val workDir = File.newTemporaryDirectory("starlake-impact-")
+      try {
+        val metadata = projectDir / "metadata"
+        if (metadata.isDirectory) metadata.copyTo(workDir / "metadata")
+        else (workDir / "metadata").createDirectories()
+        // An empty default env file reads as no variable, and avoids a warning per variable lookup
+        val defaultEnv = workDir / "metadata" / "env.sl.yml"
+        if (!defaultEnv.exists) defaultEnv.createFile()
+        val local = localSettings(workDir, env)
+        val handler = local.schemaHandler(reload = true)
+        build(projectDir, workDir, label, env, handler)(local)
+      } finally workDir.delete(swallowIOExceptions = true)
     }.recover { case e: Throwable =>
       throw new IllegalStateException(
         s"Could not load project at $projectDir: ${e.getMessage}. If it predates the current layout, run 'starlake migrate' on it.",
@@ -32,15 +50,18 @@ object ProjectSnapshot {
       )
     }
 
-  /** Every path of the project, not only root and metadata: types, macros, DAGs, strategies and
-    * datasets default to the current project otherwise, which the snapshot must neither read nor
-    * write (the schema handler creates the stage directories of each domain under datasets).
+  /** Every path of the work copy, not only root and metadata: types, macros, DAGs, strategies,
+    * datasets and the areas would point at the current project otherwise, which the snapshot must
+    * neither read nor write (the schema handler creates the stage directories of each domain).
     */
-  private def localSettings(projectDir: File, env: Option[String])(implicit
+  private def localSettings(workDir: File, env: Option[String])(implicit
     settings: Settings
   ): Settings = {
-    val root = projectDir.pathAsString
+    val root = workDir.pathAsString
     val metadata = new Path(root, "metadata").toString
+    val area = settings.appConfig.area
+    def relative(default: String, value: String): String =
+      if (value.contains("://") || java.nio.file.Paths.get(value).isAbsolute) default else value
     settings.copy(appConfig =
       settings.appConfig.copy(
         root = root,
@@ -51,10 +72,32 @@ object ProjectSnapshot {
         dags = new Path(metadata, "dags").toString,
         writeStrategies = new Path(metadata, "write-strategies").toString,
         loadStrategies = new Path(metadata, "load-strategies").toString,
+        area = area.copy(
+          incoming = relative("incoming", area.incoming),
+          stage = relative("stage", area.stage),
+          unresolved = relative("unresolved", area.unresolved),
+          archive = relative("archive", area.archive),
+          ingesting = relative("ingesting", area.ingesting),
+          replay = relative("replay", area.replay)
+        ),
         // the schema handler renders the task SQL with the variables of this env
         env = env.getOrElse(settings.appConfig.env)
       )
     )
+  }
+
+  /** Replaces the root of the work copy and of the project, as written and as real paths, with
+    * [[RootToken]]. Every other path variable (`SL_METADATA`, `SL_DATASETS` ...) lies under the
+    * work copy root, so it is covered too. Longest first: a real path may contain the other one
+    * (`/private/var/x` on macOS).
+    */
+  private def neutralizeRoots(dirs: List[File]): String => String = {
+    val roots = dirs
+      .flatMap(d => List(Some(d.pathAsString), Try(d.path.toRealPath().toString).toOption).flatten)
+      .filter(_.length > 1)
+      .distinct
+      .sortBy(-_.length)
+    sql => roots.foldLeft(sql)((acc, root) => acc.replace(root, RootToken))
   }
 
   /** The schema handler logs and skips a domain or a transform whose `_config.sl.yml` it cannot
@@ -85,13 +128,21 @@ object ProjectSnapshot {
     jobs.collect { case (_, Success(job)) => job.tasks }.flatten
   }
 
-  private def build(projectDir: File, label: String, env: Option[String], handler: SchemaHandler)(
-    implicit settings: Settings
-  ): SnapshotView = {
+  private def build(
+    projectDir: File,
+    workDir: File,
+    label: String,
+    env: Option[String],
+    handler: SchemaHandler
+  )(implicit settings: Settings): SnapshotView = {
+    // First, so that the variables cached by the handler, with which it renders the YAML and the
+    // task SQL while loading them, define SL_ROOT as the work copy root (otherwise it is the
+    // SL_ROOT of the environment, unrelated to the project).
+    val vars =
+      handler.activeEnvVars(reload = true, env = env, root = Some(workDir.pathAsString))
+    val neutralize = neutralizeRoots(List(workDir, projectDir))
     val domains: List[DomainInfo] = handler.domains(reload = true)
     val tasks: List[AutoTaskInfo] = readableTasks(handler)
-    val vars =
-      handler.activeEnvVars(reload = true, env = env, root = Some(projectDir.pathAsString))
 
     val loadNodes: List[NodeView] = for {
       domain <- domains
@@ -148,7 +199,8 @@ object ProjectSnapshot {
                     .copy(rowFingerprint = sha256(settings.storageHandler().read(path)))
                 case None =>
                   Try(Utils.parseJinja(task.sql.getOrElse(""), vars)) match {
-                    case Success(sql) => TaskShapeBuilder.build(sql, resolveName, knownColumns)
+                    case Success(sql) =>
+                      TaskShapeBuilder.build(neutralize(sql), resolveName, knownColumns)
                     case Failure(e) =>
                       TaskShape.unresolved(
                         s"SQL render failed: ${e.getMessage}",
