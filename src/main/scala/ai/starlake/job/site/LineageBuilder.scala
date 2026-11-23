@@ -92,16 +92,24 @@ object LineageBuilder {
       id -> node.copy(columns = cols)
     }
 
-    // Column lineage
+    // Column lineage: keep only relations that feed the task's own output table
+    var finalNodes = withFks
     val columnEdges = colLineage.toList.sortBy(_._1).flatMap { case (taskId, lineage) =>
-      lineage.relations.flatMap { r =>
-        val fromNode = producers(withFks.values, s"${r.from.domain}.${r.from.table}", None).headOption
-          .map(_.id)
-          .getOrElse(NodeId.external(s"${r.from.domain}.${r.from.table}"))
-        Some(SiteColumnEdge(s"$fromNode#${r.from.column}", s"$taskId#${r.to.column}", taskId))
-      }
+      val taskNode = finalNodes.get(taskId)
+      val outputs = taskNode.toList.flatMap(n => List(n.table.toLowerCase, n.name.toLowerCase))
+      lineage.relations
+        .filter(r => outputs.contains(clean(r.to.table)))
+        .map { r =>
+          val ref = s"${r.from.domain}.${r.from.table}"
+          val fromId = producers(finalNodes.values, ref, None).headOption.map(_.id).getOrElse {
+            val ext = externalNode(ref)
+            if (!finalNodes.contains(ext.id)) finalNodes = finalNodes + (ext.id -> ext)
+            ext.id
+          }
+          SiteColumnEdge(s"$fromId#${r.from.column}", s"$taskId#${r.to.column}", taskId)
+        }
     }
 
-    LineageResult(withFks, edges.result().distinct, columnEdges.distinct)
+    LineageResult(finalNodes, edges.result().distinct, columnEdges.distinct)
   }
 }

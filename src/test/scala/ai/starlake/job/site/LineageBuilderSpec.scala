@@ -21,7 +21,9 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
   "build" should "link producers to tasks and create external nodes" in {
     val res = LineageBuilder.build(
       nodes,
-      Map(revenue.id -> List("sales.orders", "db.sales.customers", "refdata.fx_rates", "kpi.revenue")),
+      Map(
+        revenue.id -> List("sales.orders", "db.sales.customers", "refdata.fx_rates", "kpi.revenue")
+      ),
       Map.empty
     )
     res.edges should contain allOf (
@@ -37,7 +39,7 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
   it should "resolve single-part references by table name" in {
     val res = LineageBuilder.build(nodes, Map(revenue.id -> List("ORDERS")), Map.empty)
     res.edges.filter(_.kind == "lineage") shouldBe
-      List(SiteEdge("load:sales.orders", "transform:kpi.revenue", "lineage"))
+    List(SiteEdge("load:sales.orders", "transform:kpi.revenue", "lineage"))
   }
 
   it should "resolve foreign keys in the same domain first" in {
@@ -61,5 +63,39 @@ class LineageBuilderSpec extends AnyFlatSpec with Matchers {
     res.columnEdges shouldBe List(
       SiteColumnEdge("load:sales.customers#id", "transform:kpi.revenue#customer_id", revenue.id)
     )
+  }
+
+  it should "register external nodes for unresolved column sources" in {
+    val lineage = ColLineage.Lineage(
+      Nil,
+      List(
+        ColLineage.Relation(
+          ColLineage.Column("refdata", "fx_rates", "rate"),
+          ColLineage.Column("kpi", "revenue", "amount"),
+          None
+        )
+      )
+    )
+    val res = LineageBuilder.build(nodes, Map.empty, Map(revenue.id -> lineage))
+    res.columnEdges shouldBe List(
+      SiteColumnEdge("external:refdata.fx_rates#rate", "transform:kpi.revenue#amount", revenue.id)
+    )
+    res.nodes.contains("external:refdata.fx_rates") shouldBe true
+    res.columnEdges.foreach(e => res.nodes.contains(e.from.takeWhile(_ != '#')) shouldBe true)
+  }
+
+  it should "drop column relations whose target is not the task itself" in {
+    val lineage = ColLineage.Lineage(
+      Nil,
+      List(
+        ColLineage.Relation(
+          ColLineage.Column("sales", "customers", "id"),
+          ColLineage.Column("kpi", "some_cte", "x"),
+          None
+        )
+      )
+    )
+    val res = LineageBuilder.build(nodes, Map.empty, Map(revenue.id -> lineage))
+    res.columnEdges shouldBe Nil
   }
 }
