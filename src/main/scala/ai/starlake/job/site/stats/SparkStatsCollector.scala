@@ -6,6 +6,7 @@ import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.StructField
 
+import java.util.Locale
 import scala.util.{Failure, Success, Try}
 
 object SparkStatsParsing {
@@ -25,7 +26,7 @@ object SparkStatsParsing {
 
   def describeExtended(rows: List[(String, String)]): Map[String, String] =
     rows.foldLeft(Map.empty[String, String]) { case (acc, (k, v)) =>
-      val key = k.trim.toLowerCase
+      val key = k.trim.toLowerCase(Locale.ROOT)
       if (key.isEmpty || key.startsWith("#") || acc.contains(key)) acc else acc + (key -> v.trim)
     }
 
@@ -33,11 +34,11 @@ object SparkStatsParsing {
     * or `provider` cannot shadow the table details. All rows when the marker is absent.
     */
   def detailSection(rows: List[(String, String)]): List[(String, String)] = {
-    val detail = rows.dropWhile(_._1.trim.toLowerCase != DetailMarker)
+    val detail = rows.dropWhile(_._1.trim.toLowerCase(Locale.ROOT) != DetailMarker)
     if (detail.isEmpty) rows else detail
   }
 
-  def tableType(raw: Option[String]): String = raw.map(_.toUpperCase) match {
+  def tableType(raw: Option[String]): String = raw.map(_.toUpperCase(Locale.ROOT)) match {
     case Some("VIEW")     => "VIEW"
     case Some("EXTERNAL") => "EXTERNAL"
     case _                => "TABLE"
@@ -158,7 +159,9 @@ class SparkStatsCollector(
   val engine = "spark"
 
   private def lowerRow(r: org.apache.spark.sql.Row): Row =
-    r.getValuesMap[Any](r.schema.fieldNames.toIndexedSeq).map { case (k, v) => k.toLowerCase -> v }
+    r.getValuesMap[Any](r.schema.fieldNames.toIndexedSeq).map { case (k, v) =>
+      k.toLowerCase(Locale.ROOT) -> v
+    }
 
   private def query(spark: SparkSession)(sql: String): List[Row] =
     spark.sql(sql).collect().map(lowerRow).toList
@@ -185,7 +188,7 @@ class SparkStatsCollector(
       val base = RawTableStats(
         exists = true,
         tableType = Some(tableType(details.get("type"))),
-        format = details.get("provider").map(_.toLowerCase),
+        format = details.get("provider").map(_.toLowerCase(Locale.ROOT)),
         rowCount = None,
         rowCountEstimated = false,
         bytes = None,

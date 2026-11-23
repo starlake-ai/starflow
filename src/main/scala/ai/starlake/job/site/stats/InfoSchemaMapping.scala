@@ -2,6 +2,8 @@ package ai.starlake.job.site.stats
 
 import Rows._
 
+import java.util.Locale
+
 object InfoSchemaMapping {
   private val decimalTypes = Set("numeric", "decimal", "number")
   private val charTypes =
@@ -24,7 +26,7 @@ object InfoSchemaMapping {
     scale: Option[Long]
   ): String = {
     val dt = dataType.trim
-    val lower = dt.toLowerCase
+    val lower = dt.toLowerCase(Locale.ROOT)
     if (dt.contains("(")) dt
     else if (decimalTypes.contains(lower) && precision.isDefined)
       s"$dt(${precision.get},${scale.getOrElse(0L)})"
@@ -32,7 +34,7 @@ object InfoSchemaMapping {
     else dt
   }
 
-  def tableType(raw: Option[String]): String = raw.map(_.toUpperCase) match {
+  def tableType(raw: Option[String]): String = raw.map(_.toUpperCase(Locale.ROOT)) match {
     case Some(t) if t.contains("VIEW")                              => "VIEW"
     case Some(t) if t.contains("EXTERNAL") || t.contains("FOREIGN") => "EXTERNAL"
     case _                                                          => "TABLE"
@@ -44,7 +46,7 @@ object InfoSchemaMapping {
         for {
           table  <- str(r, "table_name")
           column <- str(r, "column_name")
-        } yield table.toLowerCase -> ColumnStat(
+        } yield table.toLowerCase(Locale.ROOT) -> ColumnStat(
           column,
           formatType(
             str(r, "data_type").getOrElse(""),
@@ -66,12 +68,12 @@ object InfoSchemaMapping {
   ): Map[String, RawTableStats] = {
     val cols = columns(columnRows)
     val statsByName = (tableRows ++ statsRows)
-      .flatMap(r => str(r, "table_name").map(_.toLowerCase -> r))
+      .flatMap(r => str(r, "table_name").map(_.toLowerCase(Locale.ROOT) -> r))
       .groupBy(_._1)
       .map { case (k, v) => k -> v.map(_._2) }
     tableRows.flatMap { r =>
       str(r, "table_name").map { name =>
-        val key = name.toLowerCase
+        val key = name.toLowerCase(Locale.ROOT)
         val all = statsByName.getOrElse(key, Nil)
         val rowCount = all.flatMap(long(_, "row_count")).find(_ >= 0)
         key -> RawTableStats(

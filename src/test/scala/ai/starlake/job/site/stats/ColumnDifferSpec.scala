@@ -61,4 +61,17 @@ class ColumnDifferSpec extends AnyFlatSpec with Matchers {
       "duckdb"
     ) shouldBe Nil
   }
+
+  it should "report nothing when the warehouse lists no column for an existing table" in {
+    // Redshift late-binding views, column privileges: no evidence that any column is missing
+    ColumnDiffer.diff(declared, Nil, "redshift") shouldBe Nil
+    StatsRunner
+      .toTableStats(
+        "rs",
+        "redshift",
+        ai.starlake.job.site.SiteNode("load:a.v", "load", "v", "a", "v", columns = declared),
+        RawTableStats(true, Some("VIEW"), None, None, false, None, None, Nil)
+      )
+      .columnDiff shouldBe Nil
+  }
 }

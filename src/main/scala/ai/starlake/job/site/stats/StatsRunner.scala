@@ -64,11 +64,14 @@ class StatsRunner(
         ref -> result
       }
       val connectionStats = TreeMap(results.map { case (ref, (cs, _)) => ref -> cs }: _*)
+      // keyed on PhysicalTable.key: a collector may spell a table in another case, and a table it
+      // returns without being asked for is ignored
       val tableStats = for {
         (ref, (cs, raw)) <- results
-        (pt, ids)        <- groups(ref)
-        r                <- raw.get(pt).toList
-        id               <- ids
+        byKey = raw.map { case (t, r) => t.key -> r }
+        (pt, ids) <- groups(ref)
+        r         <- byKey.get(pt.key).toList
+        id        <- ids
       } yield id -> StatsRunner.toTableStats(ref, cs.engine, nodes(id), r)
       SiteStats(1, Instant.now().toString, connectionStats, TreeMap(tableStats: _*))
     } finally {
@@ -144,7 +147,10 @@ object StatsRunner {
   /** BigQuery, Spark (FS), or JDBC with a `url` (dialect collector, else the generic one). Any
     * other connection (Kafka, Elasticsearch, Snowflake with only `sfUrl`, ...) is unsupported.
     */
-  def collectorFor(conn: ConnectionInfo): Option[StatsCollector] = conn.`type` match {
+  def collectorFor(
+    conn: ConnectionInfo,
+    queryTimeoutSeconds: Int = DefaultQueryTimeoutSeconds
+  ): Option[StatsCollector] = conn.`type` match {
     case ConnectionType.BQ => Some(new BigQueryStatsCollector())
     case ConnectionType.FS => Some(new SparkStatsCollector())
     case ConnectionType.JDBC if conn.options.contains("url") =>
@@ -152,14 +158,27 @@ object StatsRunner {
       Some(
         JdbcDialectStats
           .forEngine(engine)
-          .map(new JdbcStatsCollector(_))
+          .map(new JdbcStatsCollector(_, queryTimeoutSeconds))
           .getOrElse(new GenericJdbcStatsCollector(engine))
       )
     case _ => None
   }
 
-  def apply(timeout: FiniteDuration)(implicit settings: Settings): StatsRunner =
-    new StatsRunner(name => settings.appConfig.connection(name), collectorFor, timeout)
+  /** The default per-connection timeout (`--statsTimeout`), also the default query timeout. */
+  val DefaultQueryTimeoutSeconds = 120
+
+  /** A JDBC query timeout no longer than the connection timeout, at least one second. */
+  def queryTimeoutSeconds(timeout: FiniteDuration): Int =
+    math.max(1L, math.min(Int.MaxValue.toLong, (timeout.toMillis + 999) / 1000)).toInt
+
+  def apply(timeout: FiniteDuration)(implicit settings: Settings): StatsRunner = {
+    val seconds = queryTimeoutSeconds(timeout)
+    new StatsRunner(
+      name => settings.appConfig.connection(name),
+      collectorFor(_, seconds),
+      timeout
+    )
+  }
 
   /** The column diff runs against the declared columns only when the table exists. */
   private[stats] def toTableStats(

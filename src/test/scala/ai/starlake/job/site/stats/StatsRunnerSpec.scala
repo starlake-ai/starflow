@@ -219,6 +219,32 @@ class StatsRunnerSpec extends TestHelper {
     }
   }
 
+  it should "fan out a collector result keyed with another case of the requested table" in {
+    new WithSettings() {
+      val ns = treeOf(node(NodeId.load("sales", "orders"), "load", "sales", "orders", "upper"))
+      val upper: ConnectionInfo => Option[StatsCollector] = _ =>
+        Some(
+          new Fake(ts =>
+            ts.map(t => PhysicalTable(None, t.schema.toUpperCase, t.table.toUpperCase) -> found)
+              .toMap
+          )
+        )
+      val stats = new StatsRunner(Map("upper" -> withRef("upper")).get, upper, 10.seconds).run(ns)
+      stats.tables.keySet shouldBe Set("load:sales.orders")
+      stats.tables("load:sales.orders").rowCount shouldBe Some(5L)
+    }
+  }
+
+  it should "ignore tables a collector returns without being asked for them" in {
+    new WithSettings() {
+      val ns = treeOf(node(NodeId.load("sales", "orders"), "load", "sales", "orders", "extra"))
+      val extra: ConnectionInfo => Option[StatsCollector] = _ =>
+        Some(new Fake(ts => (ts :+ PhysicalTable(None, "sales", "other")).map(_ -> found).toMap))
+      val stats = new StatsRunner(Map("extra" -> withRef("extra")).get, extra, 10.seconds).run(ns)
+      stats.tables.keySet shouldBe Set("load:sales.orders")
+    }
+  }
+
   it should "report error when the connection lookup or collector selection throws" in {
     new WithSettings() {
       val ns = treeOf(
@@ -250,8 +276,9 @@ class StatsRunnerSpec extends TestHelper {
     new WithSettings() {
       val ns = treeOf(node(NodeId.load("ev", "clicks"), "load", "ev", "clicks", "kafka"))
       val before = calls.get()
-      val stats = new StatsRunner(Map("kafka" -> kafka).get, StatsRunner.collectorFor, 10.seconds)
-        .run(ns)
+      val stats =
+        new StatsRunner(Map("kafka" -> kafka).get, StatsRunner.collectorFor(_), 10.seconds)
+          .run(ns)
       stats.connections("kafka").status shouldBe "unsupported"
       stats.connections("kafka").error.get should include("KAFKA")
       stats.tables shouldBe empty

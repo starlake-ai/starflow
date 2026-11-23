@@ -20,11 +20,17 @@ class ConnectionStatusSpec extends AnyFlatSpec with Matchers {
     error should endWith("(+49 more)")
   }
 
-  it should "cut a long first failure with an ellipsis" in {
+  it should "cut a long first failure with an ellipsis and keep the (+k more) suffix" in {
     val failures = "x" * 1000 :: List.fill(5)("other")
     val error = ConnectionStatus.from("duckdb", result(failures), 1L).error.get
     error.length should be <= Sanitize.MaxLength
     error should startWith("xxx")
+    error should endWith("... (+5 more)")
+  }
+
+  it should "cut a single long failure at 300 characters" in {
+    val error = ConnectionStatus.from("duckdb", result(List("y" * 1000)), 1L).error.get
+    error.length shouldBe Sanitize.MaxLength
     error should endWith("...")
   }
 

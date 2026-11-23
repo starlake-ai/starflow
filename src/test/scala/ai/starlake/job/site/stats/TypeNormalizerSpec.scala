@@ -112,13 +112,19 @@ class TypeNormalizerSpec extends AnyFlatSpec with Matchers {
     ("redshift", "TEXT", "character varying(256)"),
     ("spark", "BIGINT", "bigint"),
     ("spark", "STRING", "string"),
-    ("spark", "DECIMAL(38,9)", "decimal(38,9)")
+    ("spark", "DECIMAL(38,9)", "decimal(38,9)"),
+    // declaredSqlType on postgresql (Spark JDBC dialect types) versus information_schema
+    ("postgresql", "FLOAT8", "double precision"),
+    ("postgresql", "TEXT", "text"),
+    ("postgresql", "NUMERIC(38,9)", "numeric(38,9)"),
+    ("postgresql", "TIMESTAMP WITH TIME ZONE", "timestamp with time zone")
   )
 
   private val mismatching = List(
     ("postgresql", "varchar(10)", "character varying(20)"),
     ("bigquery", "INT64", "STRING"),
-    ("bigquery", "TIMESTAMP", "DATETIME")
+    ("bigquery", "TIMESTAMP", "DATETIME"),
+    ("snowflake", "INT", "NUMBER(18,2)")
   )
 
   "same" should "match Starlake ddlMapping outputs with real warehouse spellings" in {

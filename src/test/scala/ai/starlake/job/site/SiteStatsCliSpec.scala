@@ -59,19 +59,30 @@ class SiteStatsCliSpec extends SiteFixture {
 
   "site --stats on the starbake sample" should "report absent tables instead of failing" in {
     val root = File.newTemporaryDirectory("sl-starbake-")
-    File("samples/starbake").copyTo(root)(File.CopyOptions(overwrite = true))
-    val db = root / "datasets" / "duckdb.db"
-    db.delete(swallowIOExceptions = true)
-    val out = root / "site-out"
-    withEnvs("SL_ROOT" -> root.pathAsString, "SL_ENV" -> "DUCKDB") {
-      new Main().run(
-        Array("site", "--outputDir", out.pathAsString, "--clean", "--stats")
-      ) shouldBe true
-    }
-    val stats = new ObjectMapper().readTree((out / "sl-stats.json").contentAsString)
-    val tables = stats.get("tables")
-    tables.size() should be > 0
-    val it = tables.elements()
-    while (it.hasNext) it.next().get("exists").asBoolean() shouldBe false
+    try {
+      File("samples/starbake").copyTo(root)(File.CopyOptions(overwrite = true))
+      val db = root / "datasets" / "duckdb.db"
+      db.delete(swallowIOExceptions = true)
+      val out = root / "site-out"
+      withEnvs("SL_ROOT" -> root.pathAsString, "SL_ENV" -> "DUCKDB") {
+        new Main().run(
+          Array("site", "--outputDir", out.pathAsString, "--clean", "--stats")
+        ) shouldBe true
+      }
+      val stats = new ObjectMapper().readTree((out / "sl-stats.json").contentAsString)
+      val connections = stats.get("connections")
+      connections.size() should be > 0
+      val cs = connections.properties().iterator()
+      while (cs.hasNext) {
+        val c = cs.next()
+        withClue(s"${c.getKey}: ${c.getValue}") {
+          c.getValue.get("status").asText() should not be "error"
+        }
+      }
+      val tables = stats.get("tables")
+      tables.size() should be > 0
+      val it = tables.elements()
+      while (it.hasNext) it.next().get("exists").asBoolean() shouldBe false
+    } finally root.delete(swallowIOExceptions = true)
   }
 }

@@ -7,6 +7,7 @@ import com.google.cloud.bigquery._
 import com.typesafe.scalalogging.LazyLogging
 
 import java.time.Instant
+import java.util.Locale
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
@@ -47,7 +48,7 @@ object BigQuerySql {
       str(r, "table_id").map { name =>
         val tpe = tableType(long(r, "type"))
         val isTable = tpe == "TABLE"
-        name.toLowerCase -> RawTableStats(
+        name.toLowerCase(Locale.ROOT) -> RawTableStats(
           exists = true,
           tableType = Some(tpe),
           format = None,
@@ -55,7 +56,7 @@ object BigQuerySql {
           rowCountEstimated = false,
           bytes = if (isTable) long(r, "size_bytes") else None,
           lastModified = long(r, "last_modified_time").map(ms => Instant.ofEpochMilli(ms).toString),
-          columns = cols.getOrElse(name.toLowerCase, Nil)
+          columns = cols.getOrElse(name.toLowerCase(Locale.ROOT), Nil)
         )
       }
     }.toMap
@@ -65,7 +66,7 @@ object BigQuerySql {
 object BigQueryRows {
   def query(bq: BigQuery, sql: String): List[Row] = {
     val result = bq.query(QueryJobConfiguration.newBuilder(sql).setUseLegacySql(false).build())
-    val fields = result.getSchema.getFields.asScala.map(_.getName.toLowerCase).toList
+    val fields = result.getSchema.getFields.asScala.map(_.getName.toLowerCase(Locale.ROOT)).toList
     result
       .iterateAll()
       .asScala
@@ -158,7 +159,9 @@ object BigQueryStatsCollector extends LazyLogging {
       case Success(merged) =>
         GroupResult(
           group.tables
-            .map(t => t -> merged.getOrElse(t.table.toLowerCase, RawTableStats.Missing))
+            .map(t =>
+              t -> merged.getOrElse(t.table.toLowerCase(Locale.ROOT), RawTableStats.Missing)
+            )
             .toMap
         )
       case Failure(e) =>

@@ -7,7 +7,8 @@ import java.util.Locale
 object ColumnDiffer {
 
   /** Compares top-level declared columns with the warehouse columns. Ignored columns are left out
-    * (core drops them from the table). Empty when nothing else is declared.
+    * (core drops them from the table). Empty when nothing else is declared, or when the warehouse
+    * lists no column (Redshift late-binding views, column privileges): no evidence either way.
     */
   def diff(
     allDeclared: List[SiteColumn],
@@ -15,7 +16,7 @@ object ColumnDiffer {
     engine: String
   ): List[ColumnDiff] = {
     val declared = allDeclared.filterNot(_.ignore.contains(true))
-    if (declared.isEmpty) Nil
+    if (declared.isEmpty || actual.isEmpty) Nil
     else {
       val actualByName = actual.map(c => c.name.toLowerCase(Locale.ROOT) -> c).toMap
       val declaredNames =

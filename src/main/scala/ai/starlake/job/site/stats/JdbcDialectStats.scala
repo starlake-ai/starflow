@@ -2,6 +2,8 @@ package ai.starlake.job.site.stats
 
 import ai.starlake.config.ConnectionInfo
 
+import java.util.Locale
+
 trait JdbcDialectStats {
   def engine: String
   def rowCountEstimated: Boolean
@@ -132,7 +134,7 @@ object JdbcDialectStats {
       infoColumns(this, prefix(database), schema)
   }
 
-  def forEngine(engine: String): Option[JdbcDialectStats] = engine.toLowerCase match {
+  def forEngine(engine: String): Option[JdbcDialectStats] = engine.toLowerCase(Locale.ROOT) match {
     case "postgresql" => Some(Postgres)
     case "redshift"   => Some(Redshift)
     case "duckdb"     => Some(DuckDb)

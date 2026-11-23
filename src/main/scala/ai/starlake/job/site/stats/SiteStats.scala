@@ -1,5 +1,6 @@
 package ai.starlake.job.site.stats
 
+import java.util.Locale
 import scala.collection.immutable.TreeMap
 
 case class ColumnStat(name: String, `type`: String, nullable: Boolean)
@@ -59,5 +60,9 @@ object RawTableStats {
   */
 case class PhysicalTable(database: Option[String], schema: String, table: String) {
   def key: (Option[String], String, String) =
-    (database.map(_.toLowerCase), schema.toLowerCase, table.toLowerCase)
+    (
+      database.map(_.toLowerCase(Locale.ROOT)),
+      schema.toLowerCase(Locale.ROOT),
+      table.toLowerCase(Locale.ROOT)
+    )
 }

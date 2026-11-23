@@ -5,7 +5,8 @@ import ai.starlake.extract.JdbcDbUtils
 import Rows._
 import com.typesafe.scalalogging.LazyLogging
 
-import java.sql.Connection
+import java.sql.{Connection, DatabaseMetaData}
+import java.util.Locale
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
@@ -29,9 +30,15 @@ case class SchemaGroup(database: Option[String], schema: String, tables: List[Ph
 
 object ConnectionStatus {
 
+  /** The first failure is cut to this length when a ` (+k more)` suffix follows it, so that the
+    * suffix survives the 300 character cap.
+    */
+  val FirstFailureMaxLength = 280
+
   /** Connection-level status from a collector result: `error` when every group failed, otherwise
-    * `successStatus`. The error message is the first failure followed by ` (+k more)`, capped at
-    * 300 characters; every failure is logged in full by the caller.
+    * `successStatus`. The error message is the first failure (cut to 280 characters when others
+    * follow) and ` (+k more)`, at most 300 characters; every failure is logged in full by the
+    * caller.
     */
   def from(
     engine: String,
@@ -40,10 +47,14 @@ object ConnectionStatus {
     successStatus: String = "ok"
   ): ConnectionStats = {
     val error = result.failures match {
-      case Nil => None
+      case Nil          => None
+      case first :: Nil => Some(Sanitize.message(first))
       case first :: rest =>
-        val more = if (rest.isEmpty) "" else s" (+${rest.size} more)"
-        Some(Sanitize.message(first + more))
+        val head = Sanitize.message(first)
+        val cut =
+          if (head.length <= FirstFailureMaxLength) head
+          else head.take(FirstFailureMaxLength - 3) + "..."
+        Some(Sanitize.message(s"$cut (+${rest.size} more)"))
     }
     val status = if (result.allFailed) "error" else successStatus
     ConnectionStats(engine, status, error, durationMs)
@@ -93,13 +104,13 @@ object StatsCollector extends LazyLogging {
     tables: List[PhysicalTable],
     caseSensitive: Boolean = false
   ): List[SchemaGroup] = {
-    def norm(s: String) = if (caseSensitive) s else s.toLowerCase
+    def norm(s: String) = if (caseSensitive) s else s.toLowerCase(Locale.ROOT)
     tables
       .groupBy(t => (t.database.map(norm), norm(t.schema)))
       .values
       .toList
       .map(ts => SchemaGroup(ts.head.database, ts.head.schema, ts))
-      .sortBy(_.label.toLowerCase)
+      .sortBy(_.label.toLowerCase(Locale.ROOT))
   }
 
   /** Runs each group in its own Try: a failing group loses its tables and adds `<label>: <message>`
@@ -127,15 +138,20 @@ object StatsCollector extends LazyLogging {
     }
 }
 
-/** PostgreSQL, Redshift, DuckDB and Snowflake: catalog views only, never count(*). */
-class JdbcStatsCollector(dialect: JdbcDialectStats) extends StatsCollector {
+/** PostgreSQL, Redshift, DuckDB and Snowflake: catalog views only, never count(*). Each query is
+  * bounded by `queryTimeoutSeconds`.
+  */
+class JdbcStatsCollector(
+  dialect: JdbcDialectStats,
+  val queryTimeoutSeconds: Int = StatsRunner.DefaultQueryTimeoutSeconds
+) extends StatsCollector {
   val engine: String = dialect.engine
 
   def collect(connectionRef: String, connection: ConnectionInfo, tables: List[PhysicalTable])(
     implicit settings: Settings
   ): CollectResult =
     StatsCollector.withConnection(connection) { conn =>
-      val query = JdbcStatsCollector.recovering(conn) _
+      val query = JdbcStatsCollector.recovering(conn, queryTimeoutSeconds) _
       StatsCollector.isolate(StatsCollector.bySchema(tables)) { g =>
         val db = g.database.orElse(dialect.defaultDatabase(connection))
         JdbcStatsCollector.collectGroup(dialect, query, g, db)
@@ -146,8 +162,8 @@ class JdbcStatsCollector(dialect: JdbcDialectStats) extends StatsCollector {
 object JdbcStatsCollector {
 
   /** Runs a query; on failure outside autocommit, rolls back so the next query still runs. */
-  private[stats] def recovering(conn: Connection)(sql: String): List[Row] =
-    try JdbcRows.query(conn, sql)
+  private[stats] def recovering(conn: Connection, timeoutSeconds: Int)(sql: String): List[Row] =
+    try JdbcRows.query(conn, sql, timeoutSeconds)
     catch {
       case NonFatal(e) =>
         if (!Try(conn.getAutoCommit).getOrElse(true)) Try(conn.rollback())
@@ -173,7 +189,7 @@ object JdbcStatsCollector {
       InfoSchemaMapping.merge(tableRows, statsRows, columnRows, dialect.rowCountEstimated)
     GroupResult(
       group.tables
-        .map(t => t -> merged.getOrElse(t.table.toLowerCase, RawTableStats.Missing))
+        .map(t => t -> merged.getOrElse(t.table.toLowerCase(Locale.ROOT), RawTableStats.Missing))
         .toMap,
       failures
     )
@@ -215,27 +231,47 @@ class GenericJdbcStatsCollector(val engine: String) extends StatsCollector {
   ): CollectResult =
     StatsCollector.withConnection(connection) { conn =>
       val md = conn.getMetaData
-      val escape = Try(md.getSearchStringEscape).toOption.orNull
       StatsCollector.isolate(StatsCollector.bySchema(tables)) { g =>
-        val db = g.database.orNull
-        val schema = g.schema
-        val found = List(schema, schema.toUpperCase, schema.toLowerCase).distinct.iterator
-          .map(GenericMetadataMapping.escapePattern(_, escape))
-          .map(s => s -> JdbcRows.readAndClose(md.getTables(db, s, "%", null)))
-          .find(_._2.nonEmpty)
-        found match {
-          case None => GroupResult(g.tables.map(_ -> RawTableStats.Missing).toMap)
-          case Some((s, tableRows)) =>
-            val columnRows = GenericMetadataMapping.toInfoSchemaColumns(
-              JdbcRows.readAndClose(md.getColumns(db, s, "%", "%"))
-            )
-            val merged = InfoSchemaMapping.merge(tableRows, Nil, columnRows, estimated = false)
-            GroupResult(
-              g.tables
-                .map(t => t -> merged.getOrElse(t.table.toLowerCase, RawTableStats.Missing))
-                .toMap
-            )
-        }
+        GenericJdbcStatsCollector.collectGroup(md, g)
       }
     }
+}
+
+object GenericJdbcStatsCollector {
+
+  /** One schema through DatabaseMetaData, trying the schema as written, upper and lower case.
+    * Drivers without schemas in table definitions (MySQL, MariaDB) expose databases as catalogs:
+    * the schema is then passed as the catalog, unescaped since the catalog is not a pattern.
+    */
+  private[stats] def collectGroup(md: DatabaseMetaData, g: SchemaGroup): GroupResult = {
+    val escape = Try(md.getSearchStringEscape).toOption.orNull
+    val schemasAsCatalogs = Try(!md.supportsSchemasInTableDefinitions).getOrElse(false)
+    val schema = g.schema
+    val candidates =
+      List(schema, schema.toUpperCase(Locale.ROOT), schema.toLowerCase(Locale.ROOT)).distinct
+        .map { s =>
+          if (schemasAsCatalogs) (s, null: String)
+          else (g.database.orNull, GenericMetadataMapping.escapePattern(s, escape))
+        }
+    val found = candidates.iterator
+      .map { case (catalog, pattern) =>
+        (catalog, pattern, JdbcRows.readAndClose(md.getTables(catalog, pattern, "%", null)))
+      }
+      .find(_._3.nonEmpty)
+    found match {
+      case None => GroupResult(g.tables.map(_ -> RawTableStats.Missing).toMap)
+      case Some((catalog, pattern, tableRows)) =>
+        val columnRows = GenericMetadataMapping.toInfoSchemaColumns(
+          JdbcRows.readAndClose(md.getColumns(catalog, pattern, "%", "%"))
+        )
+        val merged = InfoSchemaMapping.merge(tableRows, Nil, columnRows, estimated = false)
+        GroupResult(
+          g.tables
+            .map(t =>
+              t -> merged.getOrElse(t.table.toLowerCase(Locale.ROOT), RawTableStats.Missing)
+            )
+            .toMap
+        )
+    }
+  }
 }
