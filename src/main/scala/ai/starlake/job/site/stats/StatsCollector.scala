@@ -122,19 +122,21 @@ object StatsCollector extends LazyLogging {
         case Success(r) => r
         case Failure(e) =>
           logger.warn(s"Stats for schema ${g.label} failed: ${message(e)}", e)
-          GroupResult(Map.empty, List(s"${g.label}: ${message(e)}"))
+          GroupResult(Map.empty, List(s"${g.label} failed: ${message(e)}"))
       }
     }
     CollectResult(results.flatMap(_.tables).toMap, results.flatMap(_.failures))
   }
 
-  /** A stats-only query (row counts, bytes): on failure, no rows and `<label> stats: <message>`. */
+  /** A stats-only query (row counts, bytes): on failure, no rows and `<label> stats failed:
+    * <message>`.
+    */
   def statsOnly(label: String)(f: => List[Row]): (List[Row], List[String]) =
     Try(f) match {
       case Success(rows) => (rows, Nil)
       case Failure(e) =>
         logger.warn(s"Stats query for schema $label failed, no row counts: ${message(e)}", e)
-        (Nil, List(s"$label stats: ${message(e)}"))
+        (Nil, List(s"$label stats failed: ${message(e)}"))
     }
 }
 

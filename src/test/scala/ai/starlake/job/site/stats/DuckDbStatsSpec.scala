@@ -140,10 +140,10 @@ class DuckDbStatsSpec extends TestHelper {
       res.tables.contains(broken) shouldBe false
       res.failures.size shouldBe 2
       res.failures.exists(f =>
-        f.startsWith("broken: ") && f.contains("no_such_catalog_function")
+        f.startsWith("broken failed: ") && f.contains("no_such_catalog_function")
       ) shouldBe true
       res.failures.exists(f =>
-        f.startsWith("hr stats: ") && f.contains("no_such_catalog_function")
+        f.startsWith("hr stats failed: ") && f.contains("no_such_catalog_function")
       ) shouldBe true
       ConnectionStatus.from("duckdb", res, 1L).status shouldBe "ok"
       dir.delete(swallowIOExceptions = true)

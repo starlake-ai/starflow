@@ -167,7 +167,7 @@ class SparkStatsParsingSpec extends AnyFlatSpec with Matchers {
       _ => throw new IllegalStateException("corrupt\n  delta log")
     )
     stats shouldBe withColumns
-    failures shouldBe List("cat.db.t stats: corrupt")
+    failures shouldBe List("cat.db.t stats failed: corrupt")
   }
 
   it should "read the catalog statistics of other providers, as estimates" in {

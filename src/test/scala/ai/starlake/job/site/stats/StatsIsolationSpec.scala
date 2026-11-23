@@ -17,17 +17,17 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
       GroupResult(g.tables.map(_ -> found).toMap)
     }
     res.tables shouldBe Map(orders -> found)
-    res.failures shouldBe List("hr: permission denied for schema hr")
+    res.failures shouldBe List("hr failed: permission denied for schema hr")
     res.allFailed shouldBe false
   }
 
   it should "keep the non-fatal failures a group reports and qualify labels with the database" in {
     val t = PhysicalTable(Some("Proj"), "Sales", "orders")
     val res = StatsCollector.isolate(StatsCollector.bySchema(List(t))) { g =>
-      GroupResult(Map(t -> found), List(s"${g.label} stats: boom"))
+      GroupResult(Map(t -> found), List(s"${g.label} stats failed: boom"))
     }
     res.tables shouldBe Map(t -> found)
-    res.failures shouldBe List("Proj.Sales stats: boom")
+    res.failures shouldBe List("Proj.Sales stats failed: boom")
   }
 
   it should "report every group failing" in {
@@ -36,8 +36,8 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     }
     res.tables shouldBe empty
     res.failures.sorted shouldBe List(
-      "hr: java.lang.RuntimeException",
-      "sales: java.lang.RuntimeException"
+      "hr failed: java.lang.RuntimeException",
+      "sales failed: java.lang.RuntimeException"
     )
     res.allFailed shouldBe true
   }
@@ -75,7 +75,7 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     res.tables(orders).rowCount shouldBe None
     res.tables(orders).rowCountEstimated shouldBe false
     res.tables(orders).columns shouldBe List(ColumnStat("id", "BIGINT", nullable = false))
-    res.failures shouldBe List("sales stats: Catalog Error: duckdb_tables denied")
+    res.failures shouldBe List("sales stats failed: Catalog Error: duckdb_tables denied")
   }
 
   it should "use the stats query when it succeeds" in {
@@ -101,7 +101,7 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     )
     res shouldBe GroupResult(
       Map(t -> found),
-      List("p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)")
+      List("p.ds used the API: __TABLES__ failed: Access Denied: __TABLES__")
     )
   }
 
@@ -119,8 +119,8 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     )
     res.tables shouldBe Map(ok -> found)
     res.failures shouldBe List(
-      "p.ds.locked: Access Denied: Table p:ds.locked",
-      "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)"
+      "p.ds.locked failed: Access Denied: Table p:ds.locked",
+      "p.ds used the API: __TABLES__ failed: Access Denied: __TABLES__"
     )
   }
 
@@ -140,9 +140,9 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     }
     res.tables shouldBe Map(ok -> found)
     res.failures shouldBe List(
-      "p.ds: used the API (__TABLES__ failed: Access Denied: __TABLES__)",
-      "p.secret.orders: Access Denied: Dataset p:secret",
-      "p.secret: used the API (__TABLES__ failed: Access Denied: __TABLES__)"
+      "p.ds used the API: __TABLES__ failed: Access Denied: __TABLES__",
+      "p.secret.orders failed: Access Denied: Dataset p:secret",
+      "p.secret used the API: __TABLES__ failed: Access Denied: __TABLES__"
     )
     res.allFailed shouldBe false
     ConnectionStatus.from("bigquery", res, 1L).status shouldBe "ok"
@@ -161,7 +161,21 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
     res.tables shouldBe empty
     val status = ConnectionStatus.from("bigquery", res, 1L)
     status.status shouldBe "error"
-    status.error shouldBe Some("p.ds.orders: Access Denied: Table p:ds.orders (+1 more)")
+    status.error shouldBe Some("p.ds.orders failed: Access Denied: Table p:ds.orders (+1 more)")
+  }
+
+  it should "publish a readable error for a table named like a secret word" in {
+    val t = PhysicalTable(Some("p"), "auth", "tokens")
+    val res = StatsCollector.isolate(StatsCollector.bySchema(List(t), caseSensitive = true)) { g =>
+      BigQueryStatsCollector.collectDataset(
+        "p",
+        g,
+        _ => throw new RuntimeException("Access Denied: __TABLES__"),
+        _ => throw new RuntimeException("Access Denied")
+      )
+    }
+    val status = ConnectionStatus.from("bigquery", res, 1L)
+    status.error shouldBe Some("p.auth.tokens failed: Access Denied (+1 more)")
   }
 
   it should "fail its group visibly, without the API fallback, on an unsafe dataset name" in {
@@ -187,21 +201,22 @@ class StatsIsolationSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "be ok with the first failure and a count of the others when some groups failed" in {
-    val r = CollectResult(Map(orders -> found), List("hr: denied", "sales stats: no svv"))
+    val r =
+      CollectResult(Map(orders -> found), List("hr failed: denied", "sales stats failed: no svv"))
     ConnectionStatus.from("redshift", r, 7L) shouldBe
-    ConnectionStats("redshift", "ok", Some("hr: denied (+1 more)"), 7L)
+    ConnectionStats("redshift", "ok", Some("hr failed: denied (+1 more)"), 7L)
   }
 
   it should "keep the collector success status (unsupported) on partial results" in {
-    val r = CollectResult(Map(orders -> found), List("hr: denied"))
+    val r = CollectResult(Map(orders -> found), List("hr failed: denied"))
     ConnectionStatus.from("mysql", r, 3L, successStatus = "unsupported") shouldBe
-    ConnectionStats("mysql", "unsupported", Some("hr: denied"), 3L)
+    ConnectionStats("mysql", "unsupported", Some("hr failed: denied"), 3L)
   }
 
   it should "be error when every group failed" in {
-    val r = CollectResult(Map.empty, List("hr: denied", "sales: denied"))
+    val r = CollectResult(Map.empty, List("hr failed: denied", "sales failed: denied"))
     ConnectionStatus.from("postgresql", r, 5L) shouldBe
-    ConnectionStats("postgresql", "error", Some("hr: denied (+1 more)"), 5L)
+    ConnectionStats("postgresql", "error", Some("hr failed: denied (+1 more)"), 5L)
     ConnectionStatus.from("mysql", r, 5L, successStatus = "unsupported").status shouldBe "error"
   }
 

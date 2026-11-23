@@ -92,7 +92,7 @@ object SparkStatsCollector extends LazyLogging {
   /** Adds the format specific stats to a table known to exist. Delta: DESCRIBE DETAIL (no row
     * count). Iceberg: latest snapshot summary, or the files metadata table when the summary has no
     * totals. Anything else: catalog statistics (ANALYZE TABLE), reported as estimates. A failing
-    * stats query keeps the table and its columns and adds `<label> stats: <message>`.
+    * stats query keeps the table and its columns and adds `<label> stats failed: <message>`.
     */
   private[stats] def enrich(
     base: RawTableStats,
@@ -217,7 +217,7 @@ class SparkStatsCollector(
               case Success((stats, failures)) => (Some(t -> stats), failures)
               case Failure(e) =>
                 logger.warn(s"Spark stats for $label failed: ${StatsCollector.message(e)}", e)
-                (None, List(s"$label: ${StatsCollector.message(e)}"))
+                (None, List(s"$label failed: ${StatsCollector.message(e)}"))
             }
           }
           GroupResult(results.flatMap(_._1).toMap, results.flatMap(_._2))

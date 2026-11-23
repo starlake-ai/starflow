@@ -87,7 +87,7 @@ class SparkDeltaStatsSpec extends TestHelper {
       result.tables.contains(broken) shouldBe false
       result.tables(ghost) shouldBe RawTableStats.Missing
       result.failures should have size 1
-      result.failures.head should startWith("site_iso.broken: ")
+      result.failures.head should startWith("site_iso.broken failed: ")
       ConnectionStatus.from("spark", result, 1L).status shouldBe "ok"
     }
   }
