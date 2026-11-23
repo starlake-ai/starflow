@@ -2,7 +2,7 @@ package ai.starlake.utils
 
 import better.files.File
 
-import scala.sys.process.Process
+import scala.sys.process.{Process, ProcessLogger}
 import scala.util.{Failure, Success, Try}
 
 /** A project directory taken from git. `cleanupDir` is the temporary archive root to delete, when
@@ -40,17 +40,42 @@ object GitSnapshot {
     tagName.flatMap(name => git(repo, "rev-list", "-n", "1", s"tags/$name"))
   }
 
+  /** The files of `commit`, extracted to a new temporary directory. git writes the archive to a
+    * file first: in a pipe to tar, a failure of git (an unknown commit) would be lost, since the
+    * status is the one of tar, which extracts an empty input without error on macOS.
+    */
   def archive(repo: File, commit: String): Try[File] = Try {
     val target = File.newTemporaryDirectory("starlake-git-")
-    val status =
-      (Process(Seq("git", "-C", repo.pathAsString, "archive", commit)) #| Process(
-        Seq("tar", "-x", "-C", target.pathAsString)
-      )).!
-    if (status != 0) {
-      target.delete(swallowIOExceptions = true)
-      throw new IllegalArgumentException(s"Failed to extract commit $commit")
-    }
-    target
+    val tarFile = File.newTemporaryFile("starlake-archive-", ".tar")
+    val errors = new StringBuilder
+    val logger = ProcessLogger(_ => (), line => errors.append(line).append('\n'))
+    try {
+      val gitStatus = Process(
+        Seq(
+          "git",
+          "-C",
+          repo.pathAsString,
+          "archive",
+          "--format=tar",
+          "-o",
+          tarFile.pathAsString,
+          commit
+        )
+      ).!(logger)
+      val status =
+        if (gitStatus != 0) gitStatus
+        else
+          Process(Seq("tar", "-x", "-f", tarFile.pathAsString, "-C", target.pathAsString)).!(logger)
+      if (status != 0)
+        throw new IllegalArgumentException(
+          s"Failed to extract commit $commit: ${errors.toString.trim}"
+        )
+      target
+    } catch {
+      case e: Throwable =>
+        target.delete(swallowIOExceptions = true)
+        throw e
+    } finally tarFile.delete(swallowIOExceptions = true)
   }
 
   /** The project directory as it was at `commit`. The project may sit in a subdirectory of the
