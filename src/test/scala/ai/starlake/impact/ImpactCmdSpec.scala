@@ -737,6 +737,29 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "plan to run the changed task and what it impacts" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, n) =>
+        val plan = ImpactAnalysis.analyze(o, n, "old", "new", None).get.rebuild
+        plan.tasksToRun.map(_.name) shouldBe List("kpi.dashboard", "kpi.revenue", "stg.orders")
+        // every task of the fixture is OVERWRITE
+        plan.entries.flatMap(_.notes) shouldBe Nil
+      }
+    }
+  }
+
+  it should "plan a reload and no task run for a load table change" in {
+    new WithSettings() {
+      withProjects(addNoteToRawOrders) { (o, n) =>
+        val plan = ImpactAnalysis.analyze(o, n, "old", "new", None).get.rebuild
+        plan.tasksToRun shouldBe Nil
+        plan.entries.map(e => e.node.name -> e.action) shouldBe List(
+          "raw.orders" -> RebuildAction.ReloadRequired
+        )
+      }
+    }
+  }
+
   private def git(repo: File, args: String*): String =
     Process(Seq("git", "-C", repo.pathAsString) ++ args).!!
 

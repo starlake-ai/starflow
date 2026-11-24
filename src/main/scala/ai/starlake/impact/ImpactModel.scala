@@ -129,7 +129,8 @@ final case class ImpactReport(
   direct: List[DirectChange],
   impacted: List[ImpactedNode],
   unresolved: List[UnresolvedEdge],
-  otherChanges: List[String]
+  otherChanges: List[String],
+  rebuild: RebuildPlan = RebuildPlan.empty
 ) {
   def isEmpty: Boolean = direct.isEmpty && otherChanges.isEmpty
 

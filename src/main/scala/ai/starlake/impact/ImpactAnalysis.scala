@@ -25,7 +25,7 @@ object ImpactAnalysis {
       val (impacted, edges) = ImpactPropagator.propagate(direct, newView)
       val unresolved = (edges ++ ImpactPropagator.collisions(oldView, newView)).distinct
         .sortBy(e => (e.from.name, e.to.name))
-      ImpactReport(
+      val report = ImpactReport(
         oldLabel,
         newLabel,
         direct,
@@ -33,6 +33,7 @@ object ImpactAnalysis {
         unresolved,
         ChangeDetector.otherChanges(oldView, newView, direct)
       )
+      report.copy(rebuild = RebuildPlanner.plan(report, newView))
     }
   }
 }
