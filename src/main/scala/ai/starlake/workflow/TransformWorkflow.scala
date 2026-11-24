@@ -264,10 +264,16 @@ trait TransformWorkflow extends LazyLogging {
       }
       .get
 
-  /** The declared tasks that write each planned table. Tasks writing the same table all run. */
+  /** The declared tasks that write each planned table. Tasks writing the same table all run. A
+    * planned table that no declared task writes is reported, not dropped silently.
+    */
   private def tasksWriting(refs: List[NodeRef], reload: Boolean): List[String] = {
     val byTable = schemaHandler.tasks(reload).groupBy(t => NodeRef.of(t.domain, t.table))
-    refs.flatMap(ref => byTable.getOrElse(ref, Nil).map(_.fullName())).distinct
+    refs.flatMap { ref =>
+      val writers = byTable.getOrElse(ref, Nil)
+      if (writers.isEmpty) Utils.printOut(s"Planned to run ${ref.name} but no task writes it")
+      writers.map(_.fullName())
+    }.distinct
   }
 
   private def transformBatch(config: TransformConfig): Try[String] =
@@ -324,10 +330,12 @@ trait TransformWorkflow extends LazyLogging {
             e.action == RebuildAction.ReloadRequired || e.action.isInstanceOf[RebuildAction.Blocked]
           )
           .foreach { e =>
-            val line = List(s"Not run: ${e.node.name}: ${e.action.label}", e.detail)
-              .filter(_.nonEmpty)
-              .mkString(". ")
-            Utils.printOut(line)
+            // the detail of a blocked node already says "blocked by ..."
+            val why = e.action match {
+              case _: RebuildAction.Blocked => e.detail
+              case action => List(action.label, e.detail).filter(_.nonEmpty).mkString("; ")
+            }
+            Utils.printOut(s"Not run: ${e.node.name}: $why")
           }
       }
       summary

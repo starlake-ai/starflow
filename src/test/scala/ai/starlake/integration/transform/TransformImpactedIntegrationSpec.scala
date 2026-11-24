@@ -6,6 +6,8 @@ import ai.starlake.integration.IntegrationTestBase
 import ai.starlake.job.Main
 import better.files.File
 
+import java.io.ByteArrayOutputStream
+
 import scala.sys.process.Process
 import scala.util.Try
 
@@ -49,6 +51,13 @@ class TransformImpactedIntegrationSpec extends IntegrationTestBase {
 
   private def transform(args: String*): Boolean =
     Try(new Main().run(("transform" +: args).toArray)).getOrElse(false)
+
+  /** The transform result with what it printed. */
+  private def transformOut(args: String*): (Boolean, String) = {
+    val stdout = new ByteArrayOutputStream()
+    val ok = Console.withOut(stdout)(transform(args: _*))
+    (ok, stdout.toString)
+  }
 
   private val revenueTimesThree =
     "SELECT s.id, s.amount * 3 AS total FROM stg.orders s\n"
@@ -110,9 +119,13 @@ class TransformImpactedIntegrationSpec extends IntegrationTestBase {
           |      type: APPEND
           |""".stripMargin
       )
-      transform("--impacted", "--base", "HEAD") shouldBe true
+      val (ok, out) = transformOut("--impacted", "--base", "HEAD")
+      ok shouldBe true
       ids(root, "stg.orders") shouldBe List(1, 2, 999)
       ids(root, "kpi.revenue") shouldBe List(1, 2)
+      val notRun = out.linesIterator.filter(_.startsWith("Not run: ")).toList
+      notRun should contain("Not run: raw.orders: reload required")
+      notRun should contain("Not run: stg.orders: blocked by reload of raw.orders")
     }
   }
 
