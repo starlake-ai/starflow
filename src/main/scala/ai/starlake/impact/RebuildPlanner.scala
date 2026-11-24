@@ -97,7 +97,13 @@ object RebuildPlanner {
 
     def pythonEntry(ref: NodeRef): PlannedNode =
       if (breakingTaskChange)
-        PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Run, List(PythonUnknown))
+        PlannedNode(
+          ref,
+          NodeKind.Task,
+          ChangeClass.Breaking,
+          Run,
+          PythonUnknown :: historyNote(ref, ChangeClass.Breaking)
+        )
       else PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Blocked(breakingLoads), Nil)
 
     def entry(ref: NodeRef): PlannedNode = {

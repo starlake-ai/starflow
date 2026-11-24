@@ -205,6 +205,22 @@ class RebuildPlannerSpec extends AnyFlatSpec with Matchers {
     notesOf(plan, py) shouldBe List("python task, inputs unknown")
   }
 
+  it should "warn that the history of an incremental python task is not rebuilt" in {
+    val plan = planFor(
+      List(change(stg, NodeKind.Task, Breaking, Cols(Set("amount")))),
+      chain(extra = List(pythonNode.copy(writeStrategy = Some("APPEND"))))
+    )
+    plan.entries.find(_.node == py) shouldBe Some(
+      PlannedNode(
+        py,
+        NodeKind.Task,
+        Breaking,
+        Run,
+        List("python task, inputs unknown", "history not rebuilt (APPEND)")
+      )
+    )
+  }
+
   it should "block a python task when only load changes are breaking" in {
     val plan =
       planFor(List(change(raw, NodeKind.LoadTable, Breaking)), chain(extra = List(pythonNode)))
