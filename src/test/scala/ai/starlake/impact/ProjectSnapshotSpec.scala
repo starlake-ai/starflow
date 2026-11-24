@@ -225,6 +225,32 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
+  it should "fail naming sl_incremental on a task file that does not read once it is deferred" in {
+    new WithSettings() {
+      val result = tryLoad(
+        Map(
+          "metadata/transform/kpi/revenue.sl.yml" ->
+          """version: 1
+            |task:
+            |  name: revenue
+            |  domain: kpi
+            |  table: revenue
+            |  writeStrategy:
+            |    type: OVERWRITE
+            |  sql: 'SELECT s.id, s.amount * 2 AS total FROM stg.orders s {{ "WHERE s.id > 1" if sl_incremental else "" }}'
+            |""".stripMargin
+        ),
+        removed = Set("metadata/transform/kpi/revenue.sql")
+      )
+      result.isFailure shouldBe true
+      val message = result.failed.get.getMessage
+      message should include("transform/kpi/revenue.sl.yml")
+      message should include("sl_incremental")
+      message should include("double-quoted or block scalars")
+      message should not include "migrate"
+    }
+  }
+
   it should "fail with a migrate hint on an unreadable project" in {
     new WithSettings() {
       val dir = File.newTemporaryDirectory("impact-")

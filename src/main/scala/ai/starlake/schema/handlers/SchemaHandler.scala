@@ -102,9 +102,9 @@ case class DomainWithNameOnly(name: String, tables: List[TableWithNameAndType]) 
 /** A task .sl.yml or a job _config.sl.yml that refers to `sl_incremental` and does not read once
   * the variable is deferred: the tags that depend on it are written back into the YAML
   */
-final class IncrementalYamlException(path: Path, cause: Throwable)
+final class IncrementalYamlException(file: String, cause: Throwable)
     extends Exception(
-      s"$path refers to ${IncrementalVariable.Name} and could not be read once rendered: " +
+      s"$file refers to ${IncrementalVariable.Name} and could not be read once rendered: " +
       s"${cause.getMessage}. ${IncrementalVariable.Name} is only known when the task runs, so its " +
       "tags stay in the YAML until then: keep them inside double-quoted or block scalars, with no " +
       "Jinja loops or sets at YAML level",
@@ -1456,7 +1456,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       val rendered = Utils.parseJinjaDeferringIncremental(content, activeEnvVars())
       Try(deserialize(rendered)) match {
         case Success(value) => value
-        case Failure(e)     => throw new IncrementalYamlException(path, e)
+        case Failure(e)     => throw new IncrementalYamlException(path.toString, e)
       }
     } else
       deserialize(Utils.parseJinja(content, activeEnvVars()))

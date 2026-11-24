@@ -1,7 +1,7 @@
 package ai.starlake.impact
 
 import ai.starlake.config.{DatasetArea, Settings}
-import ai.starlake.schema.handlers.SchemaHandler
+import ai.starlake.schema.handlers.{IncrementalYamlException, SchemaHandler}
 import ai.starlake.schema.model.{
   AllSinks,
   AutoTaskInfo,
@@ -12,7 +12,7 @@ import ai.starlake.schema.model.{
   WriteStrategyType
 }
 import ai.starlake.serve.CaffeineSettingsManager
-import ai.starlake.utils.{Utils, YamlSerde}
+import ai.starlake.utils.{IncrementalVariable, Utils, YamlSerde}
 import better.files.File
 import com.hubspot.jinjava.interpret.FatalTemplateErrorsException
 import org.apache.hadoop.fs.Path
@@ -222,6 +222,16 @@ object ProjectSnapshot {
         throw new UnreadableYaml(s"${name(f)} could not be read: ${e.getMessage}", e)
       }
     }
+    // A transform YAML that refers to sl_incremental is loaded with the variable deferred, as the
+    // schema handler does: it would drop a task file that no longer reads then
+    def checkTransform(f: File)(deserialize: String => Any): Unit = {
+      check(f)(deserialize)
+      val raw = f.contentAsString
+      if (IncrementalVariable.mentionedIn(List(raw)))
+        Try(deserialize(Utils.parseJinjaDeferringIncremental(raw, vars))).failed.foreach { e =>
+          throw new IncrementalYamlException(name(f), e)
+        }
+    }
     subDirs(metadataDir / "load").foreach { domain =>
       val config = domain / "_config.sl.yml"
       if (config.exists)
@@ -231,8 +241,10 @@ object ProjectSnapshot {
     subDirs(metadataDir / "transform").flatMap { job =>
       val config = job / "_config.sl.yml"
       if (config.exists)
-        check(config)(YamlSerde.deserializeYamlTransform(_, config.pathAsString).get)
-      yamlFiles(job).foreach(f => check(f)(YamlSerde.deserializeYamlTask(_, f.pathAsString)))
+        checkTransform(config)(YamlSerde.deserializeYamlTransform(_, config.pathAsString).get)
+      yamlFiles(job).foreach(f =>
+        checkTransform(f)(YamlSerde.deserializeYamlTask(_, f.pathAsString))
+      )
       job.list
         .filter(f => f.isRegularFile && (f.name.endsWith(".sql") || f.name.endsWith(".sql.j2")))
         .toList

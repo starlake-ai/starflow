@@ -145,6 +145,25 @@ class TransformImpactedIntegrationSpec extends IntegrationTestBase {
     }
   }
 
+  it should "fail before running anything on a task file that does not read once sl_incremental is deferred" in {
+    withProject { root =>
+      (root / "metadata/transform/kpi/revenue.sql").delete()
+      (root / "metadata/transform/kpi/revenue.sl.yml").overwrite(
+        """version: 1
+          |task:
+          |  name: revenue
+          |  domain: kpi
+          |  table: revenue
+          |  writeStrategy:
+          |    type: OVERWRITE
+          |  sql: 'SELECT s.id, s.amount * 3 AS total FROM stg.orders s {{ "WHERE s.id > 1" if sl_incremental else "" }}'
+          |""".stripMargin
+      )
+      transform("--impacted", "--base", "HEAD") shouldBe false
+      ids(root, "kpi.revenue") shouldBe List(1, 2)
+    }
+  }
+
   it should "write the impacted tasks to the data branch only" in {
     withProject { root =>
       (root / "metadata/transform/kpi/revenue.sql").overwrite(revenueTimesThree)
