@@ -77,7 +77,8 @@ object Common {
       Test / testOptions ++= Seq(
         // show full stack traces and test case durations
         Tests.Argument("-oDF"),
-        // -v Log "test run started" / "test started" / "test run finished" events on log level "info" instead of "debug".
+        // -v Log "test run started" / "test started" / "test run finished" events
+        // on log level "info" instead of "debug".
         // -a Show stack traces a nd exception class name for ExpectationErrors.
         Tests.Argument(TestFrameworks.JUnit, "-v", "-a")
       ),
@@ -143,7 +144,9 @@ object Resolvers {
   // Versions.deltaSpark is one of our "-starlake.N" builds.
   val deltaGithubRelease = Resolver.url(
     "delta-github-release",
-    url(s"https://github.com/starlake-ai/starflow/releases/download/deps-delta-${Versions.deltaSpark}/")
+    url(
+      s"https://github.com/starlake-ai/starflow/releases/download/deps-delta-${Versions.deltaSpark}/"
+    )
   )(
     Patterns()
       .withIvyPatterns(Vector("[module]-[revision]-ivy.xml"))
