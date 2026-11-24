@@ -154,6 +154,40 @@ class SparkStatsParsingSpec extends AnyFlatSpec with Matchers {
     stats.rowCountEstimated shouldBe true
   }
 
+  it should "read the snapshot the main branch points to, not the latest commit" in {
+    val sql = icebergSnapshotSql(q)
+    sql should include(s"FROM $q.refs r JOIN $q.snapshots s ON s.snapshot_id = r.snapshot_id")
+    sql should include("r.name = 'main'")
+    sql should not include "ORDER BY committed_at"
+  }
+
+  it should "report 0 rows and 0 bytes for an Iceberg table without snapshot" in {
+    val (stats, failures) = SparkStatsCollector.enrich(
+      base.copy(format = Some("iceberg")),
+      Map("provider" -> "iceberg"),
+      q,
+      "cat.db.t",
+      fake { case s if s == icebergSnapshotSql(q) => Nil }
+    )
+    stats.rowCount shouldBe Some(0L)
+    stats.rowCountEstimated shouldBe false
+    stats.bytes shouldBe Some(0L)
+    stats.lastModified shouldBe None
+    failures shouldBe Nil
+  }
+
+  it should "report no Iceberg row count when the snapshot query fails" in {
+    val (stats, failures) = SparkStatsCollector.enrich(
+      base.copy(format = Some("iceberg")),
+      Map("provider" -> "iceberg"),
+      q,
+      "cat.db.t",
+      _ => throw new IllegalStateException("no refs table")
+    )
+    stats.rowCount shouldBe None
+    failures shouldBe List("cat.db.t stats failed: no refs table")
+  }
+
   it should "keep the table and its columns when a format stats query fails" in {
     val withColumns = base.copy(
       format = Some("delta"),

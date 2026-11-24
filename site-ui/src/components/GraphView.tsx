@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider,
-  getNodesBounds, getViewportForBounds, useReactFlow,
+  getViewportForBounds, useReactFlow,
   type Edge, type Node, type NodeProps,
 } from '@xyflow/react';
 import { toPng, toSvg } from 'html-to-image';
@@ -165,7 +165,10 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
   const doExport = async (format: 'png' | 'svg') => {
     const viewport = wrapper.current?.querySelector<HTMLElement>('.react-flow__viewport');
     if (!viewport) return;
-    const bounds = getNodesBounds(flow.getNodes());
+    // The instance method reads React Flow's internal nodes: absolute positions (a node inside a
+    // domain group has a position relative to it) and measured sizes. The nodes passed as props
+    // have neither, which shrank the export to its 400x300 minimum.
+    const bounds = flow.getNodesBounds(flow.getNodes());
     const width = Math.max(bounds.width + 80, 400);
     const height = Math.max(bounds.height + 80, 300);
     const vp = getViewportForBounds(bounds, width, height, 0.05, 2, 0.05);
@@ -173,6 +176,9 @@ function GraphInner({ model, graph, select, exclude, compact = false, focusId }:
       width,
       height,
       backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#ffffff',
+      // The UI uses system fonts: reading the stylesheet to embed web fonts is useless, and Safari
+      // refuses it from file://
+      skipFonts: true,
       style: { width: `${width}px`, height: `${height}px`, transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})` },
     };
     const url = format === 'png' ? await toPng(viewport, options) : await toSvg(viewport, options);

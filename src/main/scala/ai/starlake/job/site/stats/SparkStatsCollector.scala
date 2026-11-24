@@ -62,13 +62,17 @@ object SparkStatsParsing {
 
   def deltaDetailSql(q: String): String = s"DESCRIBE DETAIL $q"
 
-  /** The latest snapshot summary: metadata only. */
+  /** The summary of the snapshot the main branch points to: metadata only. The latest commit is not
+    * the current state after a rollback, and a commit on another branch does not change main. No
+    * row means the table has no snapshot yet.
+    */
   def icebergSnapshotSql(q: String): String =
-    "SELECT summary['total-records'] AS total_records, " +
-    "summary['total-files-size'] AS total_files_size, " +
-    "summary['total-position-deletes'] AS total_position_deletes, " +
-    "summary['total-equality-deletes'] AS total_equality_deletes, committed_at " +
-    s"FROM $q.snapshots ORDER BY committed_at DESC LIMIT 1"
+    "SELECT s.summary['total-records'] AS total_records, " +
+    "s.summary['total-files-size'] AS total_files_size, " +
+    "s.summary['total-position-deletes'] AS total_position_deletes, " +
+    "s.summary['total-equality-deletes'] AS total_equality_deletes, s.committed_at " +
+    s"FROM $q.refs r JOIN $q.snapshots s ON s.snapshot_id = r.snapshot_id " +
+    "WHERE r.name = 'main' AND r.type = 'BRANCH'"
 
   /** Sums over the files metadata table (manifests, never the data files): content 0 is data. */
   def icebergFilesSql(q: String): String =
@@ -90,9 +94,10 @@ object SparkStatsCollector extends LazyLogging {
     SparkEnv.get("starlake-site-stats", identity, settings).session(settings)
 
   /** Adds the format specific stats to a table known to exist. Delta: DESCRIBE DETAIL (no row
-    * count). Iceberg: latest snapshot summary, or the files metadata table when the summary has no
-    * totals. Anything else: catalog statistics (ANALYZE TABLE), reported as estimates. A failing
-    * stats query keeps the table and its columns and adds `<label> stats failed: <message>`.
+    * count). Iceberg: summary of the snapshot main points to (0 rows when there is none), or the
+    * files metadata table when the summary has no totals. Anything else: catalog statistics
+    * (ANALYZE TABLE), reported as estimates. A failing stats query keeps the table and its columns
+    * and adds `<label> stats failed: <message>`.
     */
   private[stats] def enrich(
     base: RawTableStats,
@@ -116,6 +121,9 @@ object SparkStatsCollector extends LazyLogging {
       case Some("iceberg") =>
         val (snapshot, failures) = statsQuery(icebergSnapshotSql(q))
         snapshot match {
+          case None if failures.isEmpty =>
+            // no snapshot on main: the table was created and never written
+            (base.copy(rowCount = Some(0L), rowCountEstimated = false, bytes = Some(0L)), Nil)
           case None => (base, failures)
           case Some(s) =>
             val (rows, bytes, lastModified) = fromIcebergSnapshot(s)
