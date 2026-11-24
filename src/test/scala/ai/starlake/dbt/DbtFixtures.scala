@@ -1,5 +1,6 @@
 package ai.starlake.dbt
 
+import ai.starlake.dbt.jinja.{DbtJinja, DbtJinjaContext}
 import ai.starlake.dbt.manifest._
 
 import java.nio.file.{Path, Paths}
@@ -18,6 +19,30 @@ object DbtFixtures {
 
   def target(adapterType: String = "duckdb"): DbtTarget =
     DbtTarget("dev", adapterType, Some("main"), Some("shop"), None)
+
+  def jinja(
+    manifest: DbtManifest = shopManifest,
+    cliVars: Map[String, Any] = Map.empty,
+    env: Map[String, String] = Map.empty
+  ): DbtJinja = {
+    val project = DbtProjectFile.read(manifest.projectRoot).get
+    val vars = DbtVars(
+      project.map(_.vars).getOrElse(Map.empty),
+      manifest.macros.map(_.packageName).toSet + manifest.metadata.projectName,
+      cliVars
+    )
+    new DbtJinja(
+      manifest,
+      new DbtRelations(manifest),
+      DbtJinjaContext(
+        target(manifest.metadata.adapterType),
+        vars,
+        project.map(_.dispatch).getOrElse(Map.empty),
+        env.get,
+        importTime
+      )
+    )
+  }
 
   /** A manifest without macros nor nodes, for the Jinja constructs themselves */
   def emptyManifest(adapterType: String = "duckdb"): DbtManifest =
