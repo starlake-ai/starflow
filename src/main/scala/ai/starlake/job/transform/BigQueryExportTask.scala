@@ -190,7 +190,8 @@ class BigQueryExportTask(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean],
     forceNative: Boolean,
-    templateVariables: Map[String, Any]
+    templateVariables: Map[String, Any],
+    incrementalForcedValue: Option[Boolean]
   ): (Option[String], String) = {
     unsupported(name, strategy, fsSink).foreach(message =>
       throw new IllegalArgumentException(message)

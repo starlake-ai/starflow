@@ -45,6 +45,7 @@ import ai.starlake.extract.{ExtractSchema, JdbcDbUtils}
 import ai.starlake.job.ingest.{AuditLog, RejectedRecord}
 import ai.starlake.job.site.DocBlocks
 import ai.starlake.job.metrics.ExpectationReport
+import ai.starlake.job.transform.AutoTask
 import ai.starlake.lineage.InheritedDescriptions
 import ai.starlake.schema.model.*
 import ai.starlake.schema.model.Severity.*
@@ -1478,7 +1479,11 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           )
         else {
           val sqlContentRaw = storage.read(taskFile)
-          val sqlContent = Utils.parseJinja(sqlContentRaw, activeEnvVars())
+          // sl_incremental is only known when the task runs: rendering the file now would drop
+          // its incremental branches. The task renders the SQL again with all its variables.
+          val sqlContent =
+            if (AutoTask.mentionsIncremental(List(sqlContentRaw))) sqlContentRaw
+            else Utils.parseJinja(sqlContentRaw, activeEnvVars())
           val sqlTask = SqlTaskExtractor(sqlContent)
           val preSql = sqlTask.presql ++ taskWithName.presql
           val postSql = taskWithName.postsql ++ sqlTask.postsql
@@ -2244,7 +2249,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   def substituteRefTaskMainSQL(
     sql: String,
     connection: ConnectionInfo,
-    allVars: Map[String, String] = Map.empty
+    allVars: Map[String, Any] = Map.empty
   ): String =
     SqlTransformations.substituteRefTaskMainSQL(
       sql,
@@ -2258,7 +2263,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   def transpileAndSubstituteSelectStatement(
     sql: String,
     connection: ConnectionInfo,
-    allVars: Map[String, String] = Map.empty,
+    allVars: Map[String, Any] = Map.empty,
     test: Boolean
   ): String =
     SqlTransformations.transpileAndSubstituteSelectStatement(

@@ -836,7 +836,7 @@ class BigQueryAutoTask(
     val mainSql = schemaHandler.substituteRefTaskMainSQL(
       sql,
       taskDesc.getRunConnection(),
-      allVars
+      sqlVars()
     )
     mainSql
   }

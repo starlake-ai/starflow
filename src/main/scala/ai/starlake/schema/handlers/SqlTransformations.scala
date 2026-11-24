@@ -17,7 +17,7 @@ object SqlTransformations extends LazyLogging {
     refs: RefDesc,
     domains: List[DomainInfo],
     tasks: List[AutoTaskInfo],
-    allVars: Map[String, String] = Map.empty
+    allVars: Map[String, Any] = Map.empty
   )(implicit settings: Settings): String = {
     if (sql.trim.isEmpty)
       sql
@@ -43,7 +43,7 @@ object SqlTransformations extends LazyLogging {
   def transpileIfNeeded(
     sql: String,
     connection: ConnectionInfo,
-    allVars: Map[String, String] = Map.empty,
+    allVars: Map[String, Any] = Map.empty,
     test: Boolean
   )(implicit settings: Settings): String = {
     if (test || connection._transpileDialect.isDefined) {
@@ -55,7 +55,7 @@ object SqlTransformations extends LazyLogging {
             "SL_CURRENT_TIME"
           ).flatMap { e =>
             val value = allVars.get(e).orElse(Option(System.getenv().get(e)))
-            value.map { v => e -> v }
+            value.map { v => e -> v.toString }
           }.toMap
         } else
           Map.empty[String, String]
@@ -71,7 +71,7 @@ object SqlTransformations extends LazyLogging {
     refs: RefDesc,
     domains: List[DomainInfo],
     tasks: List[AutoTaskInfo],
-    allVars: Map[String, String] = Map.empty,
+    allVars: Map[String, Any] = Map.empty,
     test: Boolean
   )(implicit settings: Settings): String = {
 

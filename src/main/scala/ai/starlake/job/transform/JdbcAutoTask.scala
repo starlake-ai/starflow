@@ -235,13 +235,18 @@ class JdbcAutoTask(
       val createdBeforeWrite = writesTable && createdForPresql
       val (alters, mainSql) =
         if (df.isEmpty) {
-          buildAllSQLQueries(None, tableExistsForcedValue = targetExistsBeforeWrite)
+          buildAllSQLQueries(
+            None,
+            tableExistsForcedValue = targetExistsBeforeWrite,
+            // the target this run created for presql holds no earlier rows
+            incrementalForcedValue = if (createdForPresql) Some(false) else None
+          )
         } else {
           val sql = taskDesc.getSql()
           val mainSql = schemaHandler.substituteRefTaskMainSQL(
             sql,
             taskDesc.getRunConnection(),
-            allVars
+            sqlVars()
           )
           (None, mainSql)
         }

@@ -234,7 +234,11 @@ class SparkAutoTask(
       accessToken = accessToken
     )
     val sqlWithParameters =
-      schemaHandler.substituteRefTaskMainSQL(taskDesc.getSql(), taskDesc.getRunConnection())
+      schemaHandler.substituteRefTaskMainSQL(
+        taskDesc.getSql(),
+        taskDesc.getRunConnection(),
+        incrementalVars(None)
+      )
     val result = new BigQuerySparkJob(config).query(sqlWithParameters)
     result match {
       case Success(df) => Some(df)
@@ -247,7 +251,11 @@ class SparkAutoTask(
   def buildDataframeFromJdbc(): Option[DataFrame] = {
     val runConnection = taskDesc.getRunConnection()
     val sqlWithParameters =
-      schemaHandler.substituteRefTaskMainSQL(taskDesc.getSql(), taskDesc.getRunConnection())
+      schemaHandler.substituteRefTaskMainSQL(
+        taskDesc.getSql(),
+        taskDesc.getRunConnection(),
+        incrementalVars(None)
+      )
     val res = session.read
       .format(
         runConnection.sparkDatasource().getOrElse("jdbc")
@@ -270,7 +278,11 @@ class SparkAutoTask(
 
   def buildDataframeFromFS(): Option[DataFrame] = {
     val sqlWithParameters =
-      schemaHandler.substituteRefTaskMainSQL(taskDesc.getSql(), taskDesc.getRunConnection())
+      schemaHandler.substituteRefTaskMainSQL(
+        taskDesc.getSql(),
+        taskDesc.getRunConnection(),
+        incrementalVars(None)
+      )
     runSqls(List(sqlWithParameters), "Main")
   }
 
@@ -325,7 +337,7 @@ class SparkAutoTask(
           val sqlNoRefs = schemaHandler.substituteRefTaskMainSQL(
             sql,
             taskDesc.getRunConnection(),
-            allVars
+            sqlVars()
           )
           val pageSize = if (resultPageSize > settings.appConfig.maxInteractiveRecords) {
             settings.appConfig.maxInteractiveRecords
