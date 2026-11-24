@@ -1,0 +1,5 @@
+order_id,customer_id,order_date,order_month,status,amount,channel
+1,1,2024-01-05,2024-01-01 00:00:00,completed,12.50,web
+2,1,2024-01-20,2024-01-01 00:00:00,returned,8.00,web
+3,2,2024-02-11,2024-02-01 00:00:00,completed,43.00,web
+4,3,2024-02-28,2024-02-01 00:00:00,placed,9.99,web

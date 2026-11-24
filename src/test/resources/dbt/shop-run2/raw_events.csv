@@ -1,0 +1,6 @@
+event_id,customer_id,event_type,occurred_at
+1,1,login,2024-03-01 10:00:00
+2,2,login,2024-03-01 11:00:00
+3,1,purchase,2024-03-02 09:30:00
+4,3,login,2024-03-03 08:00:00
+5,1,purchase,2024-03-03 12:00:00

@@ -1,0 +1,1 @@
+select '{{ not jinja }}' as braces
