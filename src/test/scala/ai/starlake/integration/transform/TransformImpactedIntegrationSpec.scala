@@ -9,8 +9,9 @@ import better.files.File
 import scala.sys.process.Process
 import scala.util.Try
 
-/** `transform --impacted` through Main on real DuckDB tables, in a git repository holding the impact
-  * fixture project: raw.orders (load) -> stg.orders -> kpi.revenue -> kpi.dashboard, all OVERWRITE.
+/** `transform --impacted` through Main on real DuckDB tables, in a git repository holding the
+  * impact fixture project: raw.orders (load) -> stg.orders -> kpi.revenue -> kpi.dashboard, all
+  * OVERWRITE.
   *
   * Every task runs once first, then stg.orders gets a row with id 999 that no run of stg.orders
   * writes: a rerun of stg.orders removes it, a rerun of kpi.revenue copies it.
