@@ -135,7 +135,10 @@ class RebuildPlannerSpec extends AnyFlatSpec with Matchers {
     )
     val view = chain(extra = List(loadNode(customers, "id", "name"), stgOfTwo))
     val plan = planFor(
-      List(change(raw, NodeKind.LoadTable, Breaking), change(customers, NodeKind.LoadTable, Breaking)),
+      List(
+        change(raw, NodeKind.LoadTable, Breaking),
+        change(customers, NodeKind.LoadTable, Breaking)
+      ),
       view
     )
     actions(plan)("stg.orders") shouldBe Blocked(List(customers, raw))
@@ -178,7 +181,8 @@ class RebuildPlannerSpec extends AnyFlatSpec with Matchers {
 
   it should "run an added task without a history note" in {
     val added = NodeRef("kpi", "added")
-    val view = chain(extra = List(taskNode(added, Set(kpi), List(col("id", kpi -> "id")), "APPEND")))
+    val view =
+      chain(extra = List(taskNode(added, Set(kpi), List(col("id", kpi -> "id")), "APPEND")))
     val plan = planFor(List(change(added, NodeKind.Task, Added)), view)
     plan.tasksToRun shouldBe List(added)
     notesOf(plan, added) shouldBe Nil
@@ -197,6 +201,18 @@ class RebuildPlannerSpec extends AnyFlatSpec with Matchers {
     val plan =
       planFor(List(change(raw, NodeKind.LoadTable, Breaking)), chain(extra = List(pythonNode)))
     actions(plan)("kpi.py") shouldBe Blocked(List(raw))
+  }
+
+  it should "run a python task that also carries a metadata change" in {
+    val plan = planFor(
+      List(
+        change(stg, NodeKind.Task, Breaking, Cols(Set("amount"))),
+        change(py, NodeKind.Task, Metadata)
+      ),
+      chain(extra = List(pythonNode))
+    )
+    actions(plan)("kpi.py") shouldBe Run
+    notesOf(plan, py) shouldBe List("python task, inputs unknown")
   }
 
   it should "plan nothing without changes" in {

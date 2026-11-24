@@ -25,7 +25,8 @@ final case class PlannedNode(
   /** Why the node is not run, then its notes, on one line. */
   def detail: String = {
     val why = action match {
-      case RebuildAction.Blocked(by)    => List(s"blocked by reload of ${by.map(_.name).mkString(", ")}")
+      case RebuildAction.Blocked(by) =>
+        List(s"blocked by reload of ${by.map(_.name).mkString(", ")}")
       case RebuildAction.NotRun(reason) => List(reason)
       case _                            => Nil
     }
@@ -71,7 +72,8 @@ object RebuildPlanner {
       loadChanges.map(l => l.node -> ImpactPropagator.propagate(List(l), view)._1.map(_.node).toSet)
 
     def blockers(ref: NodeRef): List[NodeRef] =
-      reachedFromLoads.collect { case (load, reached) if reached.contains(ref) => load }
+      reachedFromLoads
+        .collect { case (load, reached) if reached.contains(ref) => load }
         .sortBy(_.name)
 
     def historyNote(ref: NodeRef, cls: ChangeClass): List[String] =
@@ -84,7 +86,24 @@ object RebuildPlanner {
           .map(ws => s"history not rebuilt ($ws)")
           .toList
 
-    def entry(ref: NodeRef): PlannedNode = {
+    // python tasks read tables nobody can tell offline: the report lists them as unresolved edges
+    val pythonRefs: Set[NodeRef] =
+      report.unresolved.filter(_.from == ImpactPropagator.AnyNode).map(_.to).toSet
+    val breakingTaskChange = taskChanges.exists(_.changeClass == ChangeClass.Breaking)
+    val breakingLoads =
+      loadChanges.filter(_.changeClass == ChangeClass.Breaking).map(_.node).sortBy(_.name)
+
+    def pythonEntry(ref: NodeRef): PlannedNode =
+      if (breakingTaskChange)
+        PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Run, List(PythonUnknown))
+      else PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Blocked(breakingLoads), Nil)
+
+    def entry(ref: NodeRef): PlannedNode = if (
+      pythonRefs.contains(ref) && !directByRef.get(ref).exists(_.deleted)
+    ) pythonEntry(ref)
+    else plain(ref)
+
+    def plain(ref: NodeRef): PlannedNode = {
       val d = directByRef.get(ref)
       val i = impactedByRef.get(ref)
       val kind = d.map(_.kind).getOrElse(NodeKind.Task)
@@ -107,20 +126,9 @@ object RebuildPlanner {
       PlannedNode(ref, kind, cls, action, notes)
     }
 
-    // python tasks read tables nobody can tell offline: the report lists them as unresolved edges
-    val breakingTaskChange = taskChanges.exists(_.changeClass == ChangeClass.Breaking)
-    val breakingLoads =
-      loadChanges.filter(_.changeClass == ChangeClass.Breaking).map(_.node).sortBy(_.name)
-    val pythonEntries = report.unresolved
-      .filter(_.from == ImpactPropagator.AnyNode)
-      .map(_.to)
-      .distinct
+    val pythonEntries = pythonRefs.toList
       .filterNot(r => directByRef.contains(r) || impactedByRef.contains(r))
-      .map { ref =>
-        if (breakingTaskChange)
-          PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Run, List(PythonUnknown))
-        else PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Blocked(breakingLoads), Nil)
-      }
+      .map(pythonEntry)
 
     val entries = (directByRef.keySet ++ impactedByRef.keySet).toList.map(entry) ++ pythonEntries
     RebuildPlan(entries.sortBy(e => (e.action.rank, e.node.name)))
