@@ -70,6 +70,9 @@ final case class AttributeView(
   * @param definition
   *   tasks: the normalized rendered SQL (or Python file hash) as written. Equal on both sides means
   *   the task itself did not change, whatever its inputs did. Empty for load tables.
+  * @param writeStrategy
+  *   tasks: the type of the write strategy they run with (APPEND when none is declared). None for
+  *   load tables. Only read by the rebuild plan, never part of a fingerprint.
   */
 final case class NodeView(
   ref: NodeRef,
@@ -78,7 +81,8 @@ final case class NodeView(
   shape: Option[TaskShape],
   structural: String,
   metadata: String,
-  definition: String = ""
+  definition: String = "",
+  writeStrategy: Option[String] = None
 )
 
 /** A file under `metadata/load` or `metadata/transform`, with the nodes it defines by the file name

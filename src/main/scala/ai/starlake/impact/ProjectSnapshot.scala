@@ -8,7 +8,8 @@ import ai.starlake.schema.model.{
   DomainInfo,
   Metadata,
   SchemaInfo,
-  TableAttribute
+  TableAttribute,
+  WriteStrategyType
 }
 import ai.starlake.serve.CaffeineSettingsManager
 import ai.starlake.utils.{Utils, YamlSerde}
@@ -411,7 +412,10 @@ object ProjectSnapshot {
         Some(shapeOf(ref, t)),
         neutralize(structural(t)),
         neutralize(metadataFingerprint(t)),
-        definitionOf(ref, t)
+        definitionOf(ref, t),
+        Some(
+          t.writeStrategy.map(_.getEffectiveType()).getOrElse(WriteStrategyType.APPEND).value
+        )
       )
     }
 
