@@ -1479,18 +1479,28 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           )
         else {
           val sqlContentRaw = storage.read(taskFile)
-          // sl_incremental is only known when the task runs: rendering the file now would drop
-          // its incremental branches. The task renders the SQL again with all its variables.
-          val sqlContent =
-            if (AutoTask.mentionsIncremental(List(sqlContentRaw))) sqlContentRaw
-            else Utils.parseJinja(sqlContentRaw, activeEnvVars())
+          val sqlContent = Utils.parseJinja(sqlContentRaw, activeEnvVars())
           val sqlTask = SqlTaskExtractor(sqlContent)
           val preSql = sqlTask.presql ++ taskWithName.presql
           val postSql = taskWithName.postsql ++ sqlTask.postsql
+          // sl_incremental is only known when the task runs: the fields above hold the full-load
+          // rendering, and the task renders the raw template again with the variable
+          val template =
+            if (AutoTask.mentionsIncremental(List(SQLUtils.stripComments(sqlContentRaw)))) {
+              val raw = SqlTaskExtractor(sqlContentRaw)
+              Some(
+                IncrementalTemplate(
+                  raw.sql,
+                  raw.presql ++ taskWithName.presql,
+                  taskWithName.postsql ++ raw.postsql
+                )
+              )
+            } else None
           taskWithName.copy(
             presql = preSql,
             sql = Option(sqlTask.sql),
-            postsql = postSql
+            postsql = postSql,
+            _incrementalTemplate = template
           )
         }
       }

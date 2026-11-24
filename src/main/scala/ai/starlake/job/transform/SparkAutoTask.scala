@@ -94,12 +94,28 @@ class SparkAutoTask(
     *      - Table mode: Use runSparkOnSpark() for native Spark execution 3. Otherwise: Use
     *        runSparkOnAny() which handles external sinks
     */
+  /** The main SQL with its refs substituted. A task that refers to `sl_incremental` renders its raw
+    * template with the variables of the run, the others keep the SQL rendered at load time.
+    */
+  private def substituteMainSql(): String =
+    taskDesc._incrementalTemplate match {
+      case Some(template) =>
+        schemaHandler.substituteRefTaskMainSQL(
+          template.sql,
+          taskDesc.getRunConnection(),
+          sqlVars()
+        )
+      case None =>
+        schemaHandler.substituteRefTaskMainSQL(taskDesc.getSql(), taskDesc.getRunConnection())
+    }
+
   override def run(): Try[JobResult] = {
+    captureIncrementalState()
     val result =
       interactive match {
         case Some(_) =>
           // Interactive mode: just execute the query and return results
-          runSparkOnSpark(taskDesc.getSql())
+          runSparkOnSpark(mainSqlSource)
         case None =>
           // Batch mode: determine execution path based on source and sink types
           (taskDesc.getRunConnection().`type`, sinkConnection.`type`) match {
@@ -111,7 +127,7 @@ class SparkAutoTask(
               if (sinkConfig match { case fs: FsSink => fs.isExport(); case _ => false }) {
                 runSparkOnAny() // Export to filesystem (CSV, JSON, Parquet files)
               } else {
-                runSparkOnSpark(taskDesc.getSql()) // Native Spark table operations
+                runSparkOnSpark(mainSqlSource) // Native Spark table operations
               }
 
             case _ =>
@@ -234,11 +250,7 @@ class SparkAutoTask(
       accessToken = accessToken
     )
     val sqlWithParameters =
-      schemaHandler.substituteRefTaskMainSQL(
-        taskDesc.getSql(),
-        taskDesc.getRunConnection(),
-        incrementalVars(None)
-      )
+      substituteMainSql()
     val result = new BigQuerySparkJob(config).query(sqlWithParameters)
     result match {
       case Success(df) => Some(df)
@@ -251,11 +263,7 @@ class SparkAutoTask(
   def buildDataframeFromJdbc(): Option[DataFrame] = {
     val runConnection = taskDesc.getRunConnection()
     val sqlWithParameters =
-      schemaHandler.substituteRefTaskMainSQL(
-        taskDesc.getSql(),
-        taskDesc.getRunConnection(),
-        incrementalVars(None)
-      )
+      substituteMainSql()
     val res = session.read
       .format(
         runConnection.sparkDatasource().getOrElse("jdbc")
@@ -278,11 +286,7 @@ class SparkAutoTask(
 
   def buildDataframeFromFS(): Option[DataFrame] = {
     val sqlWithParameters =
-      schemaHandler.substituteRefTaskMainSQL(
-        taskDesc.getSql(),
-        taskDesc.getRunConnection(),
-        incrementalVars(None)
-      )
+      substituteMainSql()
     runSqls(List(sqlWithParameters), "Main")
   }
 

@@ -420,7 +420,26 @@ abstract class AutoTask(
 
   /** Whether the main SQL, presql or postsql of the task refers to `sl_incremental` */
   private[transform] lazy val usesIncremental: Boolean =
+    taskDesc._incrementalTemplate.isDefined ||
     AutoTask.mentionsIncremental(taskSQL :: taskDesc.presql ++ taskDesc.postsql)
+
+  /** The main SQL as the task renders it: the raw template of a .sql file that refers to
+    * `sl_incremental`, the SQL of the task otherwise (rendered when the project was loaded)
+    */
+  protected def mainSqlSource: String =
+    taskDesc._incrementalTemplate.map(_.sql).getOrElse(taskDesc.getSql())
+
+  private def presqlSource: List[String] =
+    taskDesc._incrementalTemplate.map(_.presql).getOrElse(taskDesc.presql)
+
+  private def postsqlSource: List[String] =
+    taskDesc._incrementalTemplate.map(_.postsql).getOrElse(taskDesc.postsql)
+
+  /** Evaluates `sl_incremental` before the run creates or writes anything. Engines call it first
+    * thing in their run entry point.
+    */
+  protected def captureIncrementalState(): Unit =
+    if (usesIncremental) targetExistedAtStart: Unit
 
   /** Whether the target existed when the run first asked. Cached: the JDBC run creates an empty
     * target before presql, and that table must not make the first run incremental.
@@ -439,7 +458,7 @@ abstract class AutoTask(
   private[transform] def incrementalVars(
     tableExistsForcedValue: Option[Boolean]
   ): Map[String, Any] =
-    if ({ println("DBGX " + usesIncremental + " " + taskSQL); !usesIncremental }) Map.empty
+    if (!usesIncremental) Map.empty
     else {
       warnIncrementalOverride
       val exists = tableExistsForcedValue.getOrElse(targetExistedAtStart)
@@ -472,11 +491,11 @@ abstract class AutoTask(
     SqlTransformations.transpileIfNeeded(sql, taskDesc.getRunConnection(), allVars, this.test)
 
   lazy val preSql: List[String] =
-    testInitSqls ++ parseJinja(taskDesc.presql, incrementalVars(None))
+    testInitSqls ++ parseJinja(presqlSource, incrementalVars(None))
       .filter(_.trim.nonEmpty)
       .map(transpileSql)
   lazy val postSql =
-    parseJinja(taskDesc.postsql, incrementalVars(None)).filter(_.trim.nonEmpty).map(transpileSql)
+    parseJinja(postsqlSource, incrementalVars(None)).filter(_.trim.nonEmpty).map(transpileSql)
 
   lazy val jdbcSinkEngineName = this.sinkConnection.getJdbcEngineName()
   lazy val jdbcSinkEngine = settings.appConfig.jdbcEngines(jdbcSinkEngineName.toString)
@@ -487,7 +506,7 @@ abstract class AutoTask(
     sinkConnection.asMap()
   }
 
-  private val taskSQL = SQLUtils.stripComments(taskDesc.getSql())
+  private val taskSQL = SQLUtils.stripComments(mainSqlSource)
 
   /** Builds the task's main SELECT statement with macros instantiated, refs substituted and
     * transpiled to the target dialect when needed (test mode / transpile dialect). The native
@@ -848,7 +867,10 @@ abstract class AutoTask(
   def dependencies(streams: CaseInsensitiveMap[String]): List[String] = {
     if (taskDesc.parseSQL.getOrElse(true)) {
       val result = SQLUtils.extractInputTableNamesWithFallback(
-        parseJinja(taskSQL, schemaHandler.activeEnvVars())
+        parseJinja(
+          taskSQL,
+          schemaHandler.activeEnvVars() + (AutoTask.IncrementalVar -> false)
+        )
       )
       val withStreamsResolved = result.map { table =>
         if (streams.contains(table)) {

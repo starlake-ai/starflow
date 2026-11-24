@@ -45,8 +45,13 @@ case class TaskDesc(version: Int, task: AutoTaskInfo)
   * @param rls
   *   Row level security policy to apply too the output data.
   */
+/** The not yet rendered SQL of a task whose .sql file refers to sl_incremental. The task renders it
+  * at run time, when the variable is known.
+  */
+case class IncrementalTemplate(sql: String, presql: List[String], postsql: List[String])
+
 @JsonIgnoreProperties(
-  Array("_filenamePrefix", "_auditTableName", "_dbComment", "write")
+  Array("_filenamePrefix", "_auditTableName", "_incrementalTemplate", "_dbComment", "write")
 )
 case class AutoTaskInfo(
   name: String, // Name of the task. Made of jobName + '.' + tableName
@@ -77,7 +82,10 @@ case class AutoTaskInfo(
   streams: List[String] = Nil,
   primaryKey: List[String] = Nil,
   syncStrategy: Option[TableSync] = None,
-  assetTriggeringStrategy: Option[String] = None
+  assetTriggeringStrategy: Option[String] = None,
+  // for internal use. Raw content of the .sql file when it refers to sl_incremental: the
+  // fields sql, presql and postsql hold its full-load rendering
+  _incrementalTemplate: Option[IncrementalTemplate] = None
 ) extends Named {
 
   @JsonIgnore
@@ -128,7 +136,13 @@ case class AutoTaskInfo(
       parseSQL = child.parseSQL.orElse(parseSQL),
       taskTimeoutMs = child.taskTimeoutMs.orElse(taskTimeoutMs),
       connectionRef = child.connectionRef.orElse(connectionRef),
-      assetTriggeringStrategy = child.assetTriggeringStrategy.orElse(assetTriggeringStrategy)
+      assetTriggeringStrategy = child.assetTriggeringStrategy.orElse(assetTriggeringStrategy),
+      _incrementalTemplate = child._incrementalTemplate.map(template =>
+        template.copy(
+          presql = presql ++ template.presql,
+          postsql = postsql ++ template.postsql
+        )
+      )
     )
   }
   /*

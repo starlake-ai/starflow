@@ -199,6 +199,7 @@ class JdbcAutoTask(
     sqlConnection: Option[java.sql.Connection] = None
   ): Try[JdbcJobResult] = {
     val start = Timestamp.from(Instant.now())
+    Try(captureIncrementalState())
 
     // Create schema if configured and not in interactive mode
     if (interactive.isEmpty && settings.appConfig.createSchemaIfNotExists) {
@@ -242,7 +243,7 @@ class JdbcAutoTask(
             incrementalForcedValue = if (createdForPresql) Some(false) else None
           )
         } else {
-          val sql = taskDesc.getSql()
+          val sql = mainSqlSource
           val mainSql = schemaHandler.substituteRefTaskMainSQL(
             sql,
             taskDesc.getRunConnection(),

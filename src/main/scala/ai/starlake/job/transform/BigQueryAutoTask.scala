@@ -832,7 +832,7 @@ class BigQueryAutoTask(
   }
 
   private def sqlSubst(): String = {
-    val sql = taskDesc.getSql()
+    val sql = mainSqlSource
     val mainSql = schemaHandler.substituteRefTaskMainSQL(
       sql,
       taskDesc.getRunConnection(),
@@ -908,6 +908,7 @@ class BigQueryAutoTask(
   }
 
   override def run(): Try[JobResult] = {
+    captureIncrementalState()
     runNative()
   }
 

@@ -48,6 +48,7 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       stmt.execute("CREATE SCHEMA IF NOT EXISTS mydb")
       stmt.execute("DROP TABLE IF EXISTS mydb.target")
       stmt.execute("DROP TABLE IF EXISTS mydb.presql_marker")
+      stmt.execute("CREATE OR REPLACE TABLE mydb.run_log(n INTEGER)")
       stmt.execute("CREATE OR REPLACE TABLE mydb.src(id INTEGER, updated_at INTEGER)")
       stmt.execute("INSERT INTO mydb.src VALUES (1, 10), (2, 20)")
     }
@@ -63,7 +64,23 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       buf.toList
     }
 
-    private def writeTask(sql: String, presql: List[String] = Nil): Unit = {
+    private def runLogCount(): Int = withDuckDb { conn =>
+      val rs = conn.createStatement().executeQuery("SELECT count(*) AS c FROM mydb.run_log")
+      rs.next()
+      rs.getInt("c")
+    }
+
+    private def targetMaxUpdatedAt(): Int = withDuckDb { conn =>
+      val rs = conn.createStatement().executeQuery("SELECT max(updated_at) AS m FROM mydb.target")
+      rs.next()
+      rs.getInt("m")
+    }
+
+    private def writeTask(
+      sql: String,
+      presql: List[String] = Nil,
+      sqlFile: Option[String] = None
+    ): Unit = {
       val task = AutoTaskInfo(
         name = "",
         sql = Some(sql),
@@ -77,7 +94,7 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       )
       val yml = mapper.writer().withAttribute(classOf[Settings], settings).writeValueAsString(task)
       storageHandler.write(yml, pathTask)
-      storageHandler.write(task.getSql(), pathSql)
+      storageHandler.write(sqlFile.getOrElse(task.getSql()), pathSql)
     }
 
     private def workflow() = new IngestionWorkflow(storageHandler, settings.schemaHandler())
@@ -143,6 +160,73 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       val task = workflow().buildTask(TransformConfig(name = "mydb.target"))
       task.usesIncremental shouldBe false
       task.incrementalVars(None) shouldBe Map.empty
+    }
+
+    it should "keep the full-load SQL in the loaded task and out of its dependencies" in {
+      resetTables()
+      writeTask(incrementalSql)
+      val loaded = settings
+        .schemaHandler()
+        .tasks(reload = true)
+        .find(t => t.domain == "mydb" && t.table == "target")
+        .get
+      loaded.getSql() should not include "sl_incremental"
+      loaded.getSql().toLowerCase should not include "max(updated_at)"
+      loaded._incrementalTemplate.isDefined shouldBe true
+      loaded._incrementalTemplate.get.sql should include("sl_incremental")
+      val yml =
+        mapper.writer().withAttribute(classOf[Settings], settings).writeValueAsString(loaded)
+      yml should not include "ncrementalTemplate"
+
+      val task = workflow().buildTask(TransformConfig(name = "mydb.target"))
+      val noStreams =
+        org.apache.spark.sql.catalyst.util.CaseInsensitiveMap(Map.empty[String, String])
+      task.dependencies(noStreams).map(_.toLowerCase) should not contain "mydb.target"
+      val forced = workflow().buildTask(
+        TransformConfig(name = "mydb.target", options = Map("sl_incremental" -> "true"))
+      )
+      forced.dependencies(noStreams).map(_.toLowerCase) should not contain "mydb.target"
+    }
+
+    it should "render sl_incremental in the postsql of the .sql file" in {
+      resetTables()
+      writeTask(
+        "SELECT 1",
+        sqlFile = Some("""-- SL_SQL
+            |SELECT id, updated_at FROM mydb.src
+            |-- SL_POSTSQL
+            |{% if not sl_incremental %}INSERT INTO mydb.run_log VALUES (1){% endif %}
+            |""".stripMargin)
+      )
+      run().isSuccess shouldBe true
+      runLogCount() shouldBe 1
+      run().isSuccess shouldBe true
+      runLogCount() shouldBe 1
+      run(truncate = true).isSuccess shouldBe true
+      runLogCount() shouldBe 2
+    }
+
+    it should "render the env vars of a .sql file that uses it at run time" in {
+      resetTables()
+      storageHandler.write(
+        "version: 1\nenv:\n  mult: \"10\"\n",
+        new Path(starlakeMetadataPath + "/env.sl.yml")
+      )
+      settings.schemaHandler().activeEnvVars(reload = true)
+      writeTask(
+        "SELECT 1",
+        sqlFile = Some("""SELECT id, updated_at * {{mult}} AS updated_at FROM mydb.src
+            |{% if sl_incremental %}
+            |WHERE id > (SELECT max(id) FROM mydb.target)
+            |{% endif %}""".stripMargin)
+      )
+      run().isSuccess shouldBe true
+      targetIds() shouldBe List(1, 2)
+      targetMaxUpdatedAt() shouldBe 200
+      addSourceRow(3, 30)
+      run().isSuccess shouldBe true
+      targetIds() shouldBe List(1, 2, 3)
+      targetMaxUpdatedAt() shouldBe 300
     }
 
     "AutoTask.mentionsIncremental" should "match the variable as a whole word only" in {
