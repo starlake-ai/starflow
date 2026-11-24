@@ -203,7 +203,7 @@ __Improvement__:
 - **`starlake transform --impacted --base <ref>` runs what a change impacts**: the tasks that `starlake impact` finds for the changes since `<ref>` run in one JVM, upstream tasks first, with `--parallelism`, `--options` and `--scheduledDate` as for `--name`.
   - A task runs once, as scheduled: an `OVERWRITE` task is rebuilt, an incremental one only rewrites its current slice, and the plan notes "history not rebuilt" for it.
   - A changed load table is not loaded again: the plan says "reload required", and the tasks reached only through it are not run ("blocked").
-  - Deleted tasks and metadata-only changes are listed, not run. Python tasks and tasks whose SQL is not analyzed run.
+  - Deleted tasks and metadata-only changes are listed, not run. Tasks whose SQL is not analyzed run. Python tasks run when a task change is breaking; when only load tables changed they wait for the reload (blocked).
   - `starlake impact --format plan` prints the same plan without running anything, and the JSON report has it under `rebuild`.
   - With `SL_DATA_BRANCH` set, the tasks write to the data branch only.
 
