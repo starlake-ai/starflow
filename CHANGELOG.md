@@ -200,6 +200,12 @@ __Improvement__:
   - The report is written as text, JSON, Markdown or HTML (`--format`), to stdout or to a file (`--output`); `--template` replaces the HTML template.
   - Exit codes: 0 when the report is written, 1 when `--fail-on breaking` or `--fail-on non-breaking` matches a change of the report, 2 on a usage, git or project loading error.
   - In CI, write the report with `--output` rather than reading stdout, where the launcher may print too.
+- **`starlake transform --impacted --base <ref>` runs what a change impacts**: the tasks that `starlake impact` finds for the changes since `<ref>` run in one JVM, upstream tasks first, with `--parallelism`, `--options` and `--scheduledDate` as for `--name`.
+  - A task runs once, as scheduled: an `OVERWRITE` task is rebuilt, an incremental one only rewrites its current slice, and the plan notes "history not rebuilt" for it.
+  - A changed load table is not loaded again: the plan says "reload required", and the tasks reached only through it are not run ("blocked").
+  - Deleted tasks and metadata-only changes are listed, not run. Python tasks and tasks whose SQL is not analyzed run.
+  - `starlake impact --format plan` prints the same plan without running anything, and the JSON report has it under `rebuild`.
+  - With `SL_DATA_BRANCH` set, the tasks write to the data branch only.
 
 # 1.9.1:
 __Breaking change__:
