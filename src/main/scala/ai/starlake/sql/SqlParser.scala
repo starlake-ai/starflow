@@ -2,12 +2,19 @@ package ai.starlake.sql
 
 import com.typesafe.scalalogging.LazyLogging
 import net.sf.jsqlparser.parser.{CCJSqlParser, CCJSqlParserUtil}
+import net.sf.jsqlparser.schema.Table
+import net.sf.jsqlparser.statement.create.table.CreateTable
+import net.sf.jsqlparser.statement.create.view.CreateView
+import net.sf.jsqlparser.statement.delete.Delete
+import net.sf.jsqlparser.statement.insert.Insert
+import net.sf.jsqlparser.statement.merge.Merge
 import net.sf.jsqlparser.statement.select.{
   PlainSelect,
   Select,
   SelectVisitorAdapter,
   SetOperationList
 }
+import net.sf.jsqlparser.statement.update.Update
 import net.sf.jsqlparser.statement.{Statement, StatementVisitorAdapter}
 import net.sf.jsqlparser.util.TablesNamesFinder
 
@@ -35,12 +42,6 @@ object SqlParser extends LazyLogging {
 
     val joins = joinRegex.findAllMatchIn(sql).map(_.group(1)).toList
     (froms ++ joins).map(_.replaceAll("`", "")).distinct
-  }
-
-  def extractTableNamesFromCTEsUsingRegEx(sql: String): List[String] = {
-    val cteRegex = "(?i)\\s+WITH\\s+([_\\-a-z0-9`./(]+\\s*[ _,a-z0-9`./(]*)".r
-    val ctes = cteRegex.findAllMatchIn(sql).map(_.group(1)).toList
-    ctes
   }
 
   def extractColumnNames(sql: String): List[String] = {
@@ -82,6 +83,58 @@ object SqlParser extends LazyLogging {
     unquoted.toList.distinct
   }
 
+  /** Names declared by a `WITH ... AS (...)` clause, matched textually.
+    *
+    * Only used when [[jsqlParse]] cannot parse the statement; the parser based path resolves CTE
+    * references on its own.
+    */
+  private val cteNameRegex =
+    "(?i)(?:\\bWITH\\b(?:\\s+RECURSIVE\\b)?|,)\\s*([\\w`\"]+)\\s+AS\\s*\\(".r
+
+  def extractCTENamesUsingRegEx(sql: String): List[String] =
+    cteNameRegex
+      .findAllMatchIn(sql)
+      .map(m => SqlFormatter.unquoteAgressive(m.group(1)))
+      .toList
+      .distinct
+
+  /** Tables the statement *reads*.
+    *
+    * This is what table level lineage needs: CTE names are resolved away by the parser rather than
+    * reported as tables, tables nested in subqueries are reported, names in comments and string
+    * literals are not, and the write target of a DML/DDL statement is excluded so that an `INSERT
+    * INTO t SELECT ... FROM t` does not turn into a self edge.
+    *
+    * Throws when the statement cannot be parsed; see
+    * [[ai.starlake.sql.SQLUtils.extractInputTableNamesWithFallback]] for the lenient variant.
+    */
+  def extractInputTableNames(sql: String): List[String] = {
+    val statement = parseQuietly(sql)
+    val finder = new TablesNamesFinder()
+    val allTables =
+      Option(finder.getTables(statement)).map(_.asScala.toList).getOrElse(Nil).map(unquote)
+    writeTargetOf(statement) match {
+      case Some(target) => allTables.filterNot(_.equalsIgnoreCase(target))
+      case None         => allTables
+    }
+  }
+
+  private def unquote(qualifiedName: String): String =
+    SqlFormatter.unquoteAgressive(qualifiedName.split("\\.").toList).mkString(".")
+
+  private def writeTargetOf(statement: Statement): Option[String] = {
+    val table: Option[Table] = statement match {
+      case insert: Insert      => Option(insert.getTable)
+      case update: Update      => Option(update.getTable)
+      case delete: Delete      => Option(delete.getTable)
+      case merge: Merge        => Option(merge.getTable)
+      case create: CreateTable => Option(create.getTable)
+      case create: CreateView  => Option(create.getView)
+      case _                   => None
+    }
+    table.map(t => unquote(t.getFullyQualifiedName))
+  }
+
   def extractCTENames(sql: String): List[String] = {
     var result: ListBuffer[String] = ListBuffer()
     val statementVisitor = new StatementVisitorAdapter[Any]() {
@@ -100,14 +153,21 @@ object SqlParser extends LazyLogging {
     result.toList
   }
 
-  def jsqlParse(sql: String): Statement = {
+  /** Parses without logging. Callers that treat a parse failure as an expected outcome (they have a
+    * fallback) use this so a benign degradation does not surface as an ERROR.
+    */
+  private def parseQuietly(sql: String): Statement = {
     val features = new Consumer[CCJSqlParser] {
       override def accept(t: CCJSqlParser): Unit = {
         t.withTimeOut(60 * 1000)
       }
     }
+    CCJSqlParserUtil.parse(sql.trim, features)
+  }
+
+  def jsqlParse(sql: String): Statement = {
     try {
-      CCJSqlParserUtil.parse(sql.trim, features)
+      parseQuietly(sql)
     } catch {
       case exception: Exception =>
         logger.error(s"Failed to parse $sql")

@@ -3,6 +3,7 @@ package ai.starlake.utils
 import ai.starlake.config.Settings
 import ai.starlake.utils.Formatter.RichFormatter
 import com.hubspot.jinjava.{Jinjava, JinjavaConfig}
+import com.hubspot.jinjava.lib.fn.ELFunctionDefinition
 
 import scala.jdk.CollectionConverters._
 
@@ -49,6 +50,15 @@ object JinjaUtils {
           new Jinjava(config)
         } finally Thread.currentThread.setContextClassLoader(curClassLoader)
       res.setResourceLocator(new JinjaResourceHandler())
+      res.getGlobalContext.registerFunction(
+        new ELFunctionDefinition(
+          "",
+          "doc",
+          classOf[ai.starlake.utils.jinja.DocFunction],
+          "doc",
+          classOf[String]
+        )
+      )
       _jinjava = res
     }
     _jinjava

@@ -731,7 +731,7 @@ trait BigQueryJobBase extends LazyLogging {
     sql: String
   )(implicit settings: Settings): Map[String, Option[String]] = {
     val tableIds = SQLUtils
-      .extractTableNamesUsingRegEx(sql)
+      .extractInputTableNamesWithFallback(sql)
       .flatMap(table => {
         val infos = table.split("\\.").toList
         infos match {

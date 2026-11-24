@@ -43,6 +43,7 @@ import ai.starlake.config.Settings.{latestSchemaVersion, ConnectionInfo}
 import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.extract.{ExtractSchema, JdbcDbUtils}
 import ai.starlake.job.ingest.{AuditLog, RejectedRecord}
+import ai.starlake.job.site.DocBlocks
 import ai.starlake.job.metrics.ExpectationReport
 import ai.starlake.lineage.InheritedDescriptions
 import ai.starlake.schema.model.*
@@ -904,9 +905,14 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     tablesFromDomainOrTasks
   }
 
+  /** Columns of the given tables, looked up in the declared domains and task outputs. A table that
+    * is not declared is read from the warehouse, unless `declaredOnly` is set, in which case it is
+    * left out.
+    */
   def getTablesWithColumnNames(
     tableNames: List[String],
-    accessToken: Option[String]
+    accessToken: Option[String],
+    declaredOnly: Boolean = false
   ): List[(String, TableWithNameAndType)] = {
     val objects = objectNames()
     tableNames.flatMap { tableFullName =>
@@ -940,56 +946,61 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                 (domainName, t)
               }
               .orElse {
-                val connectionInfo =
-                  settings.appConfig.getConnection(settings.appConfig.connectionRef)
-                // getting metadata from snowflake is definitely too slow
-                if (connectionInfo.isSnowflake()) {
-                  JdbcDbUtils
-                    .extractColumnsUsingInformationSchema(
-                      connectionInfo,
-                      domainName,
-                      tableName
-                    )
-                    .toOption
-                    .map { colsAndTypes =>
-                      val t = TableWithNameAndType(
-                        tableName,
-                        colsAndTypes
-                          .map(it =>
-                            (
-                              it._1,
-                              PrimitiveType
-                                .fromSQLType(
-                                  connectionInfo.getJdbcEngineName().toString,
-                                  it._2,
-                                  this
-                                )
-                                .toString,
-                              None
-                            )
-                          )
+                if (declaredOnly) None
+                else {
+                  val connectionInfo =
+                    settings.appConfig.getConnection(settings.appConfig.connectionRef)
+                  // getting metadata from snowflake is definitely too slow
+                  if (connectionInfo.isSnowflake()) {
+                    JdbcDbUtils
+                      .extractColumnsUsingInformationSchema(
+                        connectionInfo,
+                        domainName,
+                        tableName
                       )
-                      (domainName, t)
-                    }
-                } else {
-
-                  val attrs =
-                    new ExtractSchema(this)
-                      .extractTable(domainName, tableName, None, accessToken)
                       .toOption
-                      .filter(_.tables.nonEmpty)
-                      .map { it =>
-                        logger.info(s"Extracted schema for $domainName.$tableName from DB source")
-                        val attrs =
-                          it.tables.head.attributes.map(attr => (attr.name, attr.`type`, None))
-                        attrs
+                      .map { colsAndTypes =>
+                        val t = TableWithNameAndType(
+                          tableName,
+                          colsAndTypes
+                            .map(it =>
+                              (
+                                it._1,
+                                PrimitiveType
+                                  .fromSQLType(
+                                    connectionInfo.getJdbcEngineName().toString,
+                                    it._2,
+                                    this
+                                  )
+                                  .toString,
+                                None
+                              )
+                            )
+                        )
+                        (domainName, t)
                       }
-                      .getOrElse {
-                        logger.warn(s"Table $domainName.$tableNames not found in external schemas")
-                        Nil
-                      }
+                  } else {
 
-                  Some((domainName, TableWithNameAndType(tableName, attrs)))
+                    val attrs =
+                      new ExtractSchema(this)
+                        .extractTable(domainName, tableName, None, accessToken)
+                        .toOption
+                        .filter(_.tables.nonEmpty)
+                        .map { it =>
+                          logger.info(s"Extracted schema for $domainName.$tableName from DB source")
+                          val attrs =
+                            it.tables.head.attributes.map(attr => (attr.name, attr.`type`, None))
+                          attrs
+                        }
+                        .getOrElse {
+                          logger.warn(
+                            s"Table $domainName.$tableNames not found in external schemas"
+                          )
+                          Nil
+                        }
+
+                    Some((domainName, TableWithNameAndType(tableName, attrs)))
+                  }
                 }
               }
         }
@@ -1003,8 +1014,9 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       val domainName = components(0)
       val tablePartName = components(1)
 
-      var folder = DomainInfo.path(domainName)
-      loadTableRef(tablePartName + ".sl.yml", raw = false, folder)
+      val folder = DomainInfo.path(domainName)
+      val desc = loadTableRef(tablePartName + ".sl.yml", raw = false, folder)
+      desc.copy(table = docResolver().table(desc.table))
     }
 
   def domains(
@@ -1030,50 +1042,89 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     : (List[ValidationMessage], Option[List[DomainInfo]]) =
     (Nil, None)
 
-  private var _externals = List.empty[DomainInfo]
-  private var _externalLastUpdate = LocalDateTime.MIN
+  @volatile private var _docBlocks: Option[(List[(String, Long, Long)], DocBlocks)] = None
 
-  def externals(): List[DomainInfo] = {
-    if (_externals.isEmpty) loadExternals()
+  /** Doc blocks read from the .md files under metadata/docs, reloaded when one of them changes. */
+  def docBlocks(): DocBlocks = synchronized {
+    val docsDir = new Path(DatasetArea.metadata, "docs")
+    val fingerprint = filesFingerprint(docsDir, ".md")
+    _docBlocks match {
+      case Some((`fingerprint`, blocks)) => blocks
+      case _ =>
+        val (blocks, warnings) = DocBlocks.load(storage, docsDir)
+        warnings.foreach(w => logger.warn(w))
+        _docBlocks = Some(fingerprint -> blocks)
+        blocks
+    }
+  }
+
+  /** Resolves the doc references in the descriptions of a model loaded with Jinja applied. */
+  private def docResolver() = new DocBlocks.Resolver(docBlocks(), w => logger.warn(w))
+
+  /** Path, modification time and size of every file with the extension under folder. Listing is
+    * cheap next to parsing, so it tells whether what was loaded from the folder is still current,
+    * deleted files included.
+    */
+  private def filesFingerprint(folder: Path, extension: String): List[(String, Long, Long)] =
+    if (storage.exists(folder))
+      storage
+        .list(folder, extension = extension, recursive = true)
+        .map(f => (f.path.toString, f.modificationInstant.toEpochMilli, f.fileSizeInBytes))
+        .sorted
+    else
+      Nil
+
+  @volatile private var _externals = List.empty[DomainInfo]
+  @volatile private var _externalsFingerprint: Option[List[(String, Long, Long)]] = None
+
+  private def externalsFingerprint(): List[(String, Long, Long)] =
+    filesFingerprint(DatasetArea.external, ".sl.yml")
+
+  @volatile private var _externalsCheckedAt = Long.MinValue
+
+  /** How long externals() trusts its cache before listing the externals folder again. Callers look
+    * tables up one at a time (findTableInObjects), so checking on every call would list the folder
+    * once per table, which is slow on object storage.
+    */
+  @volatile private[handlers] var externalsRecheckIntervalMs: Long = 2000
+
+  /** External domains, reloaded when a file under the externals folder was added, changed or
+    * removed since the last load, so a long-running process such as starlake-api does not serve
+    * stale externals. The folder is listed at most once per externalsRecheckIntervalMs.
+    */
+  def externals(): List[DomainInfo] = synchronized {
+    val now = System.nanoTime()
+    val recheck = _externalsFingerprint.isEmpty ||
+      (now - _externalsCheckedAt) / 1000000 >= externalsRecheckIntervalMs
+    if (recheck) {
+      val fingerprint = externalsFingerprint()
+      if (!_externalsFingerprint.contains(fingerprint)) loadExternals(fingerprint)
+      _externalsCheckedAt = now
+    }
     _externals
   }
 
-  def loadExternals(): List[DomainInfo] = {
-    _externals = if (storage.exists(DatasetArea.external)) {
-      val loadedDomains =
-        loadDomains(DatasetArea.external, Nil, Nil, raw = false, _externalLastUpdate) match {
-          case (list, Nil) => list.collect { case Success(domain) => domain }
-          case (list, errors) =>
-            errors.foreach {
-              case Failure(err) =>
-                logger.warn(
-                  s"There is one or more invalid Yaml files in your domains folder:${Utils.exceptionAsString(err)}"
-                )
-              case Success(_) => // ignore
-            }
-            list.collect { case Success(domain) => domain }
+  /** Reloads every external domain from disk. */
+  def loadExternals(): List[DomainInfo] = synchronized {
+    loadExternals(externalsFingerprint())
+  }
+
+  private def loadExternals(fingerprint: List[(String, Long, Long)]): List[DomainInfo] = {
+    _externals =
+      if (fingerprint.isEmpty) Nil
+      else {
+        val (valid, invalid) = loadDomains(DatasetArea.external, Nil, Nil, raw = false)
+        invalid.foreach {
+          case Failure(err) =>
+            logger.warn(
+              s"There is one or more invalid Yaml files in your externals folder:${Utils.exceptionAsString(err)}"
+            )
+          case Success(_) => // ignore
         }
-      loadedDomains.foreach { domain =>
-        domain.tables.foreach { table =>
-          _externals.find(_.name == domain.name) match {
-            case Some(existingDomain) =>
-              val otherTables = existingDomain.tables.filter(_.name != table.name)
-              _externals = _externals.map { d =>
-                if (d.name == domain.name) {
-                  d.copy(tables = otherTables :+ table)
-                } else {
-                  d
-                }
-              }
-            case None =>
-              _externals = _externals :+ domain
-          }
-        }
+        valid.collect { case Success(domain) => domain }
       }
-      _externalLastUpdate = LocalDateTime.now()
-      loadedDomains
-    } else
-      Nil
+    _externalsFingerprint = Some(fingerprint)
+    _externalsCheckedAt = System.nanoTime()
     _externals
   }
 
@@ -1194,16 +1245,16 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     area: Path,
     domainNames: List[String] = Nil,
     tableNames: List[String] = Nil,
-    raw: Boolean,
-    lastUpdated: LocalDateTime = LocalDateTime.MIN
+    raw: Boolean
   ): (List[Try[DomainInfo]], List[Try[DomainInfo]]) = {
+    val resolver = docResolver()
     val (validDomainsFile, invalidDomainsFiles) =
       deserializedDomains(area, domainNames, raw)
         .map {
           case (path, Success(domain)) =>
             logger.info(s"Loading domain from $path")
             val folder = path.getParent()
-            val schemaRefs = loadTableRefs(tableNames, raw, folder, lastUpdated)
+            val schemaRefs = loadTableRefs(tableNames, raw, folder, LocalDateTime.MIN)
             val tables = Option(domain.tables).getOrElse(Nil) ::: schemaRefs
             val finalTables =
               if (raw) tables
@@ -1217,7 +1268,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                   t.copy(metadata = Some(t.mergedMetadata(domain.metadata)))
                 }
             logger.info(s"Successfully loaded Domain  in $path")
-            Success(domain.copy(tables = finalTables))
+            val loaded = domain.copy(tables = finalTables)
+            Success(if (raw) loaded else resolver.domain(loaded))
           case (path, Failure(e)) =>
             logger.error(s"Failed to load domain in $path")
             Utils.logException(logger, e)
@@ -1341,11 +1393,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           postsql = task.postsql.map(sql => SQLUtils.stripComments(sql))
         )
       }
-      AutoJobInfo(
-        name = jobName,
-        tasks = mergedTasksWithStrippedComments,
-        default = jobDesc.default
-      )
+      // copy so that comment and any other field read from _config.sl.yml survive
+      docResolver().job(jobDesc.copy(name = jobName, tasks = mergedTasksWithStrippedComments))
     } match {
       case Success(value) => Success(value)
       case Failure(exception) =>
@@ -1927,11 +1976,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   }
 
   def dependenciesAsSchemaString(query: String): List[String] = {
-    val tables =
-      Try(SQLUtils.extractTableNames(query)) // if syntax is correct this works fine
-        .getOrElse(
-          SQLUtils.extractTableNamesUsingRegEx(query)
-        ) // if syntax is incorrect, we try to extract using regex
+    val tables = SQLUtils.extractInputTableNamesWithFallback(query)
 
     val domainAndTables = tables.flatMap { table =>
       val components = table.split("\\.")
@@ -2321,10 +2366,16 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     val updatedMetadata = metadata.copy(schedule = obj.cron)
     val updatedTable = table.copy(metadata = Some(updatedMetadata))
 
-    YamlSerde.serializeToPath(
-      SchemaInfo.path(domain.name, table.name),
-      updatedTable
-    )(settings.storageHandler())
+    // Edit the file as written, so that only the schedule changes: the loaded table has its Jinja
+    // applied, doc() references resolved and the domain metadata merged in.
+    val path = SchemaInfo.path(domain.name, table.name)
+    val tableToWrite =
+      if (storage.exists(path)) {
+        val raw = YamlSerde.deserializeYamlTables(storage.read(path), path.toString).head.table
+        val rawMetadata = raw.metadata.getOrElse(Metadata())
+        raw.copy(metadata = Some(rawMetadata.copy(schedule = obj.cron)))
+      } else updatedTable
+    YamlSerde.serializeToPath(path, tableToWrite)(settings.storageHandler())
 
     val updatedDomain = domain.copy(tables = domain.tables.map {
       case t if t.name.toLowerCase() == obj.table.toLowerCase() => updatedTable
@@ -2348,10 +2399,13 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       )
     val updatedTask = task.copy(schedule = obj.cron)
 
-    YamlSerde.serializeToPath(
-      new Path(DatasetArea.transform, s"${job.name}/${obj.table}.sl.yml"),
-      updatedTask
-    )(settings.storageHandler())
+    // Edit the file as written when there is one, so that only the schedule changes
+    val path = new Path(DatasetArea.transform, s"${job.name}/${obj.table}.sl.yml")
+    val taskToWrite =
+      if (storage.exists(path))
+        YamlSerde.deserializeYamlTask(storage.read(path), path.toString).copy(schedule = obj.cron)
+      else updatedTask
+    YamlSerde.serializeToPath(path, taskToWrite)(settings.storageHandler())
 
     val updatedJob = job.copy(
       tasks = job.tasks.map {

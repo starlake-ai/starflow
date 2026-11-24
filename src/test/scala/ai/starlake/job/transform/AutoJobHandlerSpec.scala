@@ -113,7 +113,7 @@ class AutoJobHandlerSpec extends TestHelper with BeforeAndAfterAll {
       )
     }
   }
-  "Extract file and view dependencies" should "work" in {
+  "Extract file and view dependencies" should "report the source file but not the CTE name" in {
     new WithSettings() {
 
       val userView = pathUserAccepted.toString
@@ -152,10 +152,9 @@ class AutoJobHandlerSpec extends TestHelper with BeforeAndAfterAll {
 
       val tasks = AutoTask.unauthenticatedTasks(true)(settings, storageHandler, schemaHandler)
       val deps = TaskViewDependency.dependencies(tasks)(settings, schemaHandler)
-      deps.map(_.parentRef) should contain theSameElementsAs List(
-        "parquet." + userView,
-        "user_view"
-      )
+      // 'user_view' is a CTE declared by this very query, not an upstream object: reporting it
+      // would add a phantom node to the generated DAG.
+      deps.map(_.parentRef) should contain theSameElementsAs List("parquet." + userView)
     }
   }
 

@@ -1,0 +1,4 @@
+version: 1
+task:
+  domain: "reporting"
+  comment: "FX report built in Python"

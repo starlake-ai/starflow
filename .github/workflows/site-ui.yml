@@ -1,0 +1,41 @@
+name: site-ui
+
+on:
+  pull_request:
+    paths:
+      - "site-ui/**"
+      - "src/main/resources/site-ui/**"
+      - "scripts/build-site-ui.sh"
+      - ".github/workflows/site-ui.yml"
+  push:
+    branches: [master]
+    paths:
+      - "site-ui/**"
+      - "src/main/resources/site-ui/**"
+      - "scripts/build-site-ui.sh"
+      - ".github/workflows/site-ui.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: site-ui/.nvmrc
+          cache: npm
+          cache-dependency-path: site-ui/package-lock.json
+      - name: Build and test the site UI
+        run: scripts/build-site-ui.sh
+      - name: Fail when the committed bundle is stale
+        run: |
+          git diff --exit-code src/main/resources/site-ui
+          untracked="$(git status --porcelain src/main/resources/site-ui)"
+          if [ -n "$untracked" ]; then
+            echo "Stale bundle, run scripts/build-site-ui.sh and commit:"
+            echo "$untracked"
+            exit 1
+          fi
