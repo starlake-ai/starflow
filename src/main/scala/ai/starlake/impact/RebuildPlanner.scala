@@ -1,5 +1,7 @@
 package ai.starlake.impact
 
+import ai.starlake.schema.model.WriteStrategyType
+
 /** What `transform --impacted` does with a node of the change impact report. */
 sealed abstract class RebuildAction(val label: String, val rank: Int)
 
@@ -77,12 +79,12 @@ object RebuildPlanner {
         .sortBy(_.name)
 
     def historyNote(ref: NodeRef, cls: ChangeClass): List[String] =
-      if (cls != ChangeClass.Breaking) Nil
+      if (cls != ChangeClass.Breaking && cls != ChangeClass.NonBreaking) Nil
       else
         view.nodes
           .get(ref)
           .flatMap(_.writeStrategy)
-          .filter(_ != "OVERWRITE")
+          .filter(_ != WriteStrategyType.OVERWRITE.value)
           .map(ws => s"history not rebuilt ($ws)")
           .toList
 

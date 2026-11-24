@@ -179,6 +179,14 @@ class RebuildPlannerSpec extends AnyFlatSpec with Matchers {
     notesOf(plan, stg) shouldBe Nil
   }
 
+  it should "warn about the history of an incremental task for a non-breaking change too" in {
+    val plan = planFor(
+      List(change(kpi, NodeKind.Task, NonBreaking)),
+      chain(kpiStrategy = "APPEND")
+    )
+    notesOf(plan, kpi) shouldBe List("history not rebuilt (APPEND)")
+  }
+
   it should "run an added task without a history note" in {
     val added = NodeRef("kpi", "added")
     val view =
