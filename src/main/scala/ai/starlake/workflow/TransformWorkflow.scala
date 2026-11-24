@@ -1,6 +1,15 @@
 package ai.starlake.workflow
 
 import ai.starlake.config.Settings
+import ai.starlake.impact.{
+  ImpactAnalysis,
+  ImpactConfig,
+  ImpactRenderer,
+  ImpactReport,
+  ImpactSides,
+  NodeRef,
+  RebuildAction
+}
 import ai.starlake.job.sink.bigquery.BigQueryJobResult
 import ai.starlake.job.transform.{
   AutoTask,
@@ -245,39 +254,90 @@ trait TransformWorkflow extends LazyLogging {
     }
   }
 
+  /** The change impact of the project against `--base`, with its rebuild plan. The checkout of the
+    * old side is deleted before any task runs. SQL renders with the env this run uses.
+    */
+  private def impactSince(config: TransformConfig): ImpactReport =
+    ImpactSides
+      .withSides(ImpactConfig(base = config.base)) { (oldSide, newSide) =>
+        ImpactAnalysis.analyze(oldSide.dir, newSide.dir, oldSide.label, newSide.label, None)
+      }
+      .get
+
+  /** The declared tasks that write each planned table. Tasks writing the same table all run. A
+    * planned table that no declared task writes is reported, not dropped silently.
+    */
+  private def tasksWriting(refs: List[NodeRef], reload: Boolean): List[String] = {
+    val byTable = schemaHandler.tasks(reload).groupBy(t => NodeRef.of(t.domain, t.table))
+    refs.flatMap { ref =>
+      val writers = byTable.getOrElse(ref, Nil)
+      if (writers.isEmpty) Utils.printOut(s"Planned to run ${ref.name} but no task writes it")
+      writers.map(_.fullName())
+    }.distinct
+  }
+
   private def transformBatch(config: TransformConfig): Try[String] =
     Try {
       config.requireCompatibleFlags()
-      val tasks = selectBatchTasks(config)
-      Utils.printOut(s"Building dependency tree for ${tasks.mkString(", ")}...")
-      val dependencies = new AutoTaskDependencies(settings, schemaHandler, storageHandler)
-      // Computed once for the project: asking for the tasks by name computes it once per name
-      val lineage = dependencies.tasks(AutoTaskDependenciesConfig(all = true))
-      val trees =
-        dependencies.jobsDependencyTree(lineage, AutoTaskDependenciesConfig(tasks = Some(tasks)))
-      val parallelism = config.parallelism.getOrElse(settings.appConfig.maxParTask)
+      val impact = Option.when(config.impacted)(impactSince(config))
+      impact.foreach(report => Utils.printOut(ImpactRenderer.planText(report)))
+      val tasks = impact match {
+        case Some(report) => tasksWriting(report.rebuild.tasksToRun, config.reload)
+        case None         => selectBatchTasks(config)
+      }
       val summary =
-        if (config.recursive)
-          runTaskTrees(
-            trees,
-            _ => true,
-            TransformConfig(
-              TransformAction.Run,
-              options = config.options,
-              scheduledDate = config.scheduledDate
-            ),
-            parallelism
-          )
+        if (tasks.isEmpty)
+          // only --impacted selects nothing; an empty list must not reach jobsDependencyTree
+          TransformBatchSummary(Nil)
         else {
-          val selected = tasks.map(_.toLowerCase).toSet
-          runTaskTrees(
-            trees,
-            name => selected.contains(name.toLowerCase),
-            config.copy(tags = Seq.empty),
-            parallelism
-          )
+          Utils.printOut(s"Building dependency tree for ${tasks.mkString(", ")}...")
+          val dependencies = new AutoTaskDependencies(settings, schemaHandler, storageHandler)
+          // Computed once for the project: asking for the tasks by name computes it once per name
+          val lineage = dependencies.tasks(AutoTaskDependenciesConfig(all = true))
+          val trees =
+            dependencies.jobsDependencyTree(
+              lineage,
+              AutoTaskDependenciesConfig(tasks = Some(tasks))
+            )
+          val parallelism = config.parallelism.getOrElse(settings.appConfig.maxParTask)
+          val ran =
+            if (config.recursive)
+              runTaskTrees(
+                trees,
+                _ => true,
+                TransformConfig(
+                  TransformAction.Run,
+                  options = config.options,
+                  scheduledDate = config.scheduledDate
+                ),
+                parallelism
+              )
+            else {
+              val selected = tasks.map(_.toLowerCase).toSet
+              runTaskTrees(
+                trees,
+                name => selected.contains(name.toLowerCase),
+                config.copy(tags = Seq.empty, impacted = false, base = None),
+                parallelism
+              )
+            }
+          Utils.printOut(ran.render)
+          ran
         }
-      Utils.printOut(summary.render)
+      impact.foreach { report =>
+        report.rebuild.entries
+          .filter(e =>
+            e.action == RebuildAction.ReloadRequired || e.action.isInstanceOf[RebuildAction.Blocked]
+          )
+          .foreach { e =>
+            // the detail of a blocked node already says "blocked by ..."
+            val why = e.action match {
+              case _: RebuildAction.Blocked => e.detail
+              case action => List(action.label, e.detail).filter(_.nonEmpty).mkString("; ")
+            }
+            Utils.printOut(s"Not run: ${e.node.name}: $why")
+          }
+      }
       summary
     }.flatMap(_.toTry)
 

@@ -3,12 +3,11 @@ package ai.starlake.impact
 import ai.starlake.config.Settings
 import ai.starlake.job.Cmd
 import ai.starlake.schema.handlers.SchemaHandler
-import ai.starlake.utils.{ExitCodeJobResult, GitSnapshot, JobResult, ProjectCheckout}
+import ai.starlake.utils.{ExitCodeJobResult, JobResult}
 import better.files.File
 import com.typesafe.scalalogging.LazyLogging
 import scopt.{DefaultOEffectSetup, OEffectSetup, OParser}
 
-import java.time.LocalDateTime
 import scala.util.{Failure, Success, Try}
 
 /** Result of `starlake impact`. `report` is empty and `error` set when the analysis could not run
@@ -33,7 +32,7 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
     */
   override def readOnly: Boolean = true
 
-  private val formats = Set("text", "json", "markdown", "html")
+  private val formats = Set("text", "json", "markdown", "html", "plan")
   private val failOns = Set("breaking", "non-breaking")
 
   val parser: OParser[Unit, ImpactConfig] = {
@@ -76,7 +75,7 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
         .opt[String]("format")
         .action((x, c) => c.copy(format = x.toLowerCase))
         .optional()
-        .text("text (default), json, markdown or html"),
+        .text("text (default), json, markdown, html, or plan (what transform --impacted runs)"),
       builder
         .opt[String]("output")
         .action((x, c) => c.copy(output = Some(x)))
@@ -125,115 +124,6 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
   override def parse(args: Seq[String]): Option[ImpactConfig] =
     OParser.parse(parser, args, ImpactConfig(), setup, effectSetup)
 
-  def analyze(oldDir: File, newDir: File, oldLabel: String, newLabel: String, env: Option[String])(
-    implicit settings: Settings
-  ): Try[ImpactReport] = {
-    // one instant for both sides: SQL using {{sl_datetime}} must render the same on each
-    val dateVars = SchemaHandler.slDateVars(LocalDateTime.now)
-    for {
-      oldView <- ProjectSnapshot.load(oldDir, oldLabel, env, dateVars)
-      newView <- ProjectSnapshot.load(newDir, newLabel, env, dateVars)
-    } yield {
-      val direct = ChangeDetector.detect(oldView, newView)
-      val (impacted, edges) = ImpactPropagator.propagate(direct, newView)
-      val unresolved = (edges ++ ImpactPropagator.collisions(oldView, newView)).distinct
-        .sortBy(e => (e.from.name, e.to.name))
-      ImpactReport(
-        oldLabel,
-        newLabel,
-        direct,
-        impacted,
-        unresolved,
-        ChangeDetector.otherChanges(oldView, newView, direct)
-      )
-    }
-  }
-
-  private final case class Side(dir: File, label: String, checkout: Option[ProjectCheckout]) {
-    def cleanup(): Unit = checkout.foreach(_.cleanup())
-  }
-
-  private def repoOf(projectDir: File): Try[File] =
-    GitSnapshot.topLevel(projectDir).recoverWith { case _ =>
-      Failure(
-        new IllegalArgumentException(
-          s"$projectDir is not inside a git repository, which --base and --head need; use --path1 / --path2 to compare directories"
-        )
-      )
-    }
-
-  /** `git rev-parse --verify --quiet` fails without a message on an unknown ref. */
-  private def commitOf(repo: File, ref: String): Try[String] =
-    GitSnapshot.resolveCommit(repo, ref).recoverWith { case _ =>
-      Failure(new IllegalArgumentException(s"unknown git ref '$ref'"))
-    }
-
-  private def isProject(dir: File): Boolean = (dir / "metadata").isDirectory
-
-  /** A side given as a directory must be a project: a wrong path would otherwise load as an empty
-    * project, and every node would show as added (or nothing would change).
-    */
-  private def requireProject(dir: File, shown: String): Try[File] =
-    if (isProject(dir)) Success(dir)
-    else {
-      val hint =
-        if (dir.name == "metadata") ", pass the directory that contains the metadata folder"
-        else ""
-      Failure(
-        new IllegalArgumentException(
-          s"$shown is not a project directory: it has no metadata folder$hint"
-        )
-      )
-    }
-
-  /** Resolves the old side first, then the new one. A checkout already extracted is deleted when
-    * the other side fails. Only the old side of a git comparison may lack a project, when the
-    * merge-base predates it: everything then shows as added, and its label says so.
-    */
-  private def resolveSides(config: ImpactConfig)(implicit settings: Settings): Try[(Side, Side)] = {
-    val projectDir = File(settings.appConfig.root)
-    val workingTree = config.path2.isEmpty && config.head.isEmpty
-
-    def oldSide: Try[Side] = (config.path1, config.base) match {
-      case (Some(p), _) => requireProject(File(p), p).map(Side(_, p, None))
-      case (None, Some(b)) =>
-        for {
-          repo <- repoOf(projectDir)
-          base <- commitOf(repo, b)
-          head <- commitOf(repo, config.head.getOrElse("HEAD"))
-          mb   <- GitSnapshot.mergeBase(repo, base, head)
-          co   <- GitSnapshot.projectAt(projectDir, mb)
-        } yield {
-          val absent = if (isProject(co.projectDir)) "" else ", no project at this commit"
-          Side(co.projectDir, s"merge-base of $b (${mb.take(7)}$absent)", Some(co))
-        }
-      case (None, None) =>
-        Failure(new IllegalArgumentException("one of --base or --path1 is required"))
-    }
-
-    def newSide: Try[Side] = (config.path2, config.head) match {
-      case (Some(p), _) => requireProject(File(p), p).map(Side(_, p, None))
-      case (None, Some(h)) =>
-        for {
-          repo   <- repoOf(projectDir)
-          commit <- commitOf(repo, h)
-          co     <- GitSnapshot.projectAt(projectDir, commit)
-          side <- requireProject(co.projectDir, s"$projectDir at $h (${commit.take(7)})")
-            .map(dir => Side(dir, s"$h (${commit.take(7)})", Some(co)))
-            .recoverWith { case e => co.cleanup(); Failure(e) }
-        } yield side
-      case (None, None) =>
-        requireProject(projectDir, projectDir.pathAsString).map(Side(_, "working tree", None))
-    }
-
-    for {
-      // checked first, so that no checkout is extracted for nothing
-      _ <- if (workingTree) requireProject(projectDir, projectDir.pathAsString) else Success(())
-      o <- oldSide
-      n <- newSide.recoverWith { case e => o.cleanup(); Failure(e) }
-    } yield (o, n)
-  }
-
   private def exitCode(report: ImpactReport, failOn: Option[String]): Int = failOn match {
     case Some("breaking") if report.summary.hasBreaking        => 1
     case Some("non-breaking") if report.summary.hasNonMetadata => 1
@@ -250,32 +140,31 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
   override def run(config: ImpactConfig, schemaHandler: SchemaHandler)(implicit
     settings: Settings
   ): Try[JobResult] = Success {
-    resolveSides(config) match {
-      case Failure(e) => failed(e)
-      case Success((oldSide, newSide)) =>
-        try {
-          val outcome = for {
-            report   <- analyze(oldSide.dir, newSide.dir, oldSide.label, newSide.label, config.env)
-            rendered <- Try(ImpactRenderer.render(report, config.format, config.template))
-            _ <- Try {
-              config.output match {
-                case Some(out) =>
-                  // a local file, whatever the file system of the project (it may be remote)
-                  val file = File(out)
-                  file.parent.createDirectories()
-                  file.writeText(rendered)
-                case None => println(rendered) // scalastyle:ignore
-              }
-            }
-          } yield report
-          outcome match {
-            case Failure(e)      => failed(e)
-            case Success(report) => ImpactJobResult(Some(report), exitCode(report, config.failOn))
+    val outcome = ImpactSides.withSides(config) { (oldSide, newSide) =>
+      for {
+        report <- ImpactAnalysis.analyze(
+          oldSide.dir,
+          newSide.dir,
+          oldSide.label,
+          newSide.label,
+          config.env
+        )
+        rendered <- Try(ImpactRenderer.render(report, config.format, config.template))
+        _ <- Try {
+          config.output match {
+            case Some(out) =>
+              // a local file, whatever the file system of the project (it may be remote)
+              val file = File(out)
+              file.parent.createDirectories()
+              file.writeText(rendered)
+            case None => println(rendered) // scalastyle:ignore
           }
-        } finally {
-          oldSide.cleanup()
-          newSide.cleanup()
         }
+      } yield report
+    }
+    outcome match {
+      case Failure(e)      => failed(e)
+      case Success(report) => ImpactJobResult(Some(report), exitCode(report, config.failOn))
     }
   }
 

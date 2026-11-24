@@ -282,4 +282,76 @@ class ImpactRendererSpec extends TestHelper {
       e.getMessage shouldBe "Template not found: /nonexistent/tpl.j2"
     }
   }
+
+  private val planned = report.copy(
+    oldSide = "a",
+    newSide = "b",
+    rebuild = RebuildPlan(
+      List(
+        PlannedNode(NodeRef("kpi", "revenue"), NodeKind.Task, Breaking, RebuildAction.Run, Nil),
+        PlannedNode(
+          NodeRef("kpi", "dashboard"),
+          NodeKind.Task,
+          Breaking,
+          RebuildAction.Run,
+          List("history not rebuilt (APPEND)")
+        ),
+        PlannedNode(
+          NodeRef("stg", "orders"),
+          NodeKind.Task,
+          Breaking,
+          RebuildAction.Blocked(List(NodeRef("raw", "orders"))),
+          Nil
+        ),
+        PlannedNode(
+          NodeRef("raw", "orders"),
+          NodeKind.LoadTable,
+          Breaking,
+          RebuildAction.ReloadRequired,
+          Nil
+        )
+      )
+    )
+  )
+
+  "render plan" should "list each entry with its action and notes" in {
+    new WithSettings() {
+      ImpactRenderer.render(planned, "plan", None) shouldBe
+      """Rebuild plan: a -> b
+        |
+        |  run             task  kpi.revenue    BREAKING
+        |  run             task  kpi.dashboard  BREAKING      history not rebuilt (APPEND)
+        |  blocked         task  stg.orders     BREAKING      blocked by reload of raw.orders
+        |  reload required load  raw.orders     BREAKING
+        |
+        |Summary: 2 to run, 1 blocked, 1 reload required, 0 not run
+        |""".stripMargin
+    }
+  }
+
+  it should "say when there is nothing to rebuild" in {
+    new WithSettings() {
+      ImpactRenderer.render(ImpactReport("a", "b", Nil, Nil, Nil, Nil), "plan", None) shouldBe
+      """Rebuild plan: a -> b
+        |
+        |Nothing to rebuild
+        |Summary: 0 to run, 0 blocked, 0 reload required, 0 not run
+        |""".stripMargin
+    }
+  }
+
+  "render json" should "contain the rebuild plan" in {
+    new WithSettings() {
+      val tree = new com.fasterxml.jackson.databind.ObjectMapper()
+        .readTree(ImpactRenderer.render(planned, "json", None))
+      val rebuild = tree.get("rebuild")
+      rebuild.size() shouldBe 4
+      rebuild.get(1).get("node").asText() shouldBe "kpi.dashboard"
+      rebuild.get(1).get("action").asText() shouldBe "run"
+      rebuild.get(1).get("notes").get(0).asText() shouldBe "history not rebuilt (APPEND)"
+      rebuild.get(2).get("blockedBy").get(0).asText() shouldBe "raw.orders"
+      rebuild.get(3).get("action").asText() shouldBe "reload required"
+      rebuild.get(3).get("kind").asText() shouldBe "load"
+    }
+  }
 }

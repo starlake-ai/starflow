@@ -121,7 +121,7 @@ final case class ImpactSummary(
 /** `otherChanges` lists changed files that are not traced downstream (DAGs, connections,
   * application.sl.yml, env files, expectation macros, extract and mapping files ...), and the
   * changed files under `load/` and `transform/` that no direct change explains, marked "not
-  * classified".
+  * classified". `rebuild` is what `transform --impacted` runs, filled by `ImpactAnalysis`.
   */
 final case class ImpactReport(
   oldSide: String,
@@ -129,7 +129,8 @@ final case class ImpactReport(
   direct: List[DirectChange],
   impacted: List[ImpactedNode],
   unresolved: List[UnresolvedEdge],
-  otherChanges: List[String]
+  otherChanges: List[String],
+  rebuild: RebuildPlan = RebuildPlan.empty
 ) {
   def isEmpty: Boolean = direct.isEmpty && otherChanges.isEmpty
 

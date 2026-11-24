@@ -42,7 +42,7 @@ trait TransformCmd extends Cmd[TransformConfig] with LazyLogging {
         .action((x, c) => c.copy(name = x))
         .optional()
         .text(
-          "Task name in the form domain.task. Several names separated by commas run in one JVM, upstream tasks first. Either --name or --tags is required"
+          "Task name in the form domain.task. Several names separated by commas run in one JVM, upstream tasks first. Either --name, --tags or --impacted is required"
         ),
       builder
         .opt[Int]("parallelism")
@@ -142,6 +142,20 @@ trait TransformCmd extends Cmd[TransformConfig] with LazyLogging {
           s"Execute all dependencies recursively. Default value is false"
         ),
       builder
+        .opt[Unit]("impacted")
+        .action((_, c) => c.copy(impacted = true))
+        .optional()
+        .text(
+          "Run the tasks that the changes since --base impact, found as `starlake impact` finds them, upstream tasks first. A task runs once, as scheduled: an incremental task only rewrites its current slice. Tasks reached only through a changed load table are not run: load the table again first"
+        ),
+      builder
+        .opt[String]("base")
+        .action((x, c) => c.copy(base = Some(x)))
+        .optional()
+        .text(
+          "With --impacted: git ref of the old side. Its merge-base with HEAD is compared with the project as it is, uncommitted edits included"
+        ),
+      builder
         .opt[Unit]("test")
         .action((_, c) => c.copy(test = true))
         .optional()
@@ -177,7 +191,19 @@ trait TransformCmd extends Cmd[TransformConfig] with LazyLogging {
     val result = OParser.parse(parser, args, TransformConfig(scheduledDate = None), setup)
     result.foreach { config =>
       require(config.name.isEmpty || config.tags.isEmpty, "Cannot specify both tags and task name")
-      require(config.name.nonEmpty || config.tags.nonEmpty, "Either --name or --tags is required")
+      if (config.impacted) {
+        require(
+          config.name.isEmpty && config.tags.isEmpty && !config.recursive,
+          "--impacted cannot be combined with --name, --tags or --recursive"
+        )
+        require(config.base.nonEmpty, "--impacted needs --base")
+      } else {
+        require(config.base.isEmpty, "--base needs --impacted")
+        require(
+          config.name.nonEmpty || config.tags.nonEmpty,
+          "Either --name or --tags is required, or --impacted"
+        )
+      }
       config.requireCompatibleFlags()
     }
     result

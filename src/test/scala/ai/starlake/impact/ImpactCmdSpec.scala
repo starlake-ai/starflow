@@ -58,7 +58,7 @@ class ImpactCmdSpec extends TestHelper {
   "ImpactCmd" should "trace an expression change down the chain" in {
     new WithSettings() {
       withProjects(removeAmountFromStg) { (o, n) =>
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         report.direct.map(d => (d.node.name, d.changeClass)) shouldBe List(
           "stg.orders" -> ChangeClass.Breaking
         )
@@ -88,6 +88,33 @@ class ImpactCmdSpec extends TestHelper {
           ).exitCode shouldBe 1
           result(ImpactCmd.run(base, settings.schemaHandler())).exitCode shouldBe 0
           out.contentAsString should include("\"hasBreaking\" : true")
+        }
+      }
+    }
+  }
+
+  it should "write the rebuild plan with --format plan" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, n) =>
+        val out = File.newTemporaryFile(suffix = ".txt")
+        deleting(out) {
+          val r = ImpactCmd.run(
+            Seq(
+              "--path1",
+              o.pathAsString,
+              "--path2",
+              n.pathAsString,
+              "--format",
+              "plan",
+              "--output",
+              out.pathAsString
+            ),
+            settings.schemaHandler()
+          )
+          result(r).exitCode shouldBe 0
+          val text = out.contentAsString
+          text should include regex "  run +task  stg\\.orders"
+          text should include("Summary: 3 to run, 0 blocked, 0 reload required, 0 not run")
         }
       }
     }
@@ -155,7 +182,7 @@ class ImpactCmdSpec extends TestHelper {
   it should "flag consumers of a deleted load table as likely failures" in {
     new WithSettings() {
       withProjects(Map.empty, removed = Set("metadata/load/raw/orders.sl.yml")) { (o, n) =>
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         report.direct.find(_.node.name == "raw.orders").get.deleted shouldBe true
         report.impacted.find(_.node.name == "stg.orders").get.likelyFailure shouldBe true
       }
@@ -168,7 +195,7 @@ class ImpactCmdSpec extends TestHelper {
         .baseFiles("metadata/load/raw/orders.sl.yml")
         .replace("  - name: amount\n    type: decimal\n", "")
       withProjects(Map("metadata/load/raw/orders.sl.yml" -> withoutAmount)) { (o, n) =>
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         // stg.orders did not change: it only reads the removed column
         report.direct.map(d => d.node.name -> d.changeClass) shouldBe
         List("raw.orders" -> ChangeClass.Breaking)
@@ -188,7 +215,7 @@ class ImpactCmdSpec extends TestHelper {
           "metadata/dags/default.sl.yml" -> "version: 1\ndag:\n  template: \"other.py.j2\"\n  filename: \"{{domain}}.py\"\n"
         )
       ) { (o, n) =>
-        ImpactCmd.analyze(o, n, "old", "new", None).get.otherChanges shouldBe List(
+        ImpactAnalysis.analyze(o, n, "old", "new", None).get.otherChanges shouldBe List(
           "dags/default.sl.yml (changed)"
         )
       }
@@ -213,7 +240,7 @@ class ImpactCmdSpec extends TestHelper {
       ).foreach { case (overrides, node) =>
         withClue(overrides.values.head) {
           withProjects(overrides) { (o, n) =>
-            val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+            val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
             report.direct.map(d => (d.node.name, d.changeClass)) shouldBe List(
               node -> ChangeClass.Breaking
             )
@@ -236,7 +263,7 @@ class ImpactCmdSpec extends TestHelper {
           "metadata/mapping/m.txt"           -> "m\n"
         )
       ) { (o, n) =>
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         report.direct shouldBe empty
         report.otherChanges shouldBe List(
           "extract/source.sl.yml (added)",
@@ -250,7 +277,7 @@ class ImpactCmdSpec extends TestHelper {
       withProjects(
         Map("metadata/load/raw/orders.sl.yml" -> (orders.replace("APPEND", "OVERWRITE") + "# x\n"))
       ) { (o, n) =>
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         report.direct.map(_.node.name) shouldBe List("raw.orders")
         report.otherChanges shouldBe empty
       }
@@ -270,7 +297,7 @@ class ImpactCmdSpec extends TestHelper {
       deleting(oldDir, newDir) {
         // the loads are a few hundred milliseconds apart: sl_epoch_milli differs between them
         // unless one set of date variables serves both
-        val report = ImpactCmd.analyze(oldDir, newDir, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(oldDir, newDir, "old", "new", None).get
         report.direct shouldBe empty
         report.otherChanges shouldBe empty
       }
@@ -296,7 +323,7 @@ class ImpactCmdSpec extends TestHelper {
         Set("metadata/load/raw/customers.sl.yml")
       )
       deleting(oldDir, newDir) {
-        val report = ImpactCmd.analyze(oldDir, newDir, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(oldDir, newDir, "old", "new", None).get
         report.direct.find(_.node.name == "raw.customers").get.deleted shouldBe true
         report.impacted.find(_.node.name == "kpi.active").get.likelyFailure shouldBe true
         report.unresolved should contain(
@@ -325,7 +352,7 @@ class ImpactCmdSpec extends TestHelper {
       )
       withProjects(duplicates ++ removeAmountFromStg) { (o, n) =>
         ImpactFixtures.writeProject(o, duplicates)
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         report.unresolved should contain allOf (
           UnresolvedEdge(
             NodeRef("raw", "orders"),
@@ -393,7 +420,7 @@ class ImpactCmdSpec extends TestHelper {
           "metadata/.hidden/notes.txt"              -> "x"
         )
       ) { (o, n) =>
-        val report = ImpactCmd.analyze(o, n, "old", "new", None).get
+        val report = ImpactAnalysis.analyze(o, n, "old", "new", None).get
         report.direct shouldBe empty
         report.otherChanges shouldBe empty
       }
@@ -734,6 +761,29 @@ class ImpactCmdSpec extends TestHelper {
         }
       // checkConfig validations are parser entries without a name: they are not parameters
       page should not include "\n-- `"
+    }
+  }
+
+  it should "plan to run the changed task and what it impacts" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, n) =>
+        val plan = ImpactAnalysis.analyze(o, n, "old", "new", None).get.rebuild
+        plan.tasksToRun.map(_.name) shouldBe List("kpi.dashboard", "kpi.revenue", "stg.orders")
+        // every task of the fixture is OVERWRITE
+        plan.entries.flatMap(_.notes) shouldBe Nil
+      }
+    }
+  }
+
+  it should "plan a reload and no task run for a load table change" in {
+    new WithSettings() {
+      withProjects(addNoteToRawOrders) { (o, n) =>
+        val plan = ImpactAnalysis.analyze(o, n, "old", "new", None).get.rebuild
+        plan.tasksToRun shouldBe Nil
+        plan.entries.map(e => e.node.name -> e.action) shouldBe List(
+          "raw.orders" -> RebuildAction.ReloadRequired
+        )
+      }
     }
   }
 

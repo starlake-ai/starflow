@@ -623,4 +623,21 @@ class ProjectSnapshotSpec extends TestHelper {
       base.attributes.find(_.key == "amount").get.dataFingerprint
     }
   }
+
+  it should "record the effective write strategy of each task" in {
+    new WithSettings() {
+      val view = load(
+        Map(
+          "metadata/transform/kpi/_config.sl.yml" ->
+          "version: 1\ntransform:\n  name: kpi\n  default:\n    writeStrategy:\n      type: OVERWRITE\n",
+          "metadata/transform/kpi/revenue.sl.yml" ->
+          "version: 1\ntask:\n  name: revenue\n  domain: kpi\n  table: revenue\n"
+        )
+      )
+      // OVERWRITE comes from the job default: without it the fallback is APPEND
+      view.nodes(NodeRef("kpi", "revenue")).writeStrategy shouldBe Some("OVERWRITE")
+      view.nodes(NodeRef("stg", "orders")).writeStrategy shouldBe Some("OVERWRITE")
+      view.nodes(NodeRef("raw", "orders")).writeStrategy shouldBe None
+    }
+  }
 }

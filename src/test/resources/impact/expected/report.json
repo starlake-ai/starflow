@@ -42,5 +42,6 @@
     "to" : "kpi.py",
     "reason" : "python task"
   } ],
-  "otherChanges" : [ "dags/default.sl.yml (changed)" ]
+  "otherChanges" : [ "dags/default.sl.yml (changed)" ],
+  "rebuild" : [ ]
 }
