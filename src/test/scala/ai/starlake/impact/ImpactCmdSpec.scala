@@ -93,6 +93,33 @@ class ImpactCmdSpec extends TestHelper {
     }
   }
 
+  it should "write the rebuild plan with --format plan" in {
+    new WithSettings() {
+      withProjects(removeAmountFromStg) { (o, n) =>
+        val out = File.newTemporaryFile(suffix = ".txt")
+        deleting(out) {
+          val r = ImpactCmd.run(
+            Seq(
+              "--path1",
+              o.pathAsString,
+              "--path2",
+              n.pathAsString,
+              "--format",
+              "plan",
+              "--output",
+              out.pathAsString
+            ),
+            settings.schemaHandler()
+          )
+          result(r).exitCode shouldBe 0
+          val text = out.contentAsString
+          text should include regex "  run +task  stg\\.orders"
+          text should include("Summary: 3 to run, 0 blocked, 0 reload required, 0 not run")
+        }
+      }
+    }
+  }
+
   it should "return exit code 1 with --fail-on non-breaking on a NON_BREAKING change" in {
     new WithSettings() {
       withProjects(addNoteToRawOrders) { (o, n) =>

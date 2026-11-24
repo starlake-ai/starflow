@@ -73,8 +73,46 @@ object ImpactRenderer {
       "unresolved" -> report.unresolved.map { e =>
         jmap("from" -> esc(e.from.name), "to" -> esc(e.to.name), "reason" -> esc(e.reason))
       }.asJava,
-      "otherChanges" -> l(report.otherChanges)
+      "otherChanges" -> l(report.otherChanges),
+      "rebuild" -> report.rebuild.entries.map { e =>
+        jmap(
+          "node"   -> esc(e.node.name),
+          "kind"   -> e.kind.label,
+          "class"  -> e.changeClass.label,
+          "action" -> e.action.label,
+          "blockedBy" -> l(e.action match {
+            case RebuildAction.Blocked(by) => by.map(_.name)
+            case _                         => Nil
+          }),
+          "reason" -> (e.action match {
+            case RebuildAction.NotRun(reason) => esc(reason)
+            case _                            => null
+          }),
+          "notes" -> l(e.notes)
+        )
+      }.asJava
     )
+  }
+
+  /** What `transform --impacted` runs, and what it leaves out and why. */
+  def planText(r: ImpactReport): String = {
+    val plan = r.rebuild
+    val sb = new StringBuilder
+    sb ++= s"Rebuild plan: ${r.oldSide} -> ${r.newSide}\n\n"
+    if (plan.entries.nonEmpty) {
+      val width = plan.entries.map(_.node.name.length).max + 2
+      plan.entries.foreach { e =>
+        val line = "  " + e.action.label.padTo(16, ' ') + e.kind.label.padTo(6, ' ') +
+          e.node.name.padTo(width, ' ') + e.changeClass.label.padTo(14, ' ') + e.detail
+        sb ++= line.replaceAll("\\s+$", "") + "\n"
+      }
+      sb ++= "\n"
+    }
+    if (plan.tasksToRun.isEmpty) sb ++= "Nothing to rebuild\n"
+    def count(label: String): Int = plan.entries.count(_.action.label == label)
+    sb ++= s"Summary: ${plan.tasksToRun.size} to run, ${count("blocked")} blocked, " +
+    s"${count("reload required")} reload required, ${count("not run")} not run\n"
+    sb.toString
   }
 
   private def htmlEscape(s: String): String =
@@ -94,9 +132,10 @@ object ImpactRenderer {
     case "json" =>
       jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsString(toTree(report))
     case "html" => html(report, template)
+    case "plan" => planText(report)
     case other =>
       throw new IllegalArgumentException(
-        s"Unknown format '$other'. Use text, json, markdown or html."
+        s"Unknown format '$other'. Use text, json, markdown, html or plan."
       )
   }
 

@@ -32,7 +32,7 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
     */
   override def readOnly: Boolean = true
 
-  private val formats = Set("text", "json", "markdown", "html")
+  private val formats = Set("text", "json", "markdown", "html", "plan")
   private val failOns = Set("breaking", "non-breaking")
 
   val parser: OParser[Unit, ImpactConfig] = {
@@ -75,7 +75,7 @@ object ImpactCmd extends Cmd[ImpactConfig] with LazyLogging {
         .opt[String]("format")
         .action((x, c) => c.copy(format = x.toLowerCase))
         .optional()
-        .text("text (default), json, markdown or html"),
+        .text("text (default), json, markdown, html, or plan (what transform --impacted runs)"),
       builder
         .opt[String]("output")
         .action((x, c) => c.copy(output = Some(x)))
