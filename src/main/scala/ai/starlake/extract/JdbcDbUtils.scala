@@ -8,7 +8,7 @@ import ai.starlake.job.Main
 import ai.starlake.schema.model.*
 import ai.starlake.sql.SQLUtils
 import ai.starlake.tests.StarlakeTestData.DomainName
-import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, Utils}
+import ai.starlake.utils.{SparkUtils, StarlakeJdbcOps, StarlakeNotFoundException, Utils}
 import com.manticore.jsqlformatter.JSQLFormatter
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -129,13 +129,21 @@ object JdbcDbUtils extends LazyLogging {
       case Failure(exception) =>
         // logger.error(s"count=$count / depth=$depth Error creating connection", exception)
         throw exception
-      case Success(connection) =>
+      case Success(poolConnection) =>
         // logger.info(s"count=$count / depth=$depth Created connection $connection")
         depth.incrementAndGet()
         // run preActions
         val preActions = connectionOptions.get("preActions")
 
-        runDuckLakePreActions(connection, connectionOptions, preActions)
+        runDuckLakePreActions(poolConnection, connectionOptions, preActions)
+        val connection =
+          try StarlakeJdbcOps.enterBranch(dataBranch, poolConnection)
+          catch {
+            case e: Throwable =>
+              if (existingConnection.isEmpty) Try(poolConnection.close())
+              depth.decrementAndGet()
+              throw e
+          }
         val result = Try {
           f(connection)
         } match {

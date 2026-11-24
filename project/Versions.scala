@@ -67,7 +67,7 @@ object Versions {
   // jSqlParser must match the version jsqltranspiler's pom pins
   val jSqlTranspiler = "1.17"
   val jSqlParser = "5.4.272"
-  val starlakejdbc = "0.7"
+  val starlakejdbc = "0.8"
   val airflowTemplates = "0.6.17"
   val jSqlFormatter = "5.4.3"
   val dagsterTemplates = "0.5.9"

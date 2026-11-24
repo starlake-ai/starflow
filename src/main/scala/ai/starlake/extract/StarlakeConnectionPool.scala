@@ -405,13 +405,7 @@ object StarlakeConnectionPool extends LazyLogging {
           }
           (DriverManager.getConnection(dataBranchUrl, javaProperties), true)
         }
-      //
-      if (dataBranchUrl.startsWith("jdbc:starlake:")) {
-        dataBranch match {
-          case Some(branch) if branch.nonEmpty => StarlakeJdbcOps.branchStart(branch, connection)
-          case _                               =>
-        }
-      }
+      // The branch itself starts in JdbcDbUtils.withJDBCConnection, once the preActions have run
       connection
     }
   }
