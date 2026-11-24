@@ -119,4 +119,41 @@ class TransformCmdBatchSpec extends AnyFlatSpec with Matchers {
   it should "refuse a value below 1" in {
     TransformCmd.parse(Seq("--name", "a.b,a.c", "--parallelism", "0")) shouldBe None
   }
+
+  "transform --impacted" should "select its tasks from the change impact analysis" in {
+    val config = TransformCmd.parse(Seq("--impacted", "--base", "origin/master")).get
+    config.impacted shouldBe true
+    config.base shouldBe Some("origin/master")
+    config.isMultiTask shouldBe true
+  }
+
+  it should "need --base" in {
+    val e = intercept[IllegalArgumentException](TransformCmd.parse(Seq("--impacted")))
+    e.getMessage should include("--impacted needs --base")
+  }
+
+  List(List("--name", "a.b"), List("--tags", "x"), List("--recursive")).foreach { args =>
+    it should s"refuse ${args.head}" in {
+      val e = intercept[IllegalArgumentException] {
+        TransformCmd.parse(Seq("--impacted", "--base", "HEAD") ++ args)
+      }
+      e.getMessage should include(
+        "--impacted cannot be combined with --name, --tags or --recursive"
+      )
+    }
+  }
+
+  it should "reject --dry-run, which its tasks would ignore" in {
+    val e = intercept[IllegalArgumentException] {
+      TransformCmd.parse(Seq("--impacted", "--base", "HEAD", "--dry-run"))
+    }
+    e.getMessage should include("--dry-run")
+  }
+
+  "transform --base" should "need --impacted" in {
+    val e = intercept[IllegalArgumentException] {
+      TransformCmd.parse(Seq("--name", "a.b", "--base", "HEAD"))
+    }
+    e.getMessage should include("--base needs --impacted")
+  }
 }

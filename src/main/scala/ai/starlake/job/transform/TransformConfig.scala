@@ -25,17 +25,20 @@ case class TransformConfig(
   scheduledDate: Option[String] = None,
   reportFormat: Option[String] = None,
   parallelism: Option[Int] = None,
-  refreshInheritedDescriptions: Boolean = false
+  refreshInheritedDescriptions: Boolean = false,
+  impacted: Boolean = false,
+  base: Option[String] = None
 ) extends ReportFormatConfig {
   def optionsAsString: String = options.map { case (k, v) => s"$k=$v" }.mkString(",")
 
   /** The tasks listed by `--name`, which accepts several names separated by commas */
   def names: List[String] = name.split(',').map(_.trim).filter(_.nonEmpty).toList
 
-  /** True when this config selects a set of tasks rather than a single one. `--recursive` is not
-    * part of this: it starts from one task, and starlake-api passes the single task flags with it.
+  /** True when this config selects a set of tasks rather than a single one: several names, tags, or
+    * the tasks a change impacts. `--recursive` is not part of this: it starts from one task, and
+    * starlake-api passes the single task flags with it.
     */
-  def isMultiTask: Boolean = names.size > 1 || tags.nonEmpty
+  def isMultiTask: Boolean = names.size > 1 || tags.nonEmpty || impacted
 
   /** Flags set on this config that its tasks could not honor, since each task of a batch runs with
     * a config of its own. `--compile` stays allowed with `--recursive`: it reads the one named task
@@ -63,7 +66,7 @@ case class TransformConfig(
   def requireCompatibleFlags(): Unit =
     require(
       incompatibleFlags.isEmpty,
-      s"${incompatibleFlags.mkString(", ")} cannot be used with --recursive, --tags or several tasks"
+      s"${incompatibleFlags.mkString(", ")} cannot be used with --recursive, --tags, --impacted or several tasks"
     )
 
   /** Only BigQuery has a dry run. The other engines ignore the flag and write their tables. */
