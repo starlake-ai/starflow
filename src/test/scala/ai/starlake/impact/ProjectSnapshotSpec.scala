@@ -629,12 +629,13 @@ class ProjectSnapshotSpec extends TestHelper {
       val view = load(
         Map(
           "metadata/transform/kpi/_config.sl.yml" ->
-          "version: 1\ntransform:\n  name: kpi\n  default:\n    writeStrategy:\n      type: APPEND\n",
+          "version: 1\ntransform:\n  name: kpi\n  default:\n    writeStrategy:\n      type: OVERWRITE\n",
           "metadata/transform/kpi/revenue.sl.yml" ->
           "version: 1\ntask:\n  name: revenue\n  domain: kpi\n  table: revenue\n"
         )
       )
-      view.nodes(NodeRef("kpi", "revenue")).writeStrategy shouldBe Some("APPEND")
+      // OVERWRITE comes from the job default: without it the fallback is APPEND
+      view.nodes(NodeRef("kpi", "revenue")).writeStrategy shouldBe Some("OVERWRITE")
       view.nodes(NodeRef("stg", "orders")).writeStrategy shouldBe Some("OVERWRITE")
       view.nodes(NodeRef("raw", "orders")).writeStrategy shouldBe None
     }

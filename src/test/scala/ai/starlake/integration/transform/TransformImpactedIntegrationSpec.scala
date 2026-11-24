@@ -40,6 +40,13 @@ class TransformImpactedIntegrationSpec extends IntegrationTestBase {
       Iterator.continually(rs).takeWhile(_.next()).map(_.getLong(1)).toList
     }
 
+  private def dashboardRev(root: File): BigDecimal =
+    JdbcDbUtils.withJDBCConnection(None, options(root)) { conn =>
+      val rs = conn.createStatement().executeQuery("SELECT rev FROM kpi.dashboard")
+      rs.next()
+      BigDecimal(rs.getBigDecimal(1))
+    }
+
   private def transform(args: String*): Boolean =
     Try(new Main().run(("transform" +: args).toArray)).getOrElse(false)
 
@@ -73,10 +80,13 @@ class TransformImpactedIntegrationSpec extends IntegrationTestBase {
 
   "transform --impacted" should "run the changed task and what reads it, not what it reads" in {
     withProject { root =>
+      dashboardRev(root) shouldBe BigDecimal(60) // 10 * 2 + 20 * 2, from the first run
       (root / "metadata/transform/kpi/revenue.sql").overwrite(revenueTimesThree)
       transform("--impacted", "--base", "HEAD") shouldBe true
       ids(root, "stg.orders") shouldBe List(1, 2, 999) // not run again
       ids(root, "kpi.revenue") shouldBe List(1, 2, 999) // run again, after the sentinel
+      // run again after kpi.revenue: 10 * 3 + 20 * 3 + 1 * 3 (the sentinel)
+      dashboardRev(root) shouldBe BigDecimal(93)
     }
   }
 
