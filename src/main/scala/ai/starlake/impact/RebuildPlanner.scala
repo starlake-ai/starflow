@@ -98,10 +98,14 @@ object RebuildPlanner {
         PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Run, List(PythonUnknown))
       else PlannedNode(ref, NodeKind.Task, ChangeClass.Breaking, Blocked(breakingLoads), Nil)
 
-    def entry(ref: NodeRef): PlannedNode = if (
-      pythonRefs.contains(ref) && !directByRef.get(ref).exists(_.deleted)
-    ) pythonEntry(ref)
-    else plain(ref)
+    def entry(ref: NodeRef): PlannedNode = {
+      val d = directByRef.get(ref)
+      val onlyPythonUnknown =
+        pythonRefs.contains(ref) && d.forall(x =>
+          !x.deleted && x.changeClass == ChangeClass.Metadata
+        )
+      if (onlyPythonUnknown) pythonEntry(ref) else plain(ref)
+    }
 
     def plain(ref: NodeRef): PlannedNode = {
       val d = directByRef.get(ref)

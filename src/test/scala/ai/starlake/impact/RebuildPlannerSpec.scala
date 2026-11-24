@@ -215,6 +215,15 @@ class RebuildPlannerSpec extends AnyFlatSpec with Matchers {
     notesOf(plan, py) shouldBe List("python task, inputs unknown")
   }
 
+  it should "run a new python task like a SQL task when a load change is breaking" in {
+    val plan = planFor(
+      List(change(py, NodeKind.Task, Added), change(raw, NodeKind.LoadTable, Breaking)),
+      chain(extra = List(pythonNode))
+    )
+    actions(plan)("kpi.py") shouldBe Run
+    plan.entries.find(_.node == py).map(_.changeClass) shouldBe Some(Added)
+  }
+
   it should "plan nothing without changes" in {
     planFor(Nil) shouldBe RebuildPlan.empty
   }
