@@ -199,7 +199,6 @@ class JdbcAutoTask(
     sqlConnection: Option[java.sql.Connection] = None
   ): Try[JdbcJobResult] = {
     val start = Timestamp.from(Instant.now())
-    Try(captureIncrementalState())
 
     // Create schema if configured and not in interactive mode
     if (interactive.isEmpty && settings.appConfig.createSchemaIfNotExists) {
@@ -214,6 +213,8 @@ class JdbcAutoTask(
     }
 
     val res = Try {
+      // before the target created for presql below
+      captureIncrementalState()
       val createdForPresql =
         if (
           df.isEmpty && interactive.isEmpty &&
@@ -236,14 +237,9 @@ class JdbcAutoTask(
       val createdBeforeWrite = writesTable && createdForPresql
       val (alters, mainSql) =
         if (df.isEmpty) {
-          buildAllSQLQueries(
-            None,
-            tableExistsForcedValue = targetExistsBeforeWrite,
-            // the target this run created for presql holds no earlier rows
-            incrementalForcedValue = if (createdForPresql) Some(false) else None
-          )
+          buildAllSQLQueries(None, tableExistsForcedValue = targetExistsBeforeWrite)
         } else {
-          val sql = mainSqlSource
+          val sql = taskDesc.getSql()
           val mainSql = schemaHandler.substituteRefTaskMainSQL(
             sql,
             taskDesc.getRunConnection(),

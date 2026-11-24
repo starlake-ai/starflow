@@ -832,7 +832,7 @@ class BigQueryAutoTask(
   }
 
   private def sqlSubst(): String = {
-    val sql = mainSqlSource
+    val sql = taskDesc.getSql()
     val mainSql = schemaHandler.substituteRefTaskMainSQL(
       sql,
       taskDesc.getRunConnection(),

@@ -379,9 +379,10 @@ object ProjectSnapshot {
                         .unresolved(s"SQL render failed: $error", Set.empty, Set.empty)
                         .copy(rowFingerprint = TaskShapeBuilder.normalize(raw))
                     case None =>
-                      // already rendered by the handler with the variables of the snapshot
+                      // already rendered by the handler with the variables of the snapshot, the
+                      // tags of sl_incremental aside: the shape is that of a full load
                       TaskShapeBuilder.build(
-                        neutralize(task.sql.getOrElse("")),
+                        neutralize(task.fullLoadSql()),
                         resolveName,
                         knownColumns
                       )
@@ -393,7 +394,8 @@ object ProjectSnapshot {
         }
       )
 
-    // the task as written, independent of the columns its inputs have on this side
+    // the task as written, independent of the columns its inputs have on this side. The tags of
+    // sl_incremental are kept: an edit of either branch changes it
     def definitionOf(ref: NodeRef, task: AutoTaskInfo): String =
       task.python match {
         case Some(path) => "python:" + sha256(settings.storageHandler().read(path))

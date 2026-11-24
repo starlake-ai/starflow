@@ -138,7 +138,7 @@ class BigQueryExportTask(
 
   /** The SELECT of the task, as the BigQuery native transforms run it */
   private def select(sql: Option[String]): String = {
-    val inputSQL = sql.getOrElse(SQLUtils.stripComments(mainSqlSource))
+    val inputSQL = sql.getOrElse(SQLUtils.stripComments(taskDesc.getSql()))
     val statement =
       if (taskDesc.parseSQL.getOrElse(true))
         schemaHandler.transpileAndSubstituteSelectStatement(

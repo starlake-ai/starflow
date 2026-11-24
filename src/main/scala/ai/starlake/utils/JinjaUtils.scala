@@ -2,8 +2,11 @@ package ai.starlake.utils
 
 import ai.starlake.config.Settings
 import ai.starlake.utils.Formatter.RichFormatter
+import ai.starlake.job.transform.AutoTask
 import com.hubspot.jinjava.{Jinjava, JinjavaConfig}
+import com.hubspot.jinjava.interpret.DeferredValue
 import com.hubspot.jinjava.lib.fn.ELFunctionDefinition
+import com.hubspot.jinjava.mode.EagerExecutionMode
 
 import scala.jdk.CollectionConverters._
 
@@ -33,39 +36,70 @@ object JinjaUtils {
   def ctx(entries: (String, Any)*): java.util.Map[String, Object] =
     toJava(entries.toMap).asInstanceOf[java.util.Map[String, Object]]
 
+  /** Both instances come from here so that they cannot drift apart */
+  private def newJinjava(eager: Boolean)(implicit settings: Settings): Jinjava = {
+    val curClassLoader = Thread.currentThread.getContextClassLoader
+    val res =
+      try {
+        Thread.currentThread.setContextClassLoader(this.getClass.getClassLoader)
+        val builder = JinjavaConfig
+          .newBuilder()
+          .withFailOnUnknownTokens(false)
+          .withNestedInterpretationEnabled(false)
+        val config =
+          if (eager) builder.withExecutionMode(EagerExecutionMode.instance()).build()
+          else builder.build()
+
+        new Jinjava(config)
+      } finally Thread.currentThread.setContextClassLoader(curClassLoader)
+    res.setResourceLocator(new JinjaResourceHandler())
+    res.getGlobalContext.registerFunction(
+      new ELFunctionDefinition(
+        "",
+        "doc",
+        classOf[ai.starlake.utils.jinja.DocFunction],
+        "doc",
+        classOf[String]
+      )
+    )
+    res
+  }
+
   private var _jinjava: Jinjava = null
 
   def jinjava(implicit settings: Settings): Jinjava = {
-    if (_jinjava == null) {
-      val curClassLoader = Thread.currentThread.getContextClassLoader
-      val res =
-        try {
-          Thread.currentThread.setContextClassLoader(this.getClass.getClassLoader)
-          val config = JinjavaConfig
-            .newBuilder()
-            .withFailOnUnknownTokens(false)
-            .withNestedInterpretationEnabled(false)
-            .build()
-
-          new Jinjava(config)
-        } finally Thread.currentThread.setContextClassLoader(curClassLoader)
-      res.setResourceLocator(new JinjaResourceHandler())
-      res.getGlobalContext.registerFunction(
-        new ELFunctionDefinition(
-          "",
-          "doc",
-          classOf[ai.starlake.utils.jinja.DocFunction],
-          "doc",
-          classOf[String]
-        )
-      )
-      _jinjava = res
-    }
+    if (_jinjava == null)
+      _jinjava = newJinjava(eager = false)
     _jinjava
+  }
+
+  private var _deferringJinjava: Jinjava = null
+
+  /** Eager instance: it renders what it can and outputs the tags that depend on a deferred value */
+  private def deferringJinjava(implicit settings: Settings): Jinjava = {
+    if (_deferringJinjava == null)
+      _deferringJinjava = newJinjava(eager = true)
+    _deferringJinjava
   }
 
   def resetJinjaClassLoader(): Unit = {
     _jinjava = null
+    _deferringJinjava = null
+  }
+
+  /** Renders a task text when the project is loaded, before `sl_incremental` is known: every other
+    * variable is rendered, the tags that test or print `sl_incremental` stay in the output, and the
+    * task renders them when it runs. A value given for the variable is ignored.
+    */
+  def parseJinjaDeferringIncremental(str: String, params: Map[String, Any])(implicit
+    settings: Settings
+  ): String = {
+    val others = params - AutoTask.IncrementalVar
+    val context: Map[String, Any] = others + (AutoTask.IncrementalVar -> DeferredValue.instance())
+    deferringJinjava
+      .render(str, context.asJava)
+      .richFormat(others, Map.empty)
+      .trim
   }
 
   def renderJinja(str: String, params: Map[String, Any] = Map.empty)(implicit

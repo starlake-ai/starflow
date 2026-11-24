@@ -76,10 +76,13 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       rs.getInt("m")
     }
 
+    /** Writes the task YAML and, unless `yamlOnly`, its .sql file */
     private def writeTask(
       sql: String,
       presql: List[String] = Nil,
-      sqlFile: Option[String] = None
+      postsql: List[String] = Nil,
+      sqlFile: Option[String] = None,
+      yamlOnly: Boolean = false
     ): Unit = {
       val task = AutoTaskInfo(
         name = "",
@@ -88,13 +91,15 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
         domain = "mydb",
         table = "target",
         presql = presql,
+        postsql = postsql,
         sink = Some(JdbcSink(connectionRef = Some("test-duckdb")).toAllSinks()),
         python = None,
         writeStrategy = Some(WriteStrategy(`type` = Some(WriteStrategyType.APPEND)))
       )
       val yml = mapper.writer().withAttribute(classOf[Settings], settings).writeValueAsString(task)
       storageHandler.write(yml, pathTask)
-      storageHandler.write(sqlFile.getOrElse(task.getSql()), pathSql)
+      if (yamlOnly) storageHandler.delete(pathSql)
+      else storageHandler.write(sqlFile.getOrElse(task.getSql()), pathSql)
     }
 
     private def workflow() = new IngestionWorkflow(storageHandler, settings.schemaHandler())
@@ -162,7 +167,7 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       task.incrementalVars(None) shouldBe Map.empty
     }
 
-    it should "keep the full-load SQL in the loaded task and out of its dependencies" in {
+    it should "keep its tags in the loaded task, and the full load out of its dependencies" in {
       resetTables()
       writeTask(incrementalSql)
       val loaded = settings
@@ -170,13 +175,10 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
         .tasks(reload = true)
         .find(t => t.domain == "mydb" && t.table == "target")
         .get
-      loaded.getSql() should not include "sl_incremental"
-      loaded.getSql().toLowerCase should not include "max(updated_at)"
-      loaded._incrementalTemplate.isDefined shouldBe true
-      loaded._incrementalTemplate.get.sql should include("sl_incremental")
-      val yml =
-        mapper.writer().withAttribute(classOf[Settings], settings).writeValueAsString(loaded)
-      yml should not include "ncrementalTemplate"
+      loaded.getSql() should include("sl_incremental")
+      loaded.getSql().toLowerCase should include("max(updated_at)")
+      loaded.fullLoadSql() should not include "sl_incremental"
+      loaded.fullLoadSql().toLowerCase should not include "max(updated_at)"
 
       val task = workflow().buildTask(TransformConfig(name = "mydb.target"))
       val noStreams =
@@ -227,6 +229,92 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       run().isSuccess shouldBe true
       targetIds() shouldBe List(1, 2, 3)
       targetMaxUpdatedAt() shouldBe 300
+    }
+
+    it should "render sl_incremental in the presql of the YAML" in {
+      resetTables()
+      writeTask(
+        "SELECT id, updated_at FROM mydb.src",
+        presql = List("{% if not sl_incremental %}INSERT INTO mydb.run_log VALUES (1){% endif %}")
+      )
+      run().isSuccess shouldBe true
+      runLogCount() shouldBe 1
+      run().isSuccess shouldBe true
+      runLogCount() shouldBe 1
+      run(truncate = true).isSuccess shouldBe true
+      runLogCount() shouldBe 2
+    }
+
+    it should "render sl_incremental in the SQL of a task declared in YAML only" in {
+      resetTables()
+      writeTask(incrementalSql, yamlOnly = true)
+      run().isSuccess shouldBe true
+      targetIds() shouldBe List(1, 2)
+      addSourceRow(3, 30)
+      run().isSuccess shouldBe true
+      targetIds() shouldBe List(1, 2, 3)
+      run(truncate = true).isSuccess shouldBe true
+      targetIds() shouldBe List(1, 2, 3)
+    }
+
+    it should "run the SQL given with --query instead of the one of the task" in {
+      resetTables()
+      writeTask(incrementalSql)
+      workflow()
+        .autoJob(
+          TransformConfig(
+            name = "mydb.target",
+            query = Some("SELECT 100 AS id, 1000 AS updated_at")
+          )
+        )
+        .isSuccess shouldBe true
+      targetIds() shouldBe List(100)
+    }
+
+    it should "render presql and postsql with the table state of each output of --compile" in {
+      resetTables()
+      writeTask(
+        incrementalSql,
+        presql =
+          List("{% if sl_incremental %}SELECT 'pre_delta'{% else %}SELECT 'pre_full'{% endif %}"),
+        postsql =
+          List("{% if sl_incremental %}SELECT 'post_delta'{% else %}SELECT 'post_full'{% endif %}")
+      )
+      // the target does not exist: the output for an existing target must not depend on it
+      val (whenMissing, whenExists) =
+        workflow().compileAutoJob(TransformConfig(name = "mydb.target")).get
+      whenMissing should include("pre_full")
+      whenMissing should include("post_full")
+      whenMissing should not include "_delta"
+      whenExists should include("pre_delta")
+      whenExists should include("post_delta")
+      whenExists should not include "_full"
+      whenExists.toLowerCase should include("max(updated_at)")
+    }
+
+    it should "render each variant of the orchestrator statements with its table state" in {
+      resetTables()
+      // the statements are generated before any run: the target must not be checked
+      withDuckDb(
+        _.createStatement().execute("CREATE TABLE mydb.target(id INTEGER, updated_at INTEGER)")
+      )
+      writeTask(
+        "SELECT 1",
+        sqlFile = Some(
+          s"""-- SL_PRESQL
+             |{% if sl_incremental %}SELECT 'pre_delta'{% else %}SELECT 'pre_full'{% endif %}
+             |-- SL_SQL
+             |$incrementalSql
+             |""".stripMargin
+        )
+      )
+      val statements = workflow()
+        .buildTask(TransformConfig(name = "mydb.target"))
+        .buildListOfSQLStatements()
+      statements.mainSqlIfExists.mkString("\n").toLowerCase should include("max(updated_at)")
+      statements.mainSqlIfNotExists.mkString("\n").toLowerCase should not include "max(updated_at)"
+      // a single presql for both variants: that of a first run
+      statements.preSqls.mkString("\n") should include("pre_full")
     }
 
     "AutoTask.mentionsIncremental" should "match the variable as a whole word only" in {

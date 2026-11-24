@@ -134,7 +134,10 @@ final class InheritedDescriptions(schemaHandler: SchemaHandler, refresh: Boolean
             .map(PresqlTemporaryTables.Lexing.of)
             .getOrElse(PresqlTemporaryTables.Lexing.standard)
           val castKeepsName = engine.exists(Set("postgresql", "redshift", "spark").contains)
-          (PresqlTemporaryTables.withTemporaryTables(sql, task.presql, lexing)._1, castKeepsName)
+          (
+            PresqlTemporaryTables.withTemporaryTables(sql, task.fullLoadPresql(), lexing)._1,
+            castKeepsName
+          )
         }.flatMap { case (sql, castKeepsName) =>
           SelectColumnOrigins.withCompleteness(sql, catalog, castKeepsName)
         }

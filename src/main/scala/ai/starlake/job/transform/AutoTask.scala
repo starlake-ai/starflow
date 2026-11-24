@@ -420,31 +420,35 @@ abstract class AutoTask(
 
   /** Whether the main SQL, presql or postsql of the task refers to `sl_incremental` */
   private[transform] lazy val usesIncremental: Boolean =
-    taskDesc._incrementalTemplate.isDefined ||
     AutoTask.mentionsIncremental(taskSQL :: taskDesc.presql ++ taskDesc.postsql)
 
-  /** The main SQL as the task renders it: the raw template of a .sql file that refers to
-    * `sl_incremental`, the SQL of the task otherwise (rendered when the project was loaded)
+  @volatile private var _incrementalOverride: Option[Boolean] = None
+
+  /** Gives `sl_incremental` its value instead of the check of the target: a task that another one
+    * delegates its write to renders it with the value of the task that delegates (`None` keeps the
+    * check)
     */
-  protected def mainSqlSource: String =
-    taskDesc._incrementalTemplate.map(_.sql).getOrElse(taskDesc.getSql())
-
-  private def presqlSource: List[String] =
-    taskDesc._incrementalTemplate.map(_.presql).getOrElse(taskDesc.presql)
-
-  private def postsqlSource: List[String] =
-    taskDesc._incrementalTemplate.map(_.postsql).getOrElse(taskDesc.postsql)
+  def withIncrementalOverride(value: Option[Boolean]): this.type = {
+    _incrementalOverride = value
+    this
+  }
 
   /** Evaluates `sl_incremental` before the run creates or writes anything. Engines call it first
     * thing in their run entry point.
     */
   protected def captureIncrementalState(): Unit =
-    if (usesIncremental) targetExistedAtStart: Unit
+    if (usesIncremental) incrementalAtStart: Unit
 
-  /** Whether the target existed when the run first asked. Cached: the JDBC run creates an empty
-    * target before presql, and that table must not make the first run incremental.
+  /** `sl_incremental` of this run, for a task that uses it: the target existed when the run first
+    * asked and the run is not --truncate. Cached: the run may create the target before it renders a
+    * statement, and that table must not make the first run incremental.
     */
-  private lazy val targetExistedAtStart: Boolean = tableExists
+  private lazy val incrementalAtStart: Boolean =
+    _incrementalOverride.getOrElse(!truncate && tableExists)
+
+  /** The value of `sl_incremental` that the tasks this one delegates its write to render with */
+  protected def incrementalForDelegates: Option[Boolean] =
+    if (usesIncremental) Some(incrementalAtStart) else None
 
   private lazy val warnIncrementalOverride: Unit =
     if (allVars.contains(AutoTask.IncrementalVar))
@@ -453,21 +457,38 @@ abstract class AutoTask(
       )
 
   /** `sl_incremental` for a task that uses it, empty otherwise, so that the other tasks never check
-    * their target. `tableExistsForcedValue` replaces the check, as `--compile` does.
+    * their target. `incrementalForcedValue` gives whether the target exists instead of the check,
+    * as `--compile` and the orchestrator statements do.
     */
   private[transform] def incrementalVars(
-    tableExistsForcedValue: Option[Boolean]
+    incrementalForcedValue: Option[Boolean]
   ): Map[String, Any] =
     if (!usesIncremental) Map.empty
     else {
       warnIncrementalOverride
-      val exists = tableExistsForcedValue.getOrElse(targetExistedAtStart)
-      Map(AutoTask.IncrementalVar -> (!truncate && exists))
+      val incremental = incrementalForcedValue match {
+        case Some(exists) => !truncate && exists
+        case None         => incrementalAtStart
+      }
+      Map(AutoTask.IncrementalVar -> incremental)
     }
 
   /** The variables the main SQL renders with: those of the task and `sl_incremental` */
-  protected def sqlVars(tableExistsForcedValue: Option[Boolean] = None): Map[String, Any] =
-    allVars ++ incrementalVars(tableExistsForcedValue)
+  protected def sqlVars(incrementalForcedValue: Option[Boolean] = None): Map[String, Any] =
+    allVars ++ incrementalVars(incrementalForcedValue)
+
+  /** Renders presql or postsql statements. A list that does not refer to `sl_incremental` renders
+    * without it, so that it never checks the target.
+    */
+  private def renderStatements(
+    sqls: List[String],
+    incrementalForcedValue: Option[Boolean]
+  ): List[String] = {
+    val vars =
+      if (AutoTask.mentionsIncremental(sqls)) incrementalVars(incrementalForcedValue)
+      else Map.empty[String, Any]
+    parseJinja(sqls, vars).filter(_.trim.nonEmpty).map(transpileSql)
+  }
 
   /** DuckDB extensions and macros required to run transpiled SQL in test mode. These are already
     * written for DuckDB and must never be transpiled. They are idempotent (LOAD / SET / CREATE OR
@@ -490,12 +511,18 @@ abstract class AutoTask(
   protected def transpileSql(sql: String): String =
     SqlTransformations.transpileIfNeeded(sql, taskDesc.getRunConnection(), allVars, this.test)
 
-  lazy val preSql: List[String] =
-    testInitSqls ++ parseJinja(presqlSource, incrementalVars(None))
-      .filter(_.trim.nonEmpty)
-      .map(transpileSql)
-  lazy val postSql =
-    parseJinja(postsqlSource, incrementalVars(None)).filter(_.trim.nonEmpty).map(transpileSql)
+  /** The presql statements, with `sl_incremental` for a target that exists or not when
+    * `incrementalForcedValue` is defined, as `--compile` renders them
+    */
+  def preSqlFor(incrementalForcedValue: Option[Boolean]): List[String] =
+    testInitSqls ++ renderStatements(taskDesc.presql, incrementalForcedValue)
+
+  /** The postsql statements, rendered as [[preSqlFor]] renders the presql */
+  def postSqlFor(incrementalForcedValue: Option[Boolean]): List[String] =
+    renderStatements(taskDesc.postsql, incrementalForcedValue)
+
+  lazy val preSql: List[String] = preSqlFor(None)
+  lazy val postSql: List[String] = postSqlFor(None)
 
   lazy val jdbcSinkEngineName = this.sinkConnection.getJdbcEngineName()
   lazy val jdbcSinkEngine = settings.appConfig.jdbcEngines(jdbcSinkEngineName.toString)
@@ -506,7 +533,7 @@ abstract class AutoTask(
     sinkConnection.asMap()
   }
 
-  private val taskSQL = SQLUtils.stripComments(mainSqlSource)
+  private val taskSQL = SQLUtils.stripComments(taskDesc.getSql())
 
   /** Builds the task's main SELECT statement with macros instantiated, refs substituted and
     * transpiled to the target dialect when needed (test mode / transpile dialect). The native
@@ -541,8 +568,8 @@ abstract class AutoTask(
     * @param templateVariables
     *   variables of the write-strategy templates, besides those of the task
     * @param incrementalForcedValue
-    *   Whether the target existed for `sl_incremental`, when it differs from
-    *   tableExistsForcedValue: the JDBC run that created the target before presql passes false
+    *   Whether the target exists for `sl_incremental`, instead of its state when the run started:
+    *   the callers that pretend a table state pass the same value as tableExistsForcedValue
     * @return
     *   Concatenated ALTER + main SQL statements
     */
@@ -588,8 +615,8 @@ abstract class AutoTask(
     * @param templateVariables
     *   variables of the write-strategy templates, besides those of the task
     * @param incrementalForcedValue
-    *   Whether the target existed for `sl_incremental`, when it differs from
-    *   tableExistsForcedValue: the JDBC run that created the target before presql passes false
+    *   Whether the target exists for `sl_incremental`, instead of its state when the run started:
+    *   the callers that pretend a table state pass the same value as tableExistsForcedValue
     * @return
     *   Tuple of (Optional ALTER statements, main SQL statement)
     */
@@ -600,7 +627,7 @@ abstract class AutoTask(
     templateVariables: Map[String, Any] = Map.empty,
     incrementalForcedValue: Option[Boolean] = None
   ): (Option[String], String) = {
-    val vars = sqlVars(incrementalForcedValue.orElse(tableExistsForcedValue))
+    val vars = sqlVars(incrementalForcedValue)
     val runConnection =
       if (forceNative) {
         this.taskDesc.getRunConnection().copy(sparkFormat = None)
@@ -969,8 +996,11 @@ abstract class AutoTask(
         List.empty
       }
 
-    val mainSqlIfExists = buildAllSQLQueriesMerged(None, Some(true)).splitSql()
-    val mainSqlIfNotExists = buildAllSQLQueriesMerged(None, Some(false)).splitSql()
+    // Generated before any run: sl_incremental follows the table state of each variant
+    val mainSqlIfExists =
+      buildAllSQLQueriesMerged(None, Some(true), incrementalForcedValue = Some(true)).splitSql()
+    val mainSqlIfNotExists =
+      buildAllSQLQueriesMerged(None, Some(false), incrementalForcedValue = Some(false)).splitSql()
 
     val connectionPreActions =
       sinkOptions.get("preActions").map(_.split(';')).getOrElse(Array.empty).toList
@@ -982,8 +1012,13 @@ abstract class AutoTask(
           Map("schema" -> taskDesc.domain)
         )
         .splitSql(";")
-    val preSqls = preSql
-    val postSqls = postSql
+    // A single presql and postsql for both variants: they render the variable of a first run
+    if (AutoTask.mentionsIncremental(taskDesc.presql ++ taskDesc.postsql))
+      logger.warn(
+        s"Task ${taskDesc.fullName()}: its presql or postsql refers to ${AutoTask.IncrementalVar}, which the orchestrator statements render as false"
+      )
+    val preSqls = preSqlFor(Some(false))
+    val postSqls = postSqlFor(Some(false))
 
     val addSCD2ColumnsSqls =
       buildAddSCD2ColumnsSqls(sinkConnection.getJdbcEngineName())

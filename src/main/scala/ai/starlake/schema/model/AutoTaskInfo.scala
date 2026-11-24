@@ -45,13 +45,8 @@ case class TaskDesc(version: Int, task: AutoTaskInfo)
   * @param rls
   *   Row level security policy to apply too the output data.
   */
-/** The not yet rendered SQL of a task whose .sql file refers to sl_incremental. The task renders it
-  * at run time, when the variable is known.
-  */
-case class IncrementalTemplate(sql: String, presql: List[String], postsql: List[String])
-
 @JsonIgnoreProperties(
-  Array("_filenamePrefix", "_auditTableName", "_incrementalTemplate", "_dbComment", "write")
+  Array("_filenamePrefix", "_auditTableName", "_dbComment", "write")
 )
 case class AutoTaskInfo(
   name: String, // Name of the task. Made of jobName + '.' + tableName
@@ -82,10 +77,7 @@ case class AutoTaskInfo(
   streams: List[String] = Nil,
   primaryKey: List[String] = Nil,
   syncStrategy: Option[TableSync] = None,
-  assetTriggeringStrategy: Option[String] = None,
-  // for internal use. Raw content of the .sql file when it refers to sl_incremental: the
-  // fields sql, presql and postsql hold its full-load rendering
-  _incrementalTemplate: Option[IncrementalTemplate] = None
+  assetTriggeringStrategy: Option[String] = None
 ) extends Named {
 
   @JsonIgnore
@@ -136,13 +128,7 @@ case class AutoTaskInfo(
       parseSQL = child.parseSQL.orElse(parseSQL),
       taskTimeoutMs = child.taskTimeoutMs.orElse(taskTimeoutMs),
       connectionRef = child.connectionRef.orElse(connectionRef),
-      assetTriggeringStrategy = child.assetTriggeringStrategy.orElse(assetTriggeringStrategy),
-      _incrementalTemplate = child._incrementalTemplate.map(template =>
-        template.copy(
-          presql = presql ++ template.presql,
-          postsql = postsql ++ template.postsql
-        )
-      )
+      assetTriggeringStrategy = child.assetTriggeringStrategy.orElse(assetTriggeringStrategy)
     )
   }
   /*
@@ -239,6 +225,15 @@ case class AutoTaskInfo(
   ) // Should never be called. Here for Jackson deserialization only
 
   def getSql(): String = sql.getOrElse("")
+
+  /** The SQL of a full load, for the readers that parse the SQL of the task without rendering it:
+    * the SQL of a task that refers to `sl_incremental` keeps its tags until the task runs
+    */
+  def fullLoadSql()(implicit settings: Settings): String = AutoTaskInfo.fullLoad(getSql())
+
+  /** The presql of a full load, as [[fullLoadSql]] */
+  def fullLoadPresql()(implicit settings: Settings): List[String] =
+    presql.map(AutoTaskInfo.fullLoad)
 
   def getDatabase()(implicit settings: Settings): Option[String] = {
     database
@@ -437,7 +432,7 @@ case class AutoTaskInfo(
       // The SELECT, with the temporary tables of the presql that it reads
       val selectStatement = runConnection
         .flatMap(_ => Try(sqlStatement.getOrElse(this.getTranspiledSql())))
-        .map(PresqlTemporaryTables.withTemporaryTables(_, presql, lexing))
+        .map(PresqlTemporaryTables.withTemporaryTables(_, fullLoadPresql(), lexing))
       val sqlSchema: Try[List[TableAttribute]] =
         for {
           connection <- runConnection
@@ -591,7 +586,7 @@ case class AutoTaskInfo(
   def diffYamlAttributesWithDB(
     accessToken: Option[String]
   )(implicit settings: Settings): List[(TableAttribute, AttributeStatus)] = {
-    val sql = this.getSql()
+    val sql = this.fullLoadSql()
     val tableNames = SQLUtils.extractTableNames(sql)
     val schemaHandler = settings.schemaHandler()
     val config = ExtractSchemaConfig(
@@ -682,6 +677,12 @@ case class AutoTaskInfo(
 }
 
 object AutoTaskInfo {
+
+  /** `text` rendered with `sl_incremental` false when it refers to it, unchanged otherwise */
+  private def fullLoad(text: String)(implicit settings: Settings): String =
+    if (AutoTask.mentionsIncremental(List(text)))
+      Utils.parseJinja(text, Map(AutoTask.IncrementalVar -> false))
+    else text
 
   /** Whether an attribute and a column have the same type: the same type name */
   def sameTypeName(existing: TableAttribute, synced: TableAttribute): Boolean =

@@ -85,6 +85,19 @@ class SparkAutoTask(
       syncSchema
     ) {
 
+  /** The main SQL with its refs substituted. A task that refers to `sl_incremental` renders it with
+    * the variables of the run.
+    */
+  private def substituteMainSql(): String =
+    if (usesIncremental)
+      schemaHandler.substituteRefTaskMainSQL(
+        taskDesc.getSql(),
+        taskDesc.getRunConnection(),
+        sqlVars()
+      )
+    else
+      schemaHandler.substituteRefTaskMainSQL(taskDesc.getSql(), taskDesc.getRunConnection())
+
   /** Main entry point for task execution.
     *
     * ==Execution Flow==
@@ -94,28 +107,13 @@ class SparkAutoTask(
     *      - Table mode: Use runSparkOnSpark() for native Spark execution 3. Otherwise: Use
     *        runSparkOnAny() which handles external sinks
     */
-  /** The main SQL with its refs substituted. A task that refers to `sl_incremental` renders its raw
-    * template with the variables of the run, the others keep the SQL rendered at load time.
-    */
-  private def substituteMainSql(): String =
-    taskDesc._incrementalTemplate match {
-      case Some(template) =>
-        schemaHandler.substituteRefTaskMainSQL(
-          template.sql,
-          taskDesc.getRunConnection(),
-          sqlVars()
-        )
-      case None =>
-        schemaHandler.substituteRefTaskMainSQL(taskDesc.getSql(), taskDesc.getRunConnection())
-    }
-
   override def run(): Try[JobResult] = {
     captureIncrementalState()
     val result =
       interactive match {
         case Some(_) =>
           // Interactive mode: just execute the query and return results
-          runSparkOnSpark(mainSqlSource)
+          runSparkOnSpark(taskDesc.getSql())
         case None =>
           // Batch mode: determine execution path based on source and sink types
           (taskDesc.getRunConnection().`type`, sinkConnection.`type`) match {
@@ -127,7 +125,7 @@ class SparkAutoTask(
               if (sinkConfig match { case fs: FsSink => fs.isExport(); case _ => false }) {
                 runSparkOnAny() // Export to filesystem (CSV, JSON, Parquet files)
               } else {
-                runSparkOnSpark(mainSqlSource) // Native Spark table operations
+                runSparkOnSpark(taskDesc.getSql()) // Native Spark table operations
               }
 
             case _ =>
@@ -490,6 +488,9 @@ class SparkAutoTask(
     *   Override interactive mode
     * @param truncateOverride
     *   Override truncate flag
+    * @param incrementalOverride
+    *   `sl_incremental` of the delegate: the tasks the write is delegated to pass
+    *   incrementalForDelegates, so that they render the value of this run
     * @return
     *   TransformContext configured for delegation
     */
@@ -497,7 +498,8 @@ class SparkAutoTask(
     taskDescOverride: AutoTaskInfo = this.taskDesc,
     commandParametersOverride: Map[String, String] = Map.empty,
     interactiveOverride: Option[String] = None,
-    truncateOverride: Boolean = false
+    truncateOverride: Boolean = false,
+    incrementalOverride: Option[Boolean] = None
   ): TransformContext = {
     TransformContext(
       appId = Option(applicationId()),
@@ -512,7 +514,8 @@ class SparkAutoTask(
       resultPageNumber = resultPageNumber,
       dryRun = false,
       scheduledDate = scheduledDate,
-      syncSchema = false
+      syncSchema = false,
+      incrementalOverride = incrementalOverride
     )(settings, storageHandler, schemaHandler)
   }
 
@@ -771,7 +774,8 @@ class SparkAutoTask(
             taskDescOverride = secondStepTaskDesc,
             commandParametersOverride = commandParameters,
             interactiveOverride = interactive,
-            truncateOverride = truncate
+            truncateOverride = truncate,
+            incrementalOverride = incrementalForDelegates
           )
           val secondStepTask = TransformContext.createBigQueryTask(secondStepContext)
           val secondStepJobResult =
@@ -792,7 +796,8 @@ class SparkAutoTask(
         taskDescOverride = secondStepDesc,
         commandParametersOverride = commandParameters,
         interactiveOverride = interactive,
-        truncateOverride = truncate
+        truncateOverride = truncate,
+        incrementalOverride = incrementalForDelegates
       )
       val secondStepTask = TransformContext.createBigQueryTask(secondStepContext)
 
@@ -975,7 +980,12 @@ class SparkAutoTask(
           )
 
         val secondStepAutoTask =
-          TransformContext.createJdbcTask(delegateContext(taskDescOverride = secondStepTaskDesc))
+          TransformContext.createJdbcTask(
+            delegateContext(
+              taskDescOverride = secondStepTaskDesc,
+              incrementalOverride = incrementalForDelegates
+            )
+          )
         if (tableExists)
           secondStepAutoTask.updateJdbcTableSchema(
             incomingSchema = loadedDF.schema,
@@ -999,7 +1009,12 @@ class SparkAutoTask(
           sql = None
         )
         val secondAutoStepTask =
-          TransformContext.createJdbcTask(delegateContext(taskDescOverride = secondStepDesc))
+          TransformContext.createJdbcTask(
+            delegateContext(
+              taskDescOverride = secondStepDesc,
+              incrementalOverride = incrementalForDelegates
+            )
+          )
         secondAutoStepTask.updateJdbcTableSchema(
           incomingSchema = loadedDF.schema,
           tableName = fullTableName,

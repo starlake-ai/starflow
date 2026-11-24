@@ -459,7 +459,9 @@ object ModelBuilder {
         scheduledDate = None,
         syncSchema = false
       )(settings, settings.storageHandler(), schemaHandler)
-      context.toTask(taskDesc.getRunEngine()).buildAllSQLQueriesMerged(None, Some(true))
+      context
+        .toTask(taskDesc.getRunEngine())
+        .buildAllSQLQueriesMerged(None, Some(true), incrementalForcedValue = Some(true))
     }
 
   /** Columns of the referenced tables, read from the declared project only. */

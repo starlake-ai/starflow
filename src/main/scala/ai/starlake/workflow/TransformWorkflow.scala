@@ -104,13 +104,18 @@ trait TransformWorkflow extends LazyLogging {
 
   def compileAutoJob(config: TransformConfig): Try[(String, String)] = Try {
     val action = buildTask(config)
-    val sqlWhenTableDoesNotExist = action.buildAllSQLQueriesMerged(None, Some(false))
-    val sqlWhenTableExist = action.buildAllSQLQueriesMerged(None, Some(true))
+    val sqlWhenTableDoesNotExist =
+      action.buildAllSQLQueriesMerged(None, Some(false), incrementalForcedValue = Some(false))
+    val sqlWhenTableExist =
+      action.buildAllSQLQueriesMerged(None, Some(true), incrementalForcedValue = Some(true))
     val tableExists = Try(action.tableExists)
 
-    def addPrePostSql(sql: String): String = {
-      val preSql = if (action.preSql.isEmpty) "" else action.preSql.mkString(";\n") + ";\n"
-      val postSql = if (action.postSql.isEmpty) "" else ";\n" + action.postSql.mkString(";\n")
+    // Each output renders sl_incremental in presql and postsql with its own table state
+    def addPrePostSql(sql: String, exists: Boolean): String = {
+      val preSqls = action.preSqlFor(Some(exists))
+      val postSqls = action.postSqlFor(Some(exists))
+      val preSql = if (preSqls.isEmpty) "" else preSqls.mkString(";\n") + ";\n"
+      val postSql = if (postSqls.isEmpty) "" else ";\n" + postSqls.mkString(";\n")
       preSql + sql + postSql
     }
 
@@ -121,13 +126,13 @@ trait TransformWorkflow extends LazyLogging {
 
         val finalSqlExist = SQLUtils.format(sqlWhenTableExist, JSQLFormatter.OutputFormat.PLAIN)
         (
-          addPrePostSql(finalSqlDontExist),
-          addPrePostSql(finalSqlExist)
+          addPrePostSql(finalSqlDontExist, exists = false),
+          addPrePostSql(finalSqlExist, exists = true)
         )
       } else {
         (
-          addPrePostSql(sqlWhenTableDoesNotExist),
-          addPrePostSql(sqlWhenTableExist)
+          addPrePostSql(sqlWhenTableDoesNotExist, exists = false),
+          addPrePostSql(sqlWhenTableExist, exists = true)
         )
       }
 

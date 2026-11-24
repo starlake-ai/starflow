@@ -204,6 +204,27 @@ class ProjectSnapshotSpec extends TestHelper {
     }
   }
 
+  it should "fingerprint both branches of sl_incremental and shape the full load" in {
+    new WithSettings() {
+      def revenue(delta: String) =
+        load(
+          Map(
+            "metadata/transform/kpi/revenue.sql" ->
+            s"""SELECT s.id, s.amount * 2 AS total FROM stg.orders s
+               |{% if sl_incremental %}WHERE s.id > (SELECT max(id)$delta FROM kpi.revenue){% endif %}
+               |""".stripMargin
+          )
+        ).nodes(NodeRef("kpi", "revenue"))
+      val base = revenue("")
+      base.shape.get.unresolved shouldBe None
+      // the shape is that of a full load, which does not read the target
+      base.shape.get.inputs shouldBe Set(NodeRef("stg", "orders"))
+      revenue("").definition shouldBe base.definition
+      // an edit of the incremental branch only
+      revenue(" - 1").definition should not be base.definition
+    }
+  }
+
   it should "fail with a migrate hint on an unreadable project" in {
     new WithSettings() {
       val dir = File.newTemporaryDirectory("impact-")

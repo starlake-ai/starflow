@@ -255,6 +255,9 @@ object Utils extends LazyLogging {
   ): String = JinjaUtils.renderJinja(str, params)
   def parseJinja(str: String, params: Map[String, Any])(implicit settings: Settings): String =
     JinjaUtils.parseJinja(str, params)
+  def parseJinjaDeferringIncremental(str: String, params: Map[String, Any])(implicit
+    settings: Settings
+  ): String = JinjaUtils.parseJinjaDeferringIncremental(str, params)
   def parseJinja(str: List[String], params: Map[String, Any])(implicit
     settings: Settings
   ): List[String] = JinjaUtils.parseJinja(str, params)

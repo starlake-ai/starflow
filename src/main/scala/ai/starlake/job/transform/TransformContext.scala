@@ -88,6 +88,9 @@ import ai.starlake.schema.model.{AutoTaskInfo, Engine}
   *   Optional scheduled date for the job (used in audit logging)
   * @param syncSchema
   *   Whether to synchronize the target table schema with the YAML definition
+  * @param incrementalOverride
+  *   The value of `sl_incremental` instead of the check of the target: a task that another one
+  *   delegates its write to renders the value of the task that delegates
   */
 case class TransformContext(
   appId: Option[String],
@@ -102,7 +105,8 @@ case class TransformContext(
   resultPageNumber: Int,
   dryRun: Boolean,
   scheduledDate: Option[String],
-  syncSchema: Boolean
+  syncSchema: Boolean,
+  incrementalOverride: Option[Boolean] = None
 )(implicit
   val settings: Settings,
   val storageHandler: StorageHandler,
@@ -292,6 +296,7 @@ object TransformContext {
       scheduledDate = context.scheduledDate,
       syncSchema = context.syncSchema
     )(context.settings, context.storageHandler, context.schemaHandler)
+      .withIncrementalOverride(context.incrementalOverride)
   }
 
   /** Creates a BigQueryExportTask from a TransformContext: a BigQuery transform writing its files
@@ -312,6 +317,7 @@ object TransformContext {
       dryRun = context.dryRun,
       scheduledDate = context.scheduledDate
     )(context.settings, context.storageHandler, context.schemaHandler)
+      .withIncrementalOverride(context.incrementalOverride)
   }
 
   /** Creates a JdbcAutoTask from a TransformContext.
@@ -345,6 +351,7 @@ object TransformContext {
       scheduledDate = context.scheduledDate,
       syncSchema = context.syncSchema
     )(context.settings, context.storageHandler, context.schemaHandler)
+      .withIncrementalOverride(context.incrementalOverride)
   }
 
   /** Creates a SparkAutoTask from a TransformContext.
@@ -379,6 +386,7 @@ object TransformContext {
       scheduledDate = context.scheduledDate,
       syncSchema = context.syncSchema
     )(context.settings, context.storageHandler, context.schemaHandler)
+      .withIncrementalOverride(context.incrementalOverride)
   }
 
   /** Creates a SparkExportTask from a TransformContext.
@@ -405,6 +413,7 @@ object TransformContext {
       resultPageNumber = context.resultPageNumber,
       scheduledDate = context.scheduledDate
     )(context.settings, context.storageHandler, context.schemaHandler)
+      .withIncrementalOverride(context.incrementalOverride)
   }
 
   /** Creates an AutoTask of the appropriate type based on the engine.

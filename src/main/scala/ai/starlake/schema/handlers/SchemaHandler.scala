@@ -1408,13 +1408,23 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     }
   }
 
+  /** Renders a task file (its .sql, its .sl.yml or the job _config.sl.yml) when the project is
+    * loaded. `sl_incremental` is only known when the task runs: when `mentionText` refers to it,
+    * the tags that depend on it stay in the output and the task renders them at run time.
+    */
+  private def parseTaskJinja(content: String, mentionText: String): String =
+    if (AutoTask.mentionsIncremental(List(mentionText)))
+      Utils.parseJinjaDeferringIncremental(content, activeEnvVars())
+    else
+      Utils.parseJinja(content, activeEnvVars())
+
   private def loadJobDesc(jobPath: Path): Try[AutoJobInfo] =
     Try {
       logger.info("Loading job " + jobPath)
       val jobDesc =
         if (storage.exists(jobPath)) {
           val fileContent = storage.read(jobPath)
-          val rootContent = Utils.parseJinja(fileContent, activeEnvVars())
+          val rootContent = parseTaskJinja(fileContent, fileContent)
           YamlSerde.deserializeYamlTransform(rootContent, jobPath.toString) match {
             case Failure(exception) =>
               throw exception
@@ -1479,28 +1489,15 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           )
         else {
           val sqlContentRaw = storage.read(taskFile)
-          val sqlContent = Utils.parseJinja(sqlContentRaw, activeEnvVars())
+          val sqlContent =
+            parseTaskJinja(sqlContentRaw, SQLUtils.stripComments(sqlContentRaw))
           val sqlTask = SqlTaskExtractor(sqlContent)
           val preSql = sqlTask.presql ++ taskWithName.presql
           val postSql = taskWithName.postsql ++ sqlTask.postsql
-          // sl_incremental is only known when the task runs: the fields above hold the full-load
-          // rendering, and the task renders the raw template again with the variable
-          val template =
-            if (AutoTask.mentionsIncremental(List(SQLUtils.stripComments(sqlContentRaw)))) {
-              val raw = SqlTaskExtractor(sqlContentRaw)
-              Some(
-                IncrementalTemplate(
-                  raw.sql,
-                  raw.presql ++ taskWithName.presql,
-                  taskWithName.postsql ++ raw.postsql
-                )
-              )
-            } else None
           taskWithName.copy(
             presql = preSql,
             sql = Option(sqlTask.sql),
-            postsql = postSql,
-            _incrementalTemplate = template
+            postsql = postSql
           )
         }
       }
@@ -1602,8 +1599,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
               val content = storage.read(taskPath)
               val taskDesc = YamlSerde
                 .deserializeYamlTask(
-                  Utils
-                    .parseJinja(content, activeEnvVars()),
+                  parseTaskJinja(content, content),
                   taskPath.toString
                 )
                 .copy(name = taskFileNameWithoutExt)
