@@ -420,7 +420,7 @@ abstract class AutoTask(
 
   /** Whether the main SQL, presql or postsql of the task refers to `sl_incremental` */
   private[transform] lazy val usesIncremental: Boolean =
-    AutoTask.mentionsIncremental(taskSQL :: taskDesc.presql ++ taskDesc.postsql)
+    IncrementalVariable.mentionedIn(taskSQL :: taskDesc.presql ++ taskDesc.postsql)
 
   @volatile private var _incrementalOverride: Option[Boolean] = None
 
@@ -451,9 +451,9 @@ abstract class AutoTask(
     if (usesIncremental) Some(incrementalAtStart) else None
 
   private lazy val warnIncrementalOverride: Unit =
-    if (allVars.contains(AutoTask.IncrementalVar))
+    if (allVars.contains(IncrementalVariable.Name))
       logger.warn(
-        s"Task ${taskDesc.fullName()}: ${AutoTask.IncrementalVar} is computed by Starlake, the value passed in options or env vars is ignored"
+        s"Task ${taskDesc.fullName()}: ${IncrementalVariable.Name} is computed by Starlake, the value passed in options or env vars is ignored"
       )
 
   /** `sl_incremental` for a task that uses it, empty otherwise, so that the other tasks never check
@@ -470,12 +470,20 @@ abstract class AutoTask(
         case Some(exists) => !truncate && exists
         case None         => incrementalAtStart
       }
-      Map(AutoTask.IncrementalVar -> incremental)
+      Map(IncrementalVariable.Name -> incremental)
     }
 
   /** The variables the main SQL renders with: those of the task and `sl_incremental` */
   protected def sqlVars(incrementalForcedValue: Option[Boolean] = None): Map[String, Any] =
     allVars ++ incrementalVars(incrementalForcedValue)
+
+  /** The main SQL of the task with the variables of this run, refs not substituted: the SQL of a
+    * task that refers to `sl_incremental` keeps its tags until the task runs, and a parser fails on
+    * them
+    */
+  private[transform] def renderedMainSql(): String =
+    if (usesIncremental) parseJinja(taskDesc.getSql(), incrementalVars(None))
+    else taskDesc.getSql()
 
   /** Renders presql or postsql statements. A list that does not refer to `sl_incremental` renders
     * without it, so that it never checks the target.
@@ -485,7 +493,7 @@ abstract class AutoTask(
     incrementalForcedValue: Option[Boolean]
   ): List[String] = {
     val vars =
-      if (AutoTask.mentionsIncremental(sqls)) incrementalVars(incrementalForcedValue)
+      if (IncrementalVariable.mentionedIn(sqls)) incrementalVars(incrementalForcedValue)
       else Map.empty[String, Any]
     parseJinja(sqls, vars).filter(_.trim.nonEmpty).map(transpileSql)
   }
@@ -896,7 +904,7 @@ abstract class AutoTask(
       val result = SQLUtils.extractInputTableNamesWithFallback(
         parseJinja(
           taskSQL,
-          schemaHandler.activeEnvVars() + (AutoTask.IncrementalVar -> false)
+          schemaHandler.activeEnvVars() + (IncrementalVariable.Name -> false)
         )
       )
       val withStreamsResolved = result.map { table =>
@@ -1013,9 +1021,9 @@ abstract class AutoTask(
         )
         .splitSql(";")
     // A single presql and postsql for both variants: they render the variable of a first run
-    if (AutoTask.mentionsIncremental(taskDesc.presql ++ taskDesc.postsql))
+    if (IncrementalVariable.mentionedIn(taskDesc.presql ++ taskDesc.postsql))
       logger.warn(
-        s"Task ${taskDesc.fullName()}: its presql or postsql refers to ${AutoTask.IncrementalVar}, which the orchestrator statements render as false"
+        s"Task ${taskDesc.fullName()}: its presql or postsql refers to ${IncrementalVariable.Name}, which the orchestrator statements render as false"
       )
     val preSqls = preSqlFor(Some(false))
     val postSqls = postSqlFor(Some(false))
@@ -1087,17 +1095,6 @@ abstract class AutoTask(
 }
 
 object AutoTask extends LazyLogging {
-
-  /** The Jinja variable that tells a task's SQL whether this run is incremental: the target existed
-    * when the run started and the run is not --truncate
-    */
-  val IncrementalVar = "sl_incremental"
-
-  private val IncrementalPattern = """\bsl_incremental\b""".r
-
-  /** Whether one of these SQL texts refers to [[IncrementalVar]] */
-  def mentionsIncremental(sqls: List[String]): Boolean =
-    sqls.exists(sql => IncrementalPattern.findFirstIn(sql).isDefined)
 
   def fromAutoTaskInfo(
     info: AutoTaskInfo,

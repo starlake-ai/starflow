@@ -45,7 +45,6 @@ import ai.starlake.extract.{ExtractSchema, JdbcDbUtils}
 import ai.starlake.job.ingest.{AuditLog, RejectedRecord}
 import ai.starlake.job.site.DocBlocks
 import ai.starlake.job.metrics.ExpectationReport
-import ai.starlake.job.transform.AutoTask
 import ai.starlake.lineage.InheritedDescriptions
 import ai.starlake.schema.model.*
 import ai.starlake.schema.model.Severity.*
@@ -54,7 +53,13 @@ import ai.starlake.transpiler.diff.Attribute
 import ai.starlake.transpiler.schema.{JdbcColumn, JdbcMetaData}
 import ai.starlake.utils.Formatter.*
 import ai.starlake.utils.conversion.BigQueryType
-import ai.starlake.utils.{StarlakeConfigException, StarlakeNotFoundException, Utils, YamlSerde}
+import ai.starlake.utils.{
+  IncrementalVariable,
+  StarlakeConfigException,
+  StarlakeNotFoundException,
+  Utils,
+  YamlSerde
+}
 import better.files.Resource
 import org.apache.spark.sql.execution.datasources.xml.XSDToSchema
 import com.typesafe.scalalogging.LazyLogging
@@ -92,6 +97,29 @@ case class DomainWithNameOnly(name: String, tables: List[TableWithNameAndType]) 
       jdbcMetadata.addTable("", "", table.name, jdbcColumns.asJava)
     }
   }
+}
+
+/** A task .sl.yml or a job _config.sl.yml that refers to `sl_incremental` and does not read once
+  * the variable is deferred: the tags that depend on it are written back into the YAML
+  */
+final class IncrementalYamlException(path: Path, cause: Throwable)
+    extends Exception(
+      s"$path refers to ${IncrementalVariable.Name} and could not be read once rendered: " +
+      s"${cause.getMessage}. ${IncrementalVariable.Name} is only known when the task runs, so its " +
+      "tags stay in the YAML until then: keep them inside double-quoted or block scalars, with no " +
+      "Jinja loops or sets at YAML level",
+      cause
+    )
+
+object IncrementalYamlException {
+
+  /** The IncrementalYamlException in the causes of `e`, if any */
+  def in(e: Throwable): Option[IncrementalYamlException] =
+    Iterator
+      .iterate(e)(_.getCause)
+      .takeWhile(_ != null)
+      .take(20)
+      .collectFirst { case i: IncrementalYamlException => i }
 }
 
 object SchemaHandler {
@@ -1408,32 +1436,43 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
     }
   }
 
-  /** Renders a task file (its .sql, its .sl.yml or the job _config.sl.yml) when the project is
-    * loaded. `sl_incremental` is only known when the task runs: when `mentionText` refers to it,
-    * the tags that depend on it stay in the output and the task renders them at run time.
+  /** Renders a task .sql file when the project is loaded. `sl_incremental` is only known when the
+    * task runs: when the file, without its comments, refers to it, the tags that depend on it stay
+    * in the output and the task renders them at run time.
     */
-  private def parseTaskJinja(content: String, mentionText: String): String =
-    if (AutoTask.mentionsIncremental(List(mentionText)))
+  private def parseTaskSqlJinja(content: String): String =
+    if (IncrementalVariable.mentionedIn(List(SQLUtils.stripComments(content))))
       Utils.parseJinjaDeferringIncremental(content, activeEnvVars())
     else
       Utils.parseJinja(content, activeEnvVars())
+
+  /** Reads a task .sl.yml or a job _config.sl.yml, rendered as [[parseTaskSqlJinja]] renders a .sql
+    * file. The tags of `sl_incremental` are written back into the YAML: when it no longer reads,
+    * the error names the file and the variable.
+    */
+  private def readTaskYaml[T](path: Path)(deserialize: String => T): T = {
+    val content = storage.read(path)
+    if (IncrementalVariable.mentionedIn(List(content))) {
+      val rendered = Utils.parseJinjaDeferringIncremental(content, activeEnvVars())
+      Try(deserialize(rendered)) match {
+        case Success(value) => value
+        case Failure(e)     => throw new IncrementalYamlException(path, e)
+      }
+    } else
+      deserialize(Utils.parseJinja(content, activeEnvVars()))
+  }
 
   private def loadJobDesc(jobPath: Path): Try[AutoJobInfo] =
     Try {
       logger.info("Loading job " + jobPath)
       val jobDesc =
         if (storage.exists(jobPath)) {
-          val fileContent = storage.read(jobPath)
-          val rootContent = parseTaskJinja(fileContent, fileContent)
-          YamlSerde.deserializeYamlTransform(rootContent, jobPath.toString) match {
-            case Failure(exception) =>
-              throw exception
-            case Success(autoJobDesc) =>
-              if (autoJobDesc.getName().isEmpty)
-                autoJobDesc.copy(name = jobPath.getParent.getName)
-              else
-                autoJobDesc
-          }
+          val autoJobDesc =
+            readTaskYaml(jobPath)(YamlSerde.deserializeYamlTransform(_, jobPath.toString).get)
+          if (autoJobDesc.getName().isEmpty)
+            autoJobDesc.copy(name = jobPath.getParent.getName)
+          else
+            autoJobDesc
         } else {
           // no _config.sl.yml file. Dir name is the job name
           AutoJobInfo(name = jobPath.getParent.getName, tasks = Nil)
@@ -1489,8 +1528,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           )
         else {
           val sqlContentRaw = storage.read(taskFile)
-          val sqlContent =
-            parseTaskJinja(sqlContentRaw, SQLUtils.stripComments(sqlContentRaw))
+          val sqlContent = parseTaskSqlJinja(sqlContentRaw)
           val sqlTask = SqlTaskExtractor(sqlContent)
           val preSql = sqlTask.presql ++ taskWithName.presql
           val postSql = taskWithName.postsql ++ sqlTask.postsql
@@ -1596,13 +1634,9 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
           case "sl.yml" =>
             Try {
               val taskPath = new Path(folder, taskFilename)
-              val content = storage.read(taskPath)
-              val taskDesc = YamlSerde
-                .deserializeYamlTask(
-                  parseTaskJinja(content, content),
-                  taskPath.toString
-                )
-                .copy(name = taskFileNameWithoutExt)
+              val taskDesc =
+                readTaskYaml(taskPath)(YamlSerde.deserializeYamlTask(_, taskPath.toString))
+                  .copy(name = taskFileNameWithoutExt)
 
               val finalDomain = if (taskDesc.domain.isEmpty) jobDesc.name else taskDesc.domain
               val finalTable =
@@ -1613,6 +1647,10 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                 table = finalTable
               )
             } match {
+              // the task asked for by name fails with its error instead of not being found
+              case Failure(e: IncrementalYamlException) if taskNames.nonEmpty =>
+                logger.error(e.getMessage, e)
+                throw e
               case Failure(e) =>
                 e.printStackTrace()
                 logger.error(e.getMessage, e)
@@ -1777,9 +1815,11 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
             case Failure(_) =>
           }
 
-          taskDesc.orElse(
-            taskByFullName(taskFullName)
-          ) // because taskOnly can only handle task named after folder and file names
+          // because taskOnly can only handle task named after folder and file names; a task file
+          // that does not read once sl_incremental is deferred keeps its error
+          taskDesc.recoverWith {
+            case e if IncrementalYamlException.in(e).isEmpty => taskByFullName(taskFullName)
+          }
       }
     } else {
       taskByFullName(taskFullName)

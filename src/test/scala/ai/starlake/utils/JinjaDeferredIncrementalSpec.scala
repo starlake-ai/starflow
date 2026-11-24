@@ -64,7 +64,10 @@ class JinjaDeferredIncrementalSpec extends TestHelper {
     it should "fail on an unknown macro as parseJinja does" in {
       an[Exception] should be thrownBy Utils.parseJinja("A {{ unknown_macro('x') }}", Map.empty)
       an[Exception] should be thrownBy
-      Utils.parseJinjaDeferringIncremental("A {{ unknown_macro('x') }} {{ sl_incremental }}", Map.empty)
+      Utils.parseJinjaDeferringIncremental(
+        "A {{ unknown_macro('x') }} {{ sl_incremental }}",
+        Map.empty
+      )
     }
 
     it should "evaluate the known part of a test that also reads the variable" in {
@@ -98,6 +101,33 @@ class JinjaDeferredIncrementalSpec extends TestHelper {
       )
       render(deferred, incremental = false).trim shouldBe "SELECT 1"
       render(deferred, incremental = true).trim shouldBe "SELECT 1 DELTA 4"
+    }
+
+    it should "keep a value holding Jinja for the run, inside and outside the deferred tags" in {
+      // an env value left for the run, as "{{SL_CONNECTION}}" in an env file
+      val deferred = Utils.parseJinjaDeferringIncremental(
+        "A {{ conn }} {% if sl_incremental %}B {{ conn }}{% endif %}",
+        Map("conn" -> "{{SL_X}}")
+      )
+      deferred should not include "raw"
+      Utils.parseJinja(deferred, Map("SL_X" -> "prod", "sl_incremental" -> true)) shouldBe
+      "A prod B prod"
+      Utils.parseJinja(deferred, Map("SL_X" -> "prod", "sl_incremental" -> false)) shouldBe
+      "A prod"
+    }
+
+    it should "render a raw block as parseJinja does" in {
+      val text = "R {% raw %}{{ x }}{% endraw %}"
+      val deferred =
+        Utils.parseJinjaDeferringIncremental(
+          text + " {% if sl_incremental %}D{% endif %}",
+          Map.empty
+        )
+      val master = Utils.parseJinja(text, Map.empty)
+      master shouldBe "R {{ x }}"
+      deferred should startWith(master + " ")
+      Utils.parseJinja(deferred, Map("x" -> "1", "sl_incremental" -> true)) shouldBe
+      Utils.parseJinja(master, Map("x" -> "1")) + " D"
     }
 
     it should "leave the shared instance rendering the variable as undefined" in {

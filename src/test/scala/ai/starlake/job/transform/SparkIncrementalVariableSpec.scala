@@ -107,7 +107,8 @@ class SparkIncrementalVariableSpec extends TestHelper {
             |WHERE id > 2
             |{% endif %}""".stripMargin,
           // run by the JDBC task, after the Spark task created the target
-          postsql = List("{% if not sl_incremental %}INSERT INTO mydb.run_log VALUES (1){% endif %}"),
+          postsql =
+            List("{% if not sl_incremental %}INSERT INTO mydb.run_log VALUES (1){% endif %}"),
           postsqlInSqlFile = postsqlInSqlFile
         )
         val first = run()

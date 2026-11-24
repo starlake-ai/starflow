@@ -27,7 +27,7 @@ import ai.starlake.lineage.{
   AutoTaskDependenciesConfig,
   TaskViewDependencyNode
 }
-import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
+import ai.starlake.schema.handlers.{IncrementalYamlException, SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
 import ai.starlake.schema.model.Engine.BQ
 import ai.starlake.utils.{JdbcJobResult, SparkJobResult, StarlakeNotFoundException}
@@ -82,9 +82,14 @@ trait TransformWorkflow extends LazyLogging {
           parseSQL = Some(false)
         )
       } else {
-        val taskDesc = schemaHandler
-          .taskOnly(config.name, reload = true)
-          .getOrElse(throw new StarlakeNotFoundException(s"Invalid task name ${config.name}"))
+        val taskDesc = schemaHandler.taskOnly(config.name, reload = true) match {
+          case Success(task) => task
+          case Failure(e)    =>
+            // a task file that does not read once sl_incremental is deferred says why
+            throw IncrementalYamlException
+              .in(e)
+              .getOrElse(new StarlakeNotFoundException(s"Invalid task name ${config.name}"))
+        }
         config.query match {
           case Some(_) =>
             taskDesc.copy(sql = config.query)

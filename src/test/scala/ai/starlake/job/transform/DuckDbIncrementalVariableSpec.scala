@@ -4,6 +4,7 @@ import ai.starlake.TestHelper
 import ai.starlake.config.Settings
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.schema.model._
+import ai.starlake.utils.IncrementalVariable
 import ai.starlake.workflow.IngestionWorkflow
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.fs.Path
@@ -317,11 +318,106 @@ class DuckDbIncrementalVariableSpec extends TestHelper {
       statements.preSqls.mkString("\n") should include("pre_full")
     }
 
-    "AutoTask.mentionsIncremental" should "match the variable as a whole word only" in {
-      AutoTask.mentionsIncremental(List("{% if sl_incremental %}x{% endif %}")) shouldBe true
-      AutoTask.mentionsIncremental(List("select 1", "{{ sl_incremental }}")) shouldBe true
-      AutoTask.mentionsIncremental(List("select sl_incremental_count from t")) shouldBe false
-      AutoTask.mentionsIncremental(Nil) shouldBe false
+    /** Writes the task YAML as given, without .sql file */
+    private def writeYaml(yaml: String): Unit = {
+      storageHandler.write(yaml, pathTask)
+      storageHandler.delete(pathSql)
+    }
+
+    private def taskYaml(head: String, sqlLine: String): String =
+      s"""${head}version: 1
+         |task:
+         |  domain: mydb
+         |  table: target
+         |  writeStrategy:
+         |    type: APPEND
+         |  sink:
+         |    connectionRef: test-duckdb
+         |$sqlLine
+         |""".stripMargin
+
+    it should "keep working in a double-quoted and in a block scalar of the YAML" in {
+      List(
+        """  sql: "SELECT id, updated_at FROM mydb.src {% if sl_incremental %}WHERE updated_at > (SELECT max(updated_at) FROM mydb.target){% endif %}"""",
+        """  sql: |
+          |    SELECT id, updated_at FROM mydb.src
+          |    {% if sl_incremental %}
+          |    WHERE updated_at > (SELECT max(updated_at) FROM mydb.target)
+          |    {% endif %}""".stripMargin
+      ).foreach { sqlLine =>
+        withClue(sqlLine) {
+          resetTables()
+          writeYaml(taskYaml("", sqlLine))
+          run().isSuccess shouldBe true
+          targetIds() shouldBe List(1, 2)
+          addSourceRow(3, 30)
+          run().isSuccess shouldBe true
+          targetIds() shouldBe List(1, 2, 3)
+        }
+      }
+    }
+
+    it should "fail with a clear error on YAML that does not read once the variable is deferred" in {
+      List(
+        // the deferred expression is written back with single-quoted literals
+        taskYaml(
+          "",
+          """  sql: 'SELECT id, updated_at FROM mydb.src {{ "WHERE id > 1" if sl_incremental else "" }}'"""
+        ),
+        // a set at YAML level is written back as a tag
+        taskYaml(
+          "{% set filter = sl_incremental %}\n",
+          """  sql: "SELECT id, updated_at FROM mydb.src {% if filter %}WHERE id > 1{% endif %}""""
+        )
+      ).foreach { yaml =>
+        withClue(yaml) {
+          resetTables()
+          writeYaml(yaml)
+          val result = scala.util.Try(run()).flatten
+          result.isFailure shouldBe true
+          val message = result.failed.get.getMessage
+          message should include("target.sl.yml")
+          message should include("sl_incremental")
+          message should include("double-quoted or block scalars")
+        }
+      }
+    }
+
+    it should "not derive sl_incremental from a forced table state on a run path" in {
+      resetTables()
+      writeTask(incrementalSql)
+      // the target is missing: planning against an existing table must not make the run incremental
+      val task = workflow().buildTask(TransformConfig(name = "mydb.target"))
+      task.buildAllSQLQueriesMerged(None, Some(true)).toLowerCase should not include
+      "max(updated_at)"
+      val (whenMissing, whenExists) =
+        workflow().compileAutoJob(TransformConfig(name = "mydb.target")).get
+      whenMissing.toLowerCase should not include "max(updated_at)"
+      whenExists.toLowerCase should include("max(updated_at)")
+    }
+
+    it should "give the branch handler a main SQL whose tables can be read" in {
+      resetTables()
+      writeTask(incrementalSql)
+      withDuckDb(
+        _.createStatement().execute("CREATE TABLE mydb.target(id INTEGER, updated_at INTEGER)")
+      )
+      val task = workflow().buildTask(TransformConfig(name = "mydb.target"))
+      // the loaded SQL keeps the tags, on which the parser fails
+      scala.util
+        .Try(ai.starlake.sql.SQLUtils.extractTableNames(task.taskDesc.getSql()))
+        .isFailure shouldBe
+      true
+      ai.starlake.sql.SQLUtils
+        .extractTableNames(task.renderedMainSql())
+        .map(_.toLowerCase) should contain allOf ("mydb.src", "mydb.target")
+    }
+
+    "IncrementalVariable.mentionedIn" should "match the variable as a whole word only" in {
+      IncrementalVariable.mentionedIn(List("{% if sl_incremental %}x{% endif %}")) shouldBe true
+      IncrementalVariable.mentionedIn(List("select 1", "{{ sl_incremental }}")) shouldBe true
+      IncrementalVariable.mentionedIn(List("select sl_incremental_count from t")) shouldBe false
+      IncrementalVariable.mentionedIn(Nil) shouldBe false
     }
   }
 }

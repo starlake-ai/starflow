@@ -581,7 +581,7 @@ class BigQueryAutoTask(
                           checked.map { case (_, script) => script }.getOrElse(main),
                           postSql
                         )
-                        val finalSql = prepareBranchContext(taskDesc.getSql()) match {
+                        val finalSql = prepareBranchContext(renderedMainSql()) match {
                           case Some(ctx) =>
                             logger.info(
                               s"Branch: rewriting native SQL with ${ctx.tableMappings.size} table mappings"

@@ -11,7 +11,13 @@ import ai.starlake.transpiler.JSQLSchemaDiff
 import ai.starlake.transpiler.diff.{Attribute as DiffAttribute, DBSchema}
 import ai.starlake.transpiler.schema.CaseInsensitiveLinkedHashMap
 import ai.starlake.utils.conversion.BigQueryType
-import ai.starlake.utils.{SparkUtils, StarlakeNotFoundException, Utils, YamlSerde}
+import ai.starlake.utils.{
+  IncrementalVariable,
+  SparkUtils,
+  StarlakeNotFoundException,
+  Utils,
+  YamlSerde
+}
 import com.fasterxml.jackson.annotation.{JsonIgnore, JsonIgnoreProperties}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.types.StructType
@@ -680,8 +686,8 @@ object AutoTaskInfo {
 
   /** `text` rendered with `sl_incremental` false when it refers to it, unchanged otherwise */
   private def fullLoad(text: String)(implicit settings: Settings): String =
-    if (AutoTask.mentionsIncremental(List(text)))
-      Utils.parseJinja(text, Map(AutoTask.IncrementalVar -> false))
+    if (IncrementalVariable.mentionedIn(List(text)))
+      Utils.parseJinja(text, Map(IncrementalVariable.Name -> false))
     else text
 
   /** Whether an attribute and a column have the same type: the same type name */

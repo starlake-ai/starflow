@@ -2,7 +2,6 @@ package ai.starlake.utils
 
 import ai.starlake.config.Settings
 import ai.starlake.utils.Formatter.RichFormatter
-import ai.starlake.job.transform.AutoTask
 import com.hubspot.jinjava.{Jinjava, JinjavaConfig}
 import com.hubspot.jinjava.interpret.DeferredValue
 import com.hubspot.jinjava.lib.fn.ELFunctionDefinition
@@ -36,6 +35,14 @@ object JinjaUtils {
   def ctx(entries: (String, Any)*): java.util.Map[String, Object] =
     toJava(entries.toMap).asInstanceOf[java.util.Map[String, Object]]
 
+  /** Eager execution that does not wrap in `{% raw %}` the values that hold Jinja: such a value
+    * (`"{{SL_CONNECTION}}"` in an env file) is rendered when the task runs, as with the shared
+    * instance
+    */
+  private object DeferringMode extends EagerExecutionMode {
+    override def isPreserveRawTags: Boolean = false
+  }
+
   /** Both instances come from here so that they cannot drift apart */
   private def newJinjava(eager: Boolean)(implicit settings: Settings): Jinjava = {
     val curClassLoader = Thread.currentThread.getContextClassLoader
@@ -47,7 +54,7 @@ object JinjaUtils {
           .withFailOnUnknownTokens(false)
           .withNestedInterpretationEnabled(false)
         val config =
-          if (eager) builder.withExecutionMode(EagerExecutionMode.instance()).build()
+          if (eager) builder.withExecutionMode(DeferringMode).build()
           else builder.build()
 
         new Jinjava(config)
@@ -94,8 +101,8 @@ object JinjaUtils {
   def parseJinjaDeferringIncremental(str: String, params: Map[String, Any])(implicit
     settings: Settings
   ): String = {
-    val others = params - AutoTask.IncrementalVar
-    val context: Map[String, Any] = others + (AutoTask.IncrementalVar -> DeferredValue.instance())
+    val others = params - IncrementalVariable.Name
+    val context: Map[String, Any] = others + (IncrementalVariable.Name -> DeferredValue.instance())
     deferringJinjava
       .render(str, context.asJava)
       .richFormat(others, Map.empty)
