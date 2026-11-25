@@ -91,6 +91,11 @@ class DbtSeedSourceMapperSpec extends TestHelper {
       )
     }
 
+    it should "depend on its seed, so the tasks reading it are downstream of a skipped seed" in {
+      val entry = sources.find(_.entry.dbtId == "source.shop.shop_raw.raw_customers").get.entry
+      entry.dependsOn shouldBe List("seed.shop.raw_customers")
+    }
+
     "Freshness periods" should "be durations that Freshness reads" in {
       DbtSourceMapper.duration(ai.starlake.dbt.manifest.DbtPeriod(12, "hour")) shouldBe "12 hours"
       DbtSourceMapper.duration(ai.starlake.dbt.manifest.DbtPeriod(1, "day")) shouldBe "1 day"
@@ -120,7 +125,10 @@ class DbtSeedSourceMapperSpec extends TestHelper {
       None,
       (_: java.nio.file.Path, _: String) => Success(List(TableAttribute("id", "long")))
     )
-    private val userLoad = "version: 1\nload:\n  name: raw\n  metadata:\n    format: JSON\n"
+    private val userLoad =
+      "version: 1\nload:\n  name: raw\n  metadata:\n    format: JSON\n    encoding: UTF-16\n" +
+      "    quote: \"'\"\n    escape: \"'\"\n    multiline: true\n    array: true\n" +
+      "    sink:\n      connectionRef: elsewhere\n      partition: [id]\n"
     private val userExternal = "version: 1\nload:\n  name: legacy\n"
 
     private def outputs =
@@ -151,6 +159,13 @@ class DbtSeedSourceMapperSpec extends TestHelper {
       metadata.flatMap(_.writeStrategy).flatMap(_.`type`) shouldBe Some(
         WriteStrategyType.OVERWRITE
       )
+      // the settings that read the CSV, and the sink, are the import's, not the kept domain's
+      metadata.flatMap(_.encoding) shouldBe Some("UTF-8")
+      metadata.flatMap(_.quote) shouldBe Some("\"")
+      metadata.flatMap(_.escape) shouldBe Some("\\")
+      metadata.flatMap(_.multiline) shouldBe Some(false)
+      metadata.flatMap(_.array) shouldBe Some(false)
+      metadata.flatMap(_.sink) shouldBe Some(AllSinks())
       storageHandler.read(new Path(DatasetArea.load, "raw/_config.sl.yml")) shouldBe userLoad
     }
   }

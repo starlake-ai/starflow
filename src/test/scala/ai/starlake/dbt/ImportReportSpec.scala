@@ -81,6 +81,34 @@ class ImportReportSpec extends TestHelper {
       md should not include "`s.ok` depends"
     }
 
+    it should "list the tasks that read a skipped seed through its source" in {
+      import EntryStatus._
+      val viaSource = ImportReport(
+        List(
+          ReportEntry("seed", "seed.p.raw", Some("raw.raw"), Skipped("seed file not found")),
+          ReportEntry(
+            "source",
+            "source.p.raw.raw",
+            Some("raw.raw"),
+            Converted,
+            dependsOn = List("seed.p.raw")
+          ),
+          ReportEntry(
+            "model",
+            "model.p.stg",
+            Some("s.stg"),
+            Converted,
+            dependsOn = List("source.p.raw.raw")
+          )
+        ),
+        Nil,
+        Nil,
+        Nil
+      )
+      viaSource.downstreamOfSkipped should contain("s.stg" -> List("seed.p.raw"))
+      viaSource.runnableTasks shouldBe Nil
+    }
+
     it should "render all of it as Markdown" in {
       val md = report.toMarkdown
       md should startWith("# dbt import report")

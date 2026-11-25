@@ -63,7 +63,8 @@ object DbtSourceMapper {
                 source.uniqueId,
                 Some(relation.render),
                 EntryStatus.Converted,
-                List(s"the load table of seed ${s.uniqueId} declares this table")
+                List(s"the load table of seed ${s.uniqueId} declares this table"),
+                dependsOn = List(s.uniqueId)
               )
             )
           )

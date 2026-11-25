@@ -128,6 +128,28 @@ object DbtSeedMapper {
     }
   }
 
+  /** The settings of a kept domain file that a seed table does not set, so that they apply to it */
+  val inheritedSettings: String =
+    "nullValue, emptyIsNull, options, ack, loader, schedule, dagRef, freshness, archive"
+
+  /** The metadata of a seed table in a kept domain: what reads the CSV and the sink are the
+    * import's, as they are with the domain file that the import writes, whatever the kept file says
+    */
+  private def pinnedFor(
+    metadata: Metadata,
+    directory: String,
+    sink: Option[AllSinks]
+  ): Metadata =
+    metadata.copy(
+      directory = Some(directory),
+      encoding = Some("UTF-8"),
+      quote = Some("\""),
+      escape = Some("\\"),
+      multiline = Some(false),
+      array = Some(false),
+      sink = Some(sink.getOrElse(AllSinks()))
+    )
+
   /** The file name as a regex that matches it only */
   def exactPattern(fileName: String): String =
     fileName.flatMap(c => if (c.isLetterOrDigit || c == '_') c.toString else "\\" + c)
@@ -164,9 +186,7 @@ object DbtSeedMapper {
         val table =
           if (!kept) s.table
           else
-            s.table.copy(metadata =
-              s.table.metadata.map(_.copy(directory = Some(directory), sink = sink))
-            )
+            s.table.copy(metadata = s.table.metadata.map(pinnedFor(_, directory, sink)))
         val csvFolder = if (kept) DatasetArea.stage(domain) else DatasetArea.incoming(domain)
         List(
           FileOutput(
@@ -184,8 +204,9 @@ object DbtSeedMapper {
             .getOrElse("")
         Some(
           s"${domainFile.path} exists and is kept: the seed tables of $domain carry their own metadata " +
-          s"(directory, format, header, separator, write strategy$connection) and their CSVs are copied to " +
-          s"${DatasetArea.stage(domain)}, where starlake load reads them$db"
+          s"(directory, format, header, separator, encoding, quote, escape, multiline, array, write strategy, " +
+          s"sink$connection) and their CSVs are copied to ${DatasetArea.stage(domain)}, where starlake load " +
+          s"reads them; the other settings of the domain file ($inheritedSettings) still apply to them$db"
         )
       } else None
       (domainFile.output.toList ++ tableOutputs, note)

@@ -317,6 +317,10 @@ class DbtImportDuckDbSpec extends TestHelper {
           |    format: JSON
           |    withHeader: false
           |    separator: ";"
+          |    encoding: UTF-16
+          |    quote: "'"
+          |    sink:
+          |      connectionRef: no_such_connection
           |    directory: "{{SL_DATASETS}}/elsewhere/raw"
           |    writeStrategy:
           |      type: APPEND
