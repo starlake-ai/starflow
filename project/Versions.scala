@@ -77,5 +77,5 @@ object Versions {
   // shadows Spark 4.3's Kafka source with NoSuchMethodError.
   val starlakeStreaming = "1.5.0"
   val sparkRedshift =
-    "7.0.0" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
+    "7.0.1" // Spark 4 build of the ai.starlake fork, resolved from its GitHub release
 }
