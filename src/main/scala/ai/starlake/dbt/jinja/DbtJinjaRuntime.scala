@@ -324,11 +324,6 @@ final class DbtExceptions {
   }
 }
 
-/** A value that dbt only has with the whole graph or the warehouse, such as `graph` */
-final class DbtWarehouseOnly(name: String) {
-  def touch(): Unit = DbtRenderState.get.skipWith(s"needs the warehouse at import ($name)")
-}
-
 /** Python string and dict methods that Jinjava lacks, the calls of the macros of a package
   * namespace (`dbt_utils.star(...)`), and the dbt objects above
   */
@@ -346,10 +341,9 @@ final class DbtElResolver extends ELResolver {
       case s: String => DbtElResolver.stringMethod(s, name, args)
       case m: util.Map[_, _] =>
         DbtElResolver.mapMethod(m.asInstanceOf[util.Map[Object, Object]], name, args)
-      case a: DbtAdapter       => a.invoke(name, args)
-      case e: DbtExceptions    => e.invoke(name, args)
-      case w: DbtWarehouseOnly => w.touch(); Some("")
-      case _                   => None
+      case a: DbtAdapter    => a.invoke(name, args)
+      case e: DbtExceptions => e.invoke(name, args)
+      case _                => None
     }
     result match {
       case Some(value) =>
@@ -360,10 +354,6 @@ final class DbtElResolver extends ELResolver {
   }
 
   override def getValue(context: ELContext, base: Object, property: Object): Object = base match {
-    case w: DbtWarehouseOnly =>
-      w.touch()
-      context.setPropertyResolved(true)
-      new util.LinkedHashMap[String, Object]()
     case t: DbtTable if DbtElResolver.isName(property) =>
       // a list: Jinjava's list resolver does not read its properties
       val value: Option[Object] = String.valueOf(property) match {

@@ -335,7 +335,7 @@ final class DbtJinja(
     b.put("run_started_at", new PyishDate(ctx.now))
     b.put("adapter", adapter)
     b.put("exceptions", new DbtExceptions)
-    b.put("graph", new DbtWarehouseOnly("graph"))
+    b.put("graph", JinjaUtils.toJava(manifest.graph))
     b.put("project_name", root)
     packageOrder.filterNot(internalPackages.contains).foreach(p => b.put(p, macrosByPackage(p)))
     b.put("dbt", dbtNamespace)

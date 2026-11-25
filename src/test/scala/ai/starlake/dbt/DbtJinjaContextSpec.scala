@@ -100,9 +100,6 @@ class DbtJinjaContextSpec extends AnyFlatSpec with Matchers {
     skipped(
       "{% set cols = adapter.get_columns_in_relation(this) %}"
     ) shouldBe "needs the warehouse at import (adapter.get_columns_in_relation)"
-    skipped(
-      "{% for n in graph.nodes.values() %}{% endfor %}"
-    ) shouldBe "needs the warehouse at import (graph)"
   }
 
   "exceptions" should "skip on raise_compiler_error and report warn" in {

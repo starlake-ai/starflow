@@ -71,7 +71,13 @@ object ManifestReader {
         List("exposures", "metrics", "semantic_models", "saved_queries", "unit_tests").flatMap {
           kind => root.path(kind).fieldNames().asScala.map(kind -> _)
         },
-      manifestPath = path
+      manifestPath = path,
+      graph = List("nodes", "sources", "macros", "exposures", "metrics").map { section =>
+        section -> (DbtJson.toScala(root.path(section)) match {
+          case m: Map[_, _] => m.asInstanceOf[Map[String, Any]]
+          case _            => Map.empty[String, Any]
+        })
+      }.toMap
     )
   }
 
