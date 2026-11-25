@@ -411,10 +411,12 @@ class BigQueryAutoTask(
                                     .mkString("_")
                                 logger.info(s"Processing shard $shard")
                                 // We update the schema for each shard in case the schema evolved (each shard => different table)
+                                // under the name saveDF writes it to
                                 updateBigQueryTableSchema(
                                   incomingSparkSchema = sparkSchema,
                                   createIfAbsent = true,
-                                  sharding = Some(shard)
+                                  sharding =
+                                    Some(StringUtils.replaceNonAlphanumericWithUnderscore(shard))
                                 )
                                 val shardHead = shardColumns.head
                                 val shardTail = shardColumns.tail
@@ -460,73 +462,56 @@ class BigQueryAutoTask(
                     presqlResultError match {
                       case Some(fail) => fail
                       case None       => // presql succeeded or empty
-                        // We are sharding the data ((Multi partitioning in BigQuery) using native bigquery job
-                        // TODO Check that we are in the second step of the load
-                        val shardsQuery =
-                          "SELECT DISTINCT " +
-                          shardColumns.mkString(", ") +
-                          " FROM (" + taskDesc.sql + ")"
+                        // We are sharding the data (multi partitioning in BigQuery) using native
+                        // bigquery jobs: one table per distinct value of the shard columns, each
+                        // written from the rendered SELECT of the task filtered on its value
+                        val select = sqlSubst()
                         val res = bqNativeJob(
                           config,
-                          shardsQuery
+                          BigQueryAutoTask.shardValuesQuery(shardColumns, select)
                         ).runBigQueryJob(dryRun = dryRun, pageSize = Some(1000))
 
-                        // We get all the distinct values for the shard columns
+                        // The distinct values of the shard columns, as strings, None for NULL
                         val uniqueValues =
                           res.map { bqRes =>
-                            val uniqueValues =
-                              bqRes.tableResult
-                                .map { rows =>
-                                  val values = rows.iterateAll().asScala.toList.map { row =>
-                                    row
-                                      .iterator()
-                                      .asScala
-                                      .toList
-                                      .map(x =>
-                                        Option(x.getValue())
-                                          .map(it =>
-                                            StringUtils
-                                              .replaceNonAlphanumericWithUnderscore(it.toString)
-                                          )
-                                          .getOrElse("null")
-                                      )
+                            bqRes.tableResult
+                              .map { rows =>
+                                rows.iterateAll().asScala.toList.map { row =>
+                                  row.iterator().asScala.toList.map { value =>
+                                    if (value.isNull) None else Some(value.getStringValue)
                                   }
-                                  values
                                 }
-                                .getOrElse(Nil)
-                            uniqueValues
+                              }
+                              .getOrElse(Nil)
                           }
                         val runResult =
                           uniqueValues match {
                             case Success(values) =>
-                              val allResult = values.map { shardValue =>
-                                logger.info(s"Processing shard $shardValue")
-                                val shardHead = shardColumns.head
-                                val sharValueHead = shardValue.head
-                                val shardValueTail = shardValue.tail
-                                val shardTail = shardColumns.tail
-                                val conditions = shardTail.zipWithIndex
-                                  .map { case (shardColumn, index) =>
-                                    s"$shardColumn = '${shardValueTail(index)}'"
-                                  }
-                                  .foldLeft(s"$shardHead = '$sharValueHead'")(_ + " AND " + _)
-                                val shardSql = s"SELECT * FROM (${taskDesc.sql}) WHERE $conditions"
-                                // We get the table names from the shard values and
-                                // we update the schema for each shard in case the schema evolved (each shard => different table)
+                              val allResult = values.map { shardValues =>
+                                val suffix = BigQueryAutoTask.shardSuffix(shardValues)
+                                logger.info(s"Processing shard $suffix")
+                                // We update the schema for each shard in case the schema evolved (each shard => different table)
                                 // The code below means that we do not support schema evolution in native mode since we assume that
                                 // the incoming schema is provided by the caller
                                 updateBigQueryTableSchema(
                                   incomingSparkSchema = sparkSchema,
                                   createIfAbsent = true,
-                                  sharding = Some(shardValue.mkString("_"))
+                                  sharding = Some(suffix)
                                 )
-                                val resultApplyCLS = saveNative(config, shardSql)
+                                val result = saveNativeShard(
+                                  config,
+                                  BigQueryAutoTask.shardQuery(shardColumns, shardValues, select),
+                                  suffix
+                                )
                                 logger.info(
-                                  s"Finished processing shard $shardValue with result $resultApplyCLS"
+                                  s"Finished processing shard $suffix with result $result"
                                 )
-                                resultApplyCLS
+                                result
                               }
-                              allResult.find(_.isFailure).getOrElse(allResult.head)
+                              allResult
+                                .find(_.isFailure)
+                                .orElse(allResult.lastOption)
+                                .getOrElse(Success(BigQueryJobResult(None, 0L, None)))
                             case Failure(e) =>
                               Failure(e)
                           }
@@ -859,6 +844,26 @@ class BigQueryAutoTask(
     }
   }
 
+  /** Writes the rows of one shard to its table, `<table>_<suffix>`, with the write disposition of
+    * the task
+    */
+  private def saveNativeShard(
+    config: BigQueryLoadConfig,
+    shardSql: String,
+    suffix: String
+  ): Try[JobResult] = {
+    val shardTableId = BigQueryJobBase.extractProjectDatasetAndTable(
+      taskDesc.getDatabase(),
+      targetTableId.getDataset,
+      taskDesc.table + "_" + suffix,
+      sinkOptions.get("projectId").orElse(settings.appConfig.getDefaultDatabase())
+    )
+    val bqJob = bqNativeJob(config.copy(outputTableId = Some(shardTableId)), shardSql)
+    val result = bqJob.runAndSinkAsTable(queryJobTimeoutMs = taskDesc.taskTimeoutMs)
+    if (result.isSuccess) markTargetWritten()
+    result.flatMap(job => bqJob.applyRLSAndCLS().map(_ => job))
+  }
+
   private def saveDF(source: DataFrame, shard: Option[String]): Try[JobResult] = {
     val sparkTargetTableId = BigQueryJobBase.extractProjectDatasetAndTable(
       this.taskDesc.getDatabase(),
@@ -1099,6 +1104,46 @@ class BigQueryAutoTask(
 }
 
 object BigQueryAutoTask {
+
+  /** The SELECT of a task, without its trailing semicolon, to nest in another query */
+  private def nestable(select: String): String = {
+    val trimmed = select.trim
+    if (trimmed.endsWith(";")) trimmed.dropRight(1).trim else trimmed
+  }
+
+  /** The distinct values of the shard columns in the rows of the SELECT, read as strings: the shard
+    * queries compare them as strings, whatever the type of each column
+    */
+  def shardValuesQuery(shardColumns: List[String], select: String): String =
+    shardColumns
+      .map(c => s"CAST($c AS STRING) AS $c")
+      .mkString("SELECT DISTINCT ", ", ", s" FROM (${nestable(select)})")
+
+  /** The rows of the SELECT whose shard columns hold the values read by [[shardValuesQuery]], None
+    * standing for NULL
+    */
+  def shardQuery(
+    shardColumns: List[String],
+    shardValues: List[Option[String]],
+    select: String
+  ): String = {
+    val conditions = shardColumns.zip(shardValues).map {
+      case (column, Some(value)) => s"CAST($column AS STRING) = ${stringLiteral(value)}"
+      case (column, None)        => s"$column IS NULL"
+    }
+    s"SELECT * FROM (${nestable(select)}) WHERE ${conditions.mkString(" AND ")}"
+  }
+
+  /** The suffix of the table of a shard: the values joined by `_`, as on the Spark path, `null` for
+    * NULL, with any character that is not a letter or a digit replaced by `_`
+    */
+  def shardSuffix(shardValues: List[Option[String]]): String =
+    StringUtils.replaceNonAlphanumericWithUnderscore(
+      shardValues.map(_.getOrElse("null")).mkString("_")
+    )
+
+  private def stringLiteral(value: String): String =
+    "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
   private val CreateTablePattern =
     """(?isU)^CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:`[^`]+`|[\w\-]+)(?:\s*\.\s*(?:`[^`]+`|[\w\-]+))*)""".r.unanchored
