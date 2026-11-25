@@ -1,7 +1,18 @@
+{# A SELECT that reads its target must give the rows it gave before the DELETE. Trino has no
+   temporary table: the rows go to a table of the domain, SL_INCOMING_<table>, dropped at the end
+   (stageIncoming), except on a data branch, where the SELECT runs in each statement, as before #}
+{% set incomingTable = tableDomain + '.SL_INCOMING_' + tableName %}
+{% if stageIncoming %}
+DROP TABLE IF EXISTS {{ incomingTable }};
+CREATE TABLE {{ incomingTable }} AS {{ selectStatement }};
+{% set incoming = incomingTable %}
+{% else %}
+{% set incoming = '(' + selectStatement + ')' %}
+{% endif %}
 
 DELETE FROM {{ tableFullName }}
 WHERE EXISTS (
-    SELECT 1 FROM ({{ selectStatement }}) AS SL_INCOMING
+    SELECT 1 FROM {{ incoming }} AS SL_INCOMING
     WHERE {{ renderStrategyKeyJoinCondition(tableFullName, 'SL_INCOMING', strategyKey) }}
 );
 
@@ -9,10 +20,14 @@ WHERE EXISTS (
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }})
 SELECT {{ tableColumnsCsv }} FROM (
   SELECT {{ tableColumnsCsv }}, ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }} {% if strategyTimestamp %}ORDER BY {{ strategyTimestamp }} DESC{% endif %}) AS SL_SEQ
-  FROM ({{ selectStatement }}) AS TMP
+  FROM {{ incoming }} AS TMP
 ) AS SL_INCOMING WHERE SL_SEQ = 1;
 
 {% else %}
 INSERT INTO {{ tableFullName }}({{ tableColumnsCsv }})
-{{ selectStatement }}
+SELECT {{ tableColumnsCsv }} FROM {{ incoming }} AS SL_INCOMING;
+{% endif %}
+
+{% if stageIncoming %}
+DROP TABLE IF EXISTS {{ incomingTable }};
 {% endif %}

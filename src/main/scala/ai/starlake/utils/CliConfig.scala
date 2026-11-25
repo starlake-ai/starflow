@@ -64,30 +64,36 @@ trait CliConfig[T] extends CommandConfig {
         ""
 
     case class MarkdownOption(
-      name: String,
-      value: String,
+      parameter: String,
       description: String,
-      required: String,
-      unbounded: String
+      cardinality: String
     ) {
       def toMap(): Map[String, String] =
         Map(
-          "name"        -> name,
-          "value"       -> value,
+          "parameter"   -> parameter,
           "description" -> description,
-          "required"    -> required,
-          "unbounded"   -> unbounded
+          "cardinality" -> cardinality
         )
     }
     def option(opt: OptionDef[_, T]): MarkdownOption = {
-      MarkdownOption(
-        opt.name,
-        opt.valueName.getOrElse("<value>"),
-        opt.desc.replaceAll("\n", "<br />"),
-        if (opt.getMinOccurs > 0) "Required" else "Optional",
-        if (opt.getMaxOccurs == Int.MaxValue) ", Unbounded" else ""
-      )
+      val positional = scopt.OptionDefInfo.isArgument(opt)
+      // a positional argument is its value; a flag, as opt[Unit], takes no value
+      val parameter =
+        if (positional) s"`${opt.valueName.getOrElse(s"<${opt.name}>")}`"
+        else if (scopt.OptionDefInfo.isFlag(opt)) s"--${opt.name}"
+        else s"--${opt.name} `${opt.valueName.getOrElse("<value>")}`"
+      val cardinality =
+        List(
+          Some(if (opt.getMinOccurs > 0) "Required" else "Optional"),
+          Option.when(opt.getMaxOccurs == Int.MaxValue)("Unbounded"),
+          Option.when(positional)("Positional")
+        ).flatten.mkString(", ")
+      MarkdownOption(parameter, opt.desc.replaceAll("\n", "<br />"), cardinality)
     }
+
+    // Positional arguments first, in the order they are typed, then the options by name
+    val (arguments, named) = options.partition(scopt.OptionDefInfo.isArgument)
+    val sortedOptions = arguments ++ named.sortBy(_.name.toLowerCase)
 
     // Derive frontmatter description from pageDescription or first sentence of note
     val frontDescription = if (pageDescription.nonEmpty) {
@@ -115,7 +121,7 @@ trait CliConfig[T] extends CommandConfig {
         "description"      -> description,
         "frontDescription" -> frontDescription,
         "frontKeywords"    -> frontKeywords.mkString(", "),
-        "options"          -> options.map(opt => option(opt).toMap().asJava).toArray,
+        "options"          -> sortedOptions.map(opt => option(opt).toMap().asJava).toArray,
         "index"            -> (pageIndex * 10).toString,
         "extra"            -> extra
       )

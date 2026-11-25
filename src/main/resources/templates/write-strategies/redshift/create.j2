@@ -11,19 +11,16 @@
 
 {% elif strategyOn == 'SOURCE_AND_TARGET' and strategyTimestamp == '' %}
 
-CREATE OR REPLACE VIEW #SL_INCOMING AS {{ selectStatement }};
 {{ createTable }} AS
 SELECT {{ tableColumnsCsv }}
-FROM #SL_INCOMING
+FROM ({{ selectStatement }}) AS SL_INCOMING
 QUALIFY ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }} ORDER BY 0) = 1;
 {% else %} {# strategyOn == 'SOURCE_AND_TARGET' and timestamp is present #}
 
-CREATE OR REPLACE VIEW #SL_INCOMING AS {{ selectStatement }};
-{{ createTable }} AS 
+{{ createTable }} AS
 SELECT {{ tableColumnsCsv }}
-FROM #SL_INCOMING
+FROM ({{ selectStatement }}) AS SL_INCOMING
 QUALIFY ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }} ORDER BY {{ strategyTimestamp }} DESC) = 1;
-""".stripMargin
 
 {%  endif %}
 
@@ -33,5 +30,3 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }} ORDER BY {{ strateg
 {% if not strategyEndTsSelected %}ALTER TABLE {{ tableFullName }} ADD COLUMN {{ strategyEndTs }} {{ strategyEndTsType }};{% endif %}
 {% endif %}
 
-
-DROP VIEW IF EXISTS #SL_INCOMING;

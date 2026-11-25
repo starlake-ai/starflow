@@ -1,17 +1,18 @@
-
-MERGE INTO {{ tableFullName }} AS T
+{# A single MERGE reads its source once: a SELECT that reads its target needs no staging. The
+   update and insert expressions name the incoming rows SL_INCOMING #}
+MERGE INTO {{ tableFullName }} AS SL_EXISTING
 USING (
   {% if strategyOn == 'SOURCE_AND_TARGET' %}
   SELECT * FROM (
     SELECT *, ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }} {% if strategyTimestamp %}ORDER BY {{ strategyTimestamp }} DESC{% endif %}) AS SL_SEQ
     FROM ({{ selectStatement }}) AS TMP
-  ) AS SL_INCOMING WHERE SL_SEQ = 1
+  ) AS SL_DEDUP WHERE SL_SEQ = 1
   {% else %}
   SELECT * FROM ({{ selectStatement }}) AS SL_INCOMING_SIMPLE
   {% endif %}
-) AS S
-ON {{ renderStrategyKeyJoinCondition('T', 'S', strategyKey) }}
+) AS SL_INCOMING
+ON {{ renderStrategyKeyJoinCondition('SL_EXISTING', 'SL_INCOMING', strategyKey) }}
 WHEN MATCHED THEN
-  UPDATE SET {{ tableUpdateSetExpression }}
+  UPDATE {{ tableUpdateSetExpression }}
 WHEN NOT MATCHED THEN
   {{ tableInsert }}
