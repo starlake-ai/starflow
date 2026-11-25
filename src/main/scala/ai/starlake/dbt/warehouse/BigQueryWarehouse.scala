@@ -12,6 +12,8 @@ import com.google.cloud.bigquery.{
   TableId
 }
 
+import java.time.{Instant, LocalDate, LocalDateTime, OffsetDateTime, ZoneOffset}
+import java.time.temporal.ChronoUnit
 import java.util
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -65,20 +67,50 @@ final class BigQueryWarehouse(connectionName: String)(implicit settings: Setting
 
 object BigQueryWarehouse {
 
-  /** BigQuery gives every scalar as a string: INT64, FLOAT64 and BOOL are typed, the rest (dates,
-    * timestamps, numerics) stays text
+  /** BigQuery gives every scalar as a string; converted to what dbt-bigquery renders, and to what
+    * the JDBC path gives through [[DbtResults.value]]: INT64 Long, FLOAT64 Double, BOOL Boolean,
+    * NUMERIC and BIGNUMERIC BigDecimal, TIMESTAMP, DATETIME and DATE as ISO text, REPEATED as a
+    * list and RECORD as a map by field name. The rest (TIME, STRING...) stays text
     */
   def value(field: Field, v: FieldValue): Object =
     if (v == null || v.isNull) null
     else
       v.getAttribute match {
-        case FieldValue.Attribute.PRIMITIVE =>
-          Option(field.getType).map(_.getStandardType) match {
-            case Some(StandardSQLTypeName.INT64)   => java.lang.Long.valueOf(v.getLongValue)
-            case Some(StandardSQLTypeName.FLOAT64) => java.lang.Double.valueOf(v.getDoubleValue)
-            case Some(StandardSQLTypeName.BOOL)    => java.lang.Boolean.valueOf(v.getBooleanValue)
-            case _                                 => DbtResults.value(v.getStringValue)
-          }
-        case _ => String.valueOf(v.getValue)
+        case FieldValue.Attribute.REPEATED =>
+          val items = new util.ArrayList[Object]()
+          v.getRepeatedValue.asScala.foreach(i => items.add(scalarOrRecord(field, i)))
+          items
+        case _ => scalarOrRecord(field, v)
+      }
+
+  private def scalarOrRecord(field: Field, v: FieldValue): Object =
+    if (v == null || v.isNull) null
+    else if (v.getAttribute == FieldValue.Attribute.RECORD) {
+      val subs = Option(field.getSubFields).map(_.asScala.toList).getOrElse(Nil)
+      val map = new util.LinkedHashMap[String, Object]()
+      subs.zipWithIndex.foreach { case (f, i) =>
+        map.put(f.getName, value(f, v.getRecordValue.get(i)))
+      }
+      map
+    } else
+      Option(field.getType).map(_.getStandardType) match {
+        case Some(StandardSQLTypeName.INT64)   => java.lang.Long.valueOf(v.getLongValue)
+        case Some(StandardSQLTypeName.FLOAT64) => java.lang.Double.valueOf(v.getDoubleValue)
+        case Some(StandardSQLTypeName.BOOL)    => java.lang.Boolean.valueOf(v.getBooleanValue)
+        case Some(StandardSQLTypeName.NUMERIC) | Some(StandardSQLTypeName.BIGNUMERIC) =>
+          new java.math.BigDecimal(v.getStringValue)
+        case Some(StandardSQLTypeName.TIMESTAMP) =>
+          val micros = v.getTimestampValue
+          DbtResults.value(
+            OffsetDateTime.ofInstant(
+              Instant.EPOCH.plus(micros, ChronoUnit.MICROS),
+              ZoneOffset.UTC
+            )
+          )
+        case Some(StandardSQLTypeName.DATETIME) =>
+          DbtResults.value(LocalDateTime.parse(v.getStringValue))
+        case Some(StandardSQLTypeName.DATE) =>
+          DbtResults.value(LocalDate.parse(v.getStringValue))
+        case _ => DbtResults.value(v.getStringValue)
       }
 }

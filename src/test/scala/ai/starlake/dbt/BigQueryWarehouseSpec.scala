@@ -22,11 +22,41 @@ class BigQueryWarehouseSpec extends TestHelper {
     BigQueryWarehouse.value(field(BOOL), prim("true")) shouldBe java.lang.Boolean.TRUE
     BigQueryWarehouse.value(field(STRING), prim("abc")) shouldBe "abc"
     BigQueryWarehouse.value(field(DATE), prim("2024-01-31")) shouldBe "2024-01-31"
-    BigQueryWarehouse.value(field(TIMESTAMP), prim("1.7E9")) shouldBe "1.7E9"
+    BigQueryWarehouse.value(field(TIMESTAMP), prim("1.7064E9")) shouldBe "2024-01-28 00:00:00"
+    BigQueryWarehouse.value(field(TIMESTAMP), prim("1.706486400123456E9")) shouldBe
+    "2024-01-29 00:00:00.123456"
+    BigQueryWarehouse.value(field(DATETIME), prim("2024-01-31T10:20:30")) shouldBe
+    "2024-01-31 10:20:30"
+    BigQueryWarehouse.value(field(TIME), prim("10:20:30")) shouldBe "10:20:30"
+    BigQueryWarehouse.value(field(NUMERIC), prim("12.50")) shouldBe new java.math.BigDecimal(
+      "12.50"
+    )
+    BigQueryWarehouse.value(field(BIGNUMERIC), prim("1")) shouldBe new java.math.BigDecimal("1")
     BigQueryWarehouse.value(
       field(INT64),
       FieldValue.of(FieldValue.Attribute.PRIMITIVE, null)
     ) shouldBe null
+  }
+
+  it should "convert repeated and record values" in {
+    import StandardSQLTypeName._
+    import scala.jdk.CollectionConverters._
+    val rep = Field.newBuilder("c", INT64).setMode(Field.Mode.REPEATED).build()
+    val list = FieldValue.of(FieldValue.Attribute.REPEATED, java.util.List.of(prim("1"), prim("2")))
+    BigQueryWarehouse.value(rep, list) shouldBe java.util.List.of(1L, 2L)
+    val rec = Field.of("c", StandardSQLTypeName.STRUCT, Field.of("a", INT64), Field.of("b", STRING))
+    val recValue = FieldValue.of(
+      FieldValue.Attribute.RECORD,
+      com.google.cloud.bigquery.FieldValueList.of(
+        java.util.List.of(prim("7"), prim("x")),
+        com.google.cloud.bigquery.FieldList.of(Field.of("a", INT64), Field.of("b", STRING))
+      )
+    )
+    BigQueryWarehouse
+      .value(rec, recValue)
+      .asInstanceOf[java.util.Map[String, Object]]
+      .asScala shouldBe
+    Map("a" -> 7L, "b" -> "x")
   }
 
   new WithSettings() {
