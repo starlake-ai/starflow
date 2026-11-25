@@ -48,7 +48,7 @@ fi
 #      to be installed yet, not that the user opted out - so it must be left
 #      completely UNSET, letting Setup.java's own default-true provision it,
 #      exactly like a fresh install would.
-_LEGACY_ENABLE_CATEGORIES=" ENABLE_BIGQUERY ENABLE_AZURE ENABLE_SNOWFLAKE ENABLE_REDSHIFT ENABLE_POSTGRESQL ENABLE_DUCKDB ENABLE_KAFKA ENABLE_MARIA ENABLE_TRINODB "
+_LEGACY_ENABLE_CATEGORIES=" ENABLE_BIGQUERY ENABLE_AZURE ENABLE_SNOWFLAKE ENABLE_REDSHIFT ENABLE_POSTGRESQL ENABLE_DUCKDB ENABLE_KAFKA ENABLE_TRINODB "
 _infer_one_enable_flag() {
   local var_name="$1"; shift
   local old_var_name="OLD_${var_name}"
@@ -79,24 +79,14 @@ infer_enable_flags_from_deps() {
   for _v in ENABLE_BIGQUERY ENABLE_AZURE ENABLE_SNOWFLAKE ENABLE_REDSHIFT ENABLE_POSTGRESQL ENABLE_TRINODB ENABLE_KAFKA ENABLE_DUCKDB ENABLE_FLIGHTSQL; do
     eval "OLD_$_v=\"\${$_v:-}\""
   done
-  # ENABLE_MARIA is the odd one out: the *file key* versions.sh persists is
-  # ENABLE_MARIADB (generateVersions()'s own naming, verified back to v1.6.0),
-  # but the *runtime key* Setup.java reads via envIsTrueWithDefaultTrue is
-  # ENABLE_MARIA - so the old recorded value must be read from ENABLE_MARIADB,
-  # not ENABLE_MARIA (which was never set by sourcing the old file at all).
-  OLD_ENABLE_MARIA="${ENABLE_MARIADB:-}"
   export ENABLE_ALL=false
-  # NOTE: Setup.java's field is ENABLE_MARIADB but the env var it actually
-  # reads is "ENABLE_MARIA" (envIsTrueWithDefaultTrue("ENABLE_MARIA")) - a
-  # pre-existing field/env-var name mismatch in Setup.java itself. Every
-  # other flag below has a matching field/env-var name (verified against
-  # every `envIsTrueWithDefaultTrue("ENABLE_...")` call in Setup.java).
+  # Every flag below has a matching Setup.java field/env-var name (verified
+  # against every `envIsTrueWithDefaultTrue("ENABLE_...")` call in Setup.java).
   _infer_one_enable_flag ENABLE_BIGQUERY "spark-*bigquery*.jar"
   _infer_one_enable_flag ENABLE_AZURE "hadoop-azure-*.jar"
   _infer_one_enable_flag ENABLE_SNOWFLAKE "snowflake-jdbc-*.jar" "spark-snowflake_*.jar"
   _infer_one_enable_flag ENABLE_REDSHIFT "redshift-jdbc42-*.jar" "spark-redshift_*.jar"
   _infer_one_enable_flag ENABLE_POSTGRESQL "postgresql-*.jar"
-  _infer_one_enable_flag ENABLE_MARIA "mariadb-java-client-*.jar"
   _infer_one_enable_flag ENABLE_TRINODB "trino-jdbc-*.jar"
   _infer_one_enable_flag ENABLE_KAFKA "kafka-avro-serializer-*.jar" "kafka-schema-registry-client-*.jar"
   _infer_one_enable_flag ENABLE_DUCKDB "duckdb_jdbc-*.jar"

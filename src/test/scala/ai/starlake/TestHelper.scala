@@ -125,13 +125,13 @@ trait TestHelper
        |      "quoteIdentifiers": false
        |    }
        |  }
-       |connections.test-mariadb {
+       |connections.test-mysql {
        |    type = "jdbc"
        |    options {
-       |      "url": "${TestHelper.mariadbContainer.jdbcUrl}"
+       |      "url": "${TestHelper.mysqlContainer.jdbcUrl}"
        |      "user": "test"
        |      "password": "test"
-       |      "driver": "org.mariadb.jdbc.Driver"
+       |      "driver": "com.mysql.cj.jdbc.Driver"
        |      "quoteIdentifiers": false
        |    }
        |  }
@@ -593,19 +593,13 @@ trait TestHelper
 }
 
 object TestHelper extends LazyLogging {
-  lazy val mariadbContainer: MariaDBContainer = {
-    val dockerImage = "mariadb"
-    val dockerTag = "latest"
-    val dockerImageName = DockerImageName.parse(s"$dockerImage:$dockerTag")
-    val initScriptParam =
-      JdbcDatabaseContainer.CommonParams()
-    val container = MariaDBContainer
+  lazy val mysqlContainer: MySQLContainer = {
+    val container = MySQLContainer
       .Def(
-        dockerImageName,
-        dbName = "starlake",
-        dbUsername = "test",
-        dbPassword = "test",
-        commonJdbcParams = initScriptParam
+        DockerImageName.parse("mysql:8.4"),
+        databaseName = "starlake",
+        username = "test",
+        password = "test"
       )
       .createContainer()
     container.start()

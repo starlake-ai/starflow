@@ -137,9 +137,9 @@ class ImplicitCommitsSpec extends TestHelper {
     commits("UPDATE t SET a = 1 # don't\n; TRUNCATE t2", truncate, "mysql") shouldBe true
     // A carriage return does not end a MySQL comment
     commits("SELECT 1 -- x\r'\n; TRUNCATE t; SELECT 'z' -- '\n", truncate, "mysql") shouldBe true
-    // MySQL and MariaDB run the content of an executable comment
+    // MySQL runs the content of an executable comment, and reads /*M! ... */ as a comment
     commits("/*!40101 TRUNCATE TABLE t */", truncate, "mysql") shouldBe true
-    commits("/*M!100100 TRUNCATE TABLE t */", truncate, "mariadb") shouldBe true
+    commits("/*M!100100 TRUNCATE TABLE t */", truncate, "mysql") shouldBe false
   }
 
   it should "be read with the quote and comment rules of Snowflake, SQL Server and H2" in {
@@ -411,7 +411,7 @@ class ImplicitCommitsSpec extends TestHelper {
     // TRUNCATE is a DML statement on Snowflake
     implicitCommits("snowflake").get should
     (contain allOf ("CREATE", "CALL", "EXECUTE") and not contain "TRUNCATE")
-    for (engine <- List("mysql", "mariadb", "h2"))
+    for (engine <- List("mysql", "h2"))
       withClue(engine) {
         implicitCommits(engine).get should contain allOf ("TRUNCATE", "CREATE", "CALL", "EXECUTE")
       }
