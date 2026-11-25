@@ -122,6 +122,10 @@ class JdbcAutoTask(
           fullTableName,
           sinkConnection.getJdbcEngineName().toString
         )
+        if (exists && taskDesc._auditTableName.isDefined)
+          evolveAuditTable(jdbcSinkEngineName.toString, jdbcTargetColumns(conn)) { sql =>
+            JdbcDbUtils.executeUpdate(sql, conn).get
+          }
         exists
       }
     if (!exists && taskDesc._auditTableName.isDefined)

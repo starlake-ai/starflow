@@ -535,8 +535,14 @@ class SparkAutoTask(
             val exists = SparkUtils.tableExists(session = session, tableName = fullTableName)
             if (!exists && taskDesc._auditTableName.isDefined) {
               createAuditTable()
-            } else
+            } else {
+              if (exists && taskDesc._auditTableName.isDefined)
+                evolveAuditTable(
+                  "spark",
+                  Try(session.table(fullTableName).columns.toList).getOrElse(Nil)
+                )(sql => SparkUtils.sql(session, sql))
               exists
+            }
 
           case _: BigQuerySink =>
             val bqJob = TransformContext.createBigQueryTask(delegateContext())
