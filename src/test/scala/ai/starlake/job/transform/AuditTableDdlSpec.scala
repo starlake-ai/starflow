@@ -46,6 +46,40 @@ class AuditTableDdlSpec extends TestHelper {
     "ALTER TABLE audit.audit ADD COLUMN SCHEDULED_DATE TIMESTAMP"
   }
 
+  "AuditTableDdl.evolve" should "try a table once, even when its ALTER TABLE fails" in {
+    AuditTableDdl.forgetChecked()
+    val ddl = "CREATE TABLE IF NOT EXISTS {{table}} (JOBID TEXT, SCHEDULED_DATE TIMESTAMP)"
+    var runs = 0
+    val failing: String => Unit = { _ =>
+      runs += 1
+      throw new IllegalStateException("permission denied")
+    }
+    an[IllegalStateException] should be thrownBy
+    AuditTableDdl.evolve("cnx|audit.audit", "postgresql", "audit.audit", ddl, List("jobid"))(
+      failing
+    )
+    AuditTableDdl.evolve("cnx|audit.audit", "postgresql", "audit.audit", ddl, List("jobid"))(
+      failing
+    ) shouldBe Nil
+    runs shouldBe 1
+    AuditTableDdl.forgetChecked()
+  }
+
+  it should "check each connection and table separately" in {
+    AuditTableDdl.forgetChecked()
+    val ddl = "CREATE TABLE IF NOT EXISTS {{table}} (JOBID TEXT, SCHEDULED_DATE TIMESTAMP)"
+    val statements = List.newBuilder[String]
+    def evolve(key: String) =
+      AuditTableDdl.evolve(key, "duckdb", "audit.audit", ddl, List("jobid"))(statements += _)
+    evolve("a|audit.audit") shouldBe List("SCHEDULED_DATE")
+    evolve("a|audit.audit") shouldBe Nil
+    evolve("b|audit.audit") shouldBe List("SCHEDULED_DATE")
+    statements.result() shouldBe List.fill(2)(
+      "ALTER TABLE audit.audit ADD COLUMN SCHEDULED_DATE TIMESTAMP"
+    )
+    AuditTableDdl.forgetChecked()
+  }
+
   new WithSettings() {
     "Every audit table DDL of every engine" should "be readable" in {
       val engines = settings.appConfig.jdbcEngines

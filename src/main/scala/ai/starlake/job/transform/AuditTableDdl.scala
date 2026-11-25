@@ -68,8 +68,9 @@ object AuditTableDdl {
   private val checked = ConcurrentHashMap.newKeySet[String]()
 
   /** Adds the missing columns of an existing audit table, once per connection and table in this
-    * JVM. A failure is returned for the caller to log: the write that follows then fails with the
-    * missing column error, which names the column.
+    * JVM, whatever the outcome: a failure (a user without the ALTER privilege) is not retried on
+    * every audit write. It is thrown for the caller to log, and the write that follows then fails
+    * with the missing column error, which names the column.
     *
     * @param tableColumns
     *   the columns of the existing table, read only when the table was not checked yet
@@ -84,15 +85,16 @@ object AuditTableDdl {
     tableColumns: => List[String]
   )(run: String => Unit): List[String] =
     if (checked.contains(key)) Nil
-    else {
-      val added = missing(columns(createSql), tableColumns).map { case (column, typ) =>
-        val sql = addColumnSql(engine, table, column, typ)
-        run(sql)
-        column
+    else
+      // Parallel loads write their audit rows at once: the others wait for the columns
+      synchronized {
+        if (!checked.add(key)) Nil
+        else
+          missing(columns(createSql), tableColumns).map { case (column, typ) =>
+            run(addColumnSql(engine, table, column, typ))
+            column
+          }
       }
-      checked.add(key)
-      added
-    }
 
   /** Tests that drop and recreate audit tables in the same JVM */
   private[starlake] def forgetChecked(): Unit = checked.clear()
