@@ -73,9 +73,23 @@ class DbtModelMapperSpec extends TestHelper {
       t.sink.flatMap(_.materializedView) shouldBe Some(Materialization.VIEW)
     }
 
+    "The reserved CTE names" should "all be rejected by the SQL parser, so the list follows its upgrades" in {
+      DbtModelMapper.reservedCteNames.foreach { n =>
+        withClue(n) {
+          Try(
+            ai.starlake.sql.SqlParser.parseQuietly(s"with $n as (select 1) select * from $n")
+          ).isFailure shouldBe true
+        }
+      }
+    }
+
+    private val unparseableNote =
+      "Starlake's SQL parser cannot read this SQL: rewrite it, or set parseSQL: false and make the SQL write the table itself"
+
+    private def mapSql(sql: String, config: Map[String, Any] = Map.empty) =
+      DbtModelMapper.map(DbtFixtures.model("synthetic", config, sql), ctx).toOption.get
+
     "A model with a CTE named after a JSqlParser reserved word" should "have it renamed, noted in the report" in {
-      def mapSql(sql: String) =
-        DbtModelMapper.map(DbtFixtures.model("synthetic", Map.empty, sql), ctx).toOption.get
       val m = mapSql(
         "with d as (select 1 as id, 'final' as tag), final as (select d.id, 'from final' as s from d) " +
         "select final.id from final join d on d.id = final.id"
@@ -87,20 +101,58 @@ class DbtModelMapperSpec extends TestHelper {
       out should include("sl_final.id")
       out should include("'final' as tag")
       out should include("'from final' as s")
-      Try(net.sf.jsqlparser.parser.CCJSqlParserUtil.parse(out)).isSuccess shouldBe true
+      Try(ai.starlake.sql.SqlParser.parseQuietly(out)).isSuccess shouldBe true
       m.entry.notes should contain(
         "CTE final renamed sl_final: final is reserved for Starlake's SQL parser"
       )
       mapSql("select 1 as id").entry.notes.exists(_.contains("renamed")) shouldBe false
     }
 
+    it should "keep two blank lines, a comment and a quoted identifier named final as they are" in {
+      val m = mapSql(
+        "with d as (select 1 as id),\n\n\nfinal as (select id, 1 as \"final\" from d) -- final\nselect id from final"
+      )
+      m.sql should include("sl_final as (")
+      m.sql should include("1 as \"final\"")
+      m.sql should include("-- final\n")
+      m.sql should include("from sl_final")
+    }
+
+    it should "be renamed in an incremental model, its Jinja tags untouched" in {
+      val m = mapSql(
+        "with d as (select 1 as id from t), final as (select id from d) select id from final " +
+        "{% if is_incremental() %}where id > (select max(id) from {{ this }}) " +
+        "and id in (select id from final){% endif %}",
+        Map("materialized" -> "incremental", "incremental_strategy" -> "append")
+      )
+      m.sql should include("{% if sl_incremental %}")
+      m.sql should include("{% endif %}")
+      m.sql should include("(select id from sl_final)")
+      m.sql should not include "from final"
+      m.entry.notes should contain(
+        "CTE final renamed sl_final: final is reserved for Starlake's SQL parser"
+      )
+    }
+
     "A model whose SQL stays unparseable after the rename" should "keep it, with a note" in {
       val sql = "with final as (select 1 as id) select id from final where id in ("
-      val m = DbtModelMapper.map(DbtFixtures.model("synthetic", Map.empty, sql), ctx).toOption.get
+      val m = mapSql(sql)
       m.sql shouldBe sql
-      m.entry.notes should contain(
-        "Starlake's SQL parser cannot read this SQL: set parseSQL: false on the task, or rewrite it"
-      )
+      m.entry.notes should contain(unparseableNote)
+    }
+
+    "A model reading a reserved CTE through a comma join" should "keep its SQL, with a note" in {
+      val sql = "with d as (select 1 as id), final as (select 2 as id) select d.id from d, final"
+      val m = mapSql(sql)
+      m.sql shouldBe sql
+      m.entry.notes should contain(unparseableNote)
+    }
+
+    "A model with a backslash in a string literal" should "keep its SQL, with a note" in {
+      val sql = "with final as (select 'it\\'s' as s) select s from final"
+      val m = mapSql(sql)
+      m.sql shouldBe sql
+      m.entry.notes should contain(unparseableNote)
     }
 
     "An ephemeral model" should "be a view, noted in the report" in {
