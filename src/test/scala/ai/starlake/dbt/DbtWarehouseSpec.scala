@@ -30,7 +30,13 @@ class DbtWarehouseSpec extends TestHelper {
     var queries = 0
     var columnCalls = 0
     def name: String = underlying.name
-    def query(sql: String): Try[DbtTable] = { queries += 1; underlying.query(sql) }
+    var lastRows = 0
+    def query(sql: String, maxRows: Int): Try[DbtTable] = {
+      queries += 1
+      val t = underlying.query(sql, maxRows)
+      lastRows = t.map(_.size).getOrElse(0)
+      t
+    }
     def columns(r: WarehouseRelation): Try[List[DbtWarehouseColumn]] = {
       columnCalls += 1; underlying.columns(r)
     }
@@ -103,9 +109,88 @@ class DbtWarehouseSpec extends TestHelper {
       }
     }
 
+    it should "read at most one row past the limit" in {
+      setUp(duckdb())
+      val counting = new Counting(new JdbcWarehouse("test", duckdb()))
+      new CachingWarehouse(counting, maxRows = 1)
+        .query("select * from staging.stg_orders") match {
+        case Failure(DbtSkip(reason)) =>
+          reason shouldBe "run_query returned more than 1 rows (--introspect-max-rows)"
+        case other => fail(s"expected a skip, got $other")
+      }
+      counting.lastRows shouldBe 2
+      new JdbcWarehouse("test", duckdb())
+        .query("select * from staging.stg_orders", 1)
+        .get
+        .size shouldBe 1
+    }
+
+    it should "not treat _ as a wildcard in a table name" in {
+      setUp(duckdb())
+      JdbcDbUtils.withJDBCConnection(None, duckdb()) { conn =>
+        conn.createStatement().execute("CREATE OR REPLACE TABLE staging.stgxorders(other INTEGER)")
+      }
+      val w = new JdbcWarehouse("test", duckdb())
+      w.columns(WarehouseRelation(None, "staging", "stg_orders")).get.map(_.getName) shouldBe
+      List("order_id", "status", "amount", "order_date")
+      w.relation(WarehouseRelation(None, "staging", "stg_orde_s")).get shouldBe None
+    }
+
+    it should "cache a relation once, and share a statement with its trailing semicolon" in {
+      setUp(duckdb())
+      val counting = new Counting(new JdbcWarehouse("test", duckdb()))
+      val cached = new CachingWarehouse(counting, 10000)
+      cached.query("select 1;").get
+      cached.query("select 1").get
+      counting.queries shouldBe 1
+      val r = WarehouseRelation(None, "staging", "stg_orders")
+      cached.relation(r).get shouldBe Some(r)
+      cached.relation(r).get shouldBe Some(r)
+    }
+
+    it should "skip with the exception text when the message is empty" in {
+      val failing = new DbtWarehouse {
+        def name = "f"
+        def query(sql: String, maxRows: Int): Try[DbtTable] = Failure(new RuntimeException(""))
+        def columns(r: WarehouseRelation): Try[List[DbtWarehouseColumn]] =
+          Failure(new RuntimeException(""))
+        def relation(r: WarehouseRelation): Try[Option[WarehouseRelation]] =
+          Failure(new RuntimeException(""))
+      }
+      new CachingWarehouse(failing, 10).query("select 1") match {
+        case Failure(DbtSkip(reason)) => reason should include("RuntimeException")
+        case other                    => fail(s"expected a skip, got $other")
+      }
+    }
+
+    "DbtWarehouseColumn" should "classify by base type name" in {
+      new DbtWarehouseColumn("a", "INTERVAL", "\"").is_number() shouldBe false
+      new DbtWarehouseColumn("a", "VARCHAR(20)", "\"").is_string() shouldBe true
+      new DbtWarehouseColumn("a", "BIGINT", "\"").is_integer() shouldBe true
+      new DbtWarehouseColumn("a", "DECIMAL(10,2)", "\"").is_numeric() shouldBe true
+    }
+
+    "DbtResults.value" should "render timestamps as text and widen integers" in {
+      DbtResults.value(
+        java.sql.Timestamp.valueOf("2024-01-05 10:11:12")
+      ) shouldBe "2024-01-05 10:11:12"
+      DbtResults.value(Integer.valueOf(3)) shouldBe java.lang.Long.valueOf(3)
+    }
+
     "OfflineWarehouse" should "skip every call with the MVP's reasons" in {
       val w = new OfflineWarehouse()
       w.offline shouldBe true
+      val r = WarehouseRelation(None, "s", "t")
+      w.columns(r) match {
+        case Failure(DbtSkip(m)) =>
+          m shouldBe "needs the warehouse at import (adapter.get_columns_in_relation)"
+        case other => fail(s"expected a skip, got $other")
+      }
+      w.relation(r) match {
+        case Failure(DbtSkip(m)) =>
+          m shouldBe "needs the warehouse at import (adapter.get_relation)"
+        case other => fail(s"expected a skip, got $other")
+      }
       w.query("select 1") match {
         case Failure(DbtSkip(reason)) => reason shouldBe "needs the warehouse at import (run_query)"
         case other                    => fail(s"expected a skip, got $other")

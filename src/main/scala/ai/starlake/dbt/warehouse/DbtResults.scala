@@ -32,17 +32,34 @@ final class DbtTableColumns(cols: List[DbtTableColumn]) extends util.AbstractLis
 
 /** adapter.get_columns_in_relation()'s column, as dbt's Column */
 final class DbtWarehouseColumn(name: String, dataType: String, quote: String) {
-  private val t = dataType.toLowerCase
+  private val base = dataType.toLowerCase.takeWhile(_ != '(').trim
   def getName: String = name
   def getColumn: String = name
   def getData_type: String = dataType
   def getDtype: String = dataType
   def getQuoted: String = s"$quote$name$quote"
-  def is_string(): Boolean = Set("char", "text", "string", "varchar").exists(t.contains)
+  def is_string(): Boolean =
+    Set("char", "varchar", "text", "string", "character varying", "character", "bpchar", "nvarchar")
+      .contains(base)
   def is_integer(): Boolean =
-    Set("int", "integer", "bigint", "smallint", "tinyint", "hugeint").exists(t.contains)
-  def is_float(): Boolean = Set("float", "double", "real").exists(t.contains)
-  def is_numeric(): Boolean = Set("numeric", "decimal", "number").exists(t.contains)
+    Set(
+      "int",
+      "integer",
+      "bigint",
+      "smallint",
+      "tinyint",
+      "hugeint",
+      "int2",
+      "int4",
+      "int8",
+      "int16",
+      "int32",
+      "int64",
+      "int128"
+    ).contains(base)
+  def is_float(): Boolean =
+    Set("float", "double", "double precision", "real", "float4", "float8").contains(base)
+  def is_numeric(): Boolean = Set("numeric", "decimal", "number").contains(base)
   def is_number(): Boolean = is_integer() || is_float() || is_numeric()
   override def toString: String = name
   override def equals(o: Any): Boolean = o match {
@@ -50,6 +67,17 @@ final class DbtWarehouseColumn(name: String, dataType: String, quote: String) {
     case _                     => false
   }
   override def hashCode(): Int = (name, dataType).hashCode()
+}
+
+/** load_result(name): `data` (the rows), `table`, `response` */
+object DbtLoadResult {
+  def apply(table: DbtTable): util.Map[String, Object] = {
+    val m = new util.LinkedHashMap[String, Object]()
+    m.put("data", table.getRows)
+    m.put("table", table)
+    m.put("response", util.Map.of("code", "SELECT", "rows_affected", Integer.valueOf(table.size)))
+    m
+  }
 }
 
 object DbtResults {

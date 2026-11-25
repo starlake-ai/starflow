@@ -19,7 +19,11 @@ trait DbtWarehouse {
 
   /** True when there is no warehouse behind this one: every call skips */
   def offline: Boolean = false
-  def query(sql: String): Try[DbtTable]
+
+  /** Reads at most `maxRows` rows: a caller that wants to know about an overflow asks for one more
+    */
+  def query(sql: String, maxRows: Int): Try[DbtTable]
+  def query(sql: String): Try[DbtTable] = query(sql, Int.MaxValue)
   def columns(relation: WarehouseRelation): Try[List[DbtWarehouseColumn]]
   def relation(relation: WarehouseRelation): Try[Option[WarehouseRelation]]
 }
@@ -28,7 +32,7 @@ trait DbtWarehouse {
 final class OfflineWarehouse extends DbtWarehouse {
   def name: String = "offline"
   override def offline: Boolean = true
-  def query(sql: String): Try[DbtTable] = OfflineWarehouse.skip("run_query")
+  def query(sql: String, maxRows: Int): Try[DbtTable] = OfflineWarehouse.skip("run_query")
   def columns(r: WarehouseRelation): Try[List[DbtWarehouseColumn]] =
     OfflineWarehouse.skip("adapter.get_columns_in_relation")
   def relation(r: WarehouseRelation): Try[Option[WarehouseRelation]] =
@@ -43,6 +47,7 @@ object OfflineWarehouse {
 /** The read-only guard, the row limit, and one answer per statement and per relation for the whole
   * import (both renders of an incremental model, every model reading the same source)
   */
+/** Used by one import at a time: renders are sequential, the caches are not synchronized */
 final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends DbtWarehouse {
   private val queries = mutable.Map.empty[String, Try[DbtTable]]
   private val columnsOf = mutable.Map.empty[WarehouseRelation, Try[List[DbtWarehouseColumn]]]
@@ -51,14 +56,16 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
   def name: String = underlying.name
   override def offline: Boolean = underlying.offline
 
-  def query(sql: String): Try[DbtTable] = {
+  def query(sql: String, rows: Int): Try[DbtTable] = query(sql).filter(_.size <= rows)
+
+  override def query(sql: String): Try[DbtTable] = {
     val key = sql.trim.stripSuffix(";").trim
     queries.getOrElseUpdate(
       key,
       ReadOnlyGuard.check(key) match {
         case Left(reason) => Failure(DbtSkip(reason))
         case Right(_) =>
-          underlying.query(key).recoverWith(asSkip).flatMap { t =>
+          underlying.query(key, maxRows + 1).recoverWith(asSkip).flatMap { t =>
             if (t.size > maxRows)
               Failure(
                 DbtSkip(s"run_query returned more than $maxRows rows (--introspect-max-rows)")
@@ -77,6 +84,14 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
 
   private val asSkip: PartialFunction[Throwable, Try[Nothing]] = {
     case s: DbtSkip => Failure(s)
-    case e => Failure(DbtSkip(Option(e.getMessage).getOrElse(e.toString).linesIterator.next()))
+    case e =>
+      Failure(
+        DbtSkip(
+          Option(e.getMessage)
+            .flatMap(_.linesIterator.nextOption())
+            .filter(_.nonEmpty)
+            .getOrElse(e.toString)
+        )
+      )
   }
 }
