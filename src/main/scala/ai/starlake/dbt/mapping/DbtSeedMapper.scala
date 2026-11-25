@@ -31,7 +31,13 @@ object DbtSeedMapper {
     def skip(reason: String) =
       ReportEntry("seed", node.uniqueId, Some(relation.render), EntryStatus.Skipped(reason))
     val csv = csvPath(node, ctx)
-    if (!Files.isRegularFile(csv)) Left(skip(s"seed file not found: $csv"))
+    val unsafe = DbtText.unsafeField(
+      "schema"   -> relation.schema,
+      "alias"    -> relation.identifier,
+      "csv file" -> Option(csv.getFileName).map(_.toString).getOrElse("")
+    )
+    if (unsafe.isDefined) Left(skip(unsafe.get))
+    else if (!Files.isRegularFile(csv)) Left(skip(s"seed file not found: $csv"))
     else
       ctx.inferSeed(csv, relation.identifier).toEither match {
         case Left(e) => Left(skip(s"schema inference failed: ${e.getMessage}"))

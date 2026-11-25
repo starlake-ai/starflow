@@ -36,7 +36,11 @@ object DbtMapper {
     val tables = mappedSeeds.map { s =>
       s.copy(table = s.table.copy(expectations = tests.expectations.getOrElse(s.entry.dbtId, Nil)))
     }
-    val docs = manifest.docs.filterNot(_.packageName == "dbt")
+    val allDocs = manifest.docs.filterNot(_.packageName == "dbt")
+    val unsafeDocs = allDocs.flatMap(d =>
+      DbtText.unsafeField("package" -> d.packageName, "name" -> d.name).map(d -> _)
+    )
+    val docs = allDocs.filterNot(d => unsafeDocs.exists(_._1 eq d))
 
     val outputs =
       tasks.flatMap(_.outputs) ++
@@ -83,6 +87,9 @@ object DbtMapper {
           EntryStatus.Converted
         )
       ) ++
+      unsafeDocs.map { case (d, reason) =>
+        ReportEntry("doc", d.uniqueId, None, EntryStatus.Skipped(reason))
+      } ++
       reported
 
     val general = project.toList.flatMap { p =>

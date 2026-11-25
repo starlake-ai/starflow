@@ -28,7 +28,18 @@ object DbtSourceMapper {
 
   def map(source: DbtSource, ctx: DbtMappingContext): Either[ReportEntry, MappedSource] = {
     val relation = ctx.relations.ofSource(source)
-    if (!source.enabled)
+    val unsafe =
+      DbtText.unsafeField("schema" -> relation.schema, "identifier" -> relation.identifier)
+    if (unsafe.isDefined)
+      Left(
+        ReportEntry(
+          "source",
+          source.uniqueId,
+          Some(relation.render),
+          EntryStatus.Skipped(unsafe.get)
+        )
+      )
+    else if (!source.enabled)
       Left(
         ReportEntry(
           "source",

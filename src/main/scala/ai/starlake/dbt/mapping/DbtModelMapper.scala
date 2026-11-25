@@ -45,7 +45,9 @@ object DbtModelMapper {
         EntryStatus.Skipped(reason),
         dependsOn = node.dependsOnNodes
       )
-    if (node.language != "sql") Left(skip(s"${node.language} model"))
+    val unsafe = DbtText.unsafeField("schema" -> relation.schema, "alias" -> relation.identifier)
+    if (unsafe.isDefined) Left(skip(unsafe.get))
+    else if (node.language != "sql") Left(skip(s"${node.language} model"))
     else
       writeStrategy(node.materialized, node.config, ctx.adapterType) match {
         case Left(reason) => Left(skip(reason))

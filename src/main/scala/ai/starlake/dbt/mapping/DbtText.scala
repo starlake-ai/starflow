@@ -63,6 +63,23 @@ object DbtText {
   /** A string as a double-quoted Jinja literal */
   def doubleQuoted(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
+  /** A manifest name used as one path component (a folder or a file name): not empty, not `.` or
+    * `..`, and without `/`, `\\`, NUL or any control character
+    */
+  def safeName(name: String): Either[String, String] =
+    if (
+      name.isEmpty || name == "." || name == ".." ||
+      name.exists(c => c == '/' || c == '\\' || Character.isISOControl(c))
+    ) Left(name)
+    else Right(name)
+
+  /** The first of the (field, value) pairs that cannot be a path component, as a reason */
+  def unsafeField(fields: (String, String)*): Option[String] =
+    fields.collectFirst {
+      case (field, value) if safeName(value).isLeft =>
+        s"""$field "$value" cannot be a folder or file name"""
+    }
+
   /** A Jinja identifier made of the name of a dbt object */
   def identifier(name: String): String = name.replaceAll("[^A-Za-z0-9_]", "_")
 }
