@@ -1,7 +1,7 @@
 package ai.starlake.dbt
 
 import ai.starlake.TestHelper
-import ai.starlake.dbt.report.EntryStatus
+import ai.starlake.dbt.report.{BakedValue, EntryStatus}
 import ai.starlake.config.DatasetArea
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.job.ingest.{LoadConfig, StageConfig}
@@ -17,7 +17,8 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 /** The fixture dbt project imported, loaded and transformed on DuckDB gives the tables of `dbt
-  * build`, on a first run and on a second one with new rows, and its tests pass as expectations
+  * build`, on a first run and on a second one with new rows, and its tests pass as expectations;
+  * imported with --introspect, so do the models that read the warehouse at import
   */
 class DbtImportDuckDbSpec extends TestHelper {
 
@@ -54,15 +55,21 @@ class DbtImportDuckDbSpec extends TestHelper {
     "marts.writes_at_import"
   )
 
+  /** The models above that --introspect converts: all of them but writes_at_import, which writes to
+    * the warehouse at import
+    */
+  private val introspected = notImported - "marts.writes_at_import"
+
   private abstract class Project(db: String) extends WithSettings(configuration(db)) {
-    def importShop(): DbtImportResult =
+    def importShop(introspect: Boolean = false): DbtImportResult =
       DbtImporter
         .run(
           DbtImportConfig(
             action = "import",
             manifest = DbtFixtures.shopManifestPath.toString,
             connection = Some("test-duckdb"),
-            force = true
+            force = true,
+            introspect = introspect
           )
         )
         .get
@@ -137,15 +144,17 @@ class DbtImportDuckDbSpec extends TestHelper {
     /** @param sentinels
       *   per table, the condition that selects the sentinel row: it is left out of the comparison
       *   and must be there exactly once
+      * @param tables
+      *   the tables compared, by default those of the import without --introspect
       */
     def compareWith(
       run: String,
       sentinels: Map[String, String] = Map.empty,
-      tampered: Map[String, (String, String)] = Map.empty
+      tampered: Map[String, (String, String)] = Map.empty,
+      tables: String => Boolean = !notImported.contains(_)
     ): Unit = {
       val csvs = Files.list(DbtFixtures.expectedDir.resolve(run)).iterator().asScala.toList
-      val compared =
-        csvs.filterNot(f => notImported.contains(f.getFileName.toString.stripSuffix(".csv")))
+      val compared = csvs.filter(f => tables(f.getFileName.toString.stripSuffix(".csv")))
       compared should not be empty
       compared
         .map { f =>
@@ -300,6 +309,88 @@ class DbtImportDuckDbSpec extends TestHelper {
         ),
         tampered
       )
+      failedExpectations() shouldBe Nil
+    }
+  }
+
+  private val introspectProject = new Project("dbt_import_introspect") {
+    private var imported: DbtImportResult = _
+
+    "starlake dbt import --introspect" should "convert the models that read the warehouse, their tables those of dbt" in {
+      // the upstream tables in the warehouse, as after dbt build: the import without --introspect,
+      // its seeds loaded and its tasks run
+      val offline = importShop()
+      offline.exitCode shouldBe 0
+      loadSeeds().isSuccess shouldBe true
+      transform(offline).isSuccess shouldBe true
+
+      imported = importShop(introspect = true)
+      imported.exitCode shouldBe 0
+      val report = imported.report
+      report.convertedTasks.toSet should contain allElementsOf (introspected + "marts.model_count")
+      report.skipped.map(e => e.dbtId -> e.status) shouldBe List(
+        "model.shop.writes_at_import" -> EntryStatus.Skipped(
+          "statement is not read-only: create table if not exists marts.sl_import_side_effect as select 1 as a"
+        )
+      )
+      report.downstreamOfSkipped shouldBe Nil
+      // the guard refused the CREATE before it ran
+      rows(
+        "SELECT CAST(count(*) AS VARCHAR) AS c FROM information_schema.tables WHERE table_schema = 'marts' AND table_name = 'sl_import_side_effect'"
+      ).head("c") shouldBe "0"
+      // what each model read, customers_filled the columns of the source raw_customers
+      report.warehouseReads shouldBe List(
+        BakedValue("columns: raw.raw_customers", "3 columns", List("marts.customers_filled")),
+        BakedValue("columns: staging.stg_customers", "3 columns", List("marts.customers_star")),
+        BakedValue("query: select 42 as answer", "1 rows", List("marts.needs_warehouse")),
+        BakedValue(
+          "query: select count(*) as n from staging.stg_orders",
+          "1 rows",
+          List("marts.order_count")
+        ),
+        BakedValue(
+          "query: select status as value from staging.stg_orders group by status order by count(*) desc",
+          "3 rows",
+          List("marts.order_status_pivot")
+        ),
+        BakedValue("relation: staging.stg_orders", "found", List("marts.order_status_pivot"))
+      )
+
+      // the SQL of each model is that of dbt compile, its relations schema.table; the comment
+      // `-- depends_on: <ref>` of order_count is in both, so it is compared too. The columns of
+      // order_status_pivot come in the order of get_column_values, count(*) desc: placed and
+      // returned tie, and DuckDB returns them in either order, so its pivot columns are compared
+      // as a set
+      val pivotColumn = """sum\( case when status = '[^']*' then 1 else 0 end \) as "[^"]*"""".r
+      def pivotColumns(sql: String) = (
+        pivotColumn.replaceAllIn(sql, "<pivot column>"),
+        pivotColumn.findAllIn(sql).toSet
+      )
+      introspected.foreach { table =>
+        val name = table.stripPrefix("marts.")
+        val sql = DbtFixtures.whitespace(importedFile(imported, s"/transform/marts/$name.sql"))
+        val expected = DbtFixtures.dbtNormalize(
+          Files.readString(DbtFixtures.expectedDir.resolve(s"compiled/$name.sql"))
+        )
+        withClue(s"$name: ") {
+          if (name == "order_status_pivot") {
+            pivotColumns(expected)._2 should have size 3
+            pivotColumns(sql) shouldBe pivotColumns(expected)
+          } else sql shouldBe expected
+        }
+      }
+      imported.written.map(_.toUri.getPath).filter(_.contains("writes_at_import")) shouldBe Nil
+
+      transform(imported).isSuccess shouldBe true
+      compareWith("run1", tables = introspected)
+      failedExpectations() shouldBe Nil
+    }
+
+    it should "keep dbt's tables on a second run with new rows: the answers baked at import still hold" in {
+      incoming(DbtFixtures.run2SeedsDir.resolve("raw_events.csv"))
+      loadSeeds().isSuccess shouldBe true
+      transform(imported).isSuccess shouldBe true
+      compareWith("run2", tables = introspected)
       failedExpectations() shouldBe Nil
     }
   }

@@ -28,13 +28,7 @@ class DbtRenderGoldenSpec extends AnyFlatSpec with Matchers {
     "writes_at_import"
   )
 
-  private val Relation = """"([^"]+)"\."([^"]+)"\."([^"]+)"""".r
-
-  private def whitespace(sql: String): String = sql.split("\\s+").filter(_.nonEmpty).mkString(" ")
-
-  /** dbt's compiled SQL: "db"."schema"."t" becomes schema.t */
-  private def dbtNormalize(sql: String): String =
-    whitespace(Relation.replaceAllIn(sql, m => s"${m.group(2)}.${m.group(3)}"))
+  import DbtFixtures.{dbtNormalize, whitespace}
 
   private val compiled =
     Files

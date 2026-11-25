@@ -118,6 +118,16 @@ object DbtFixtures {
     "depends_on"         -> Map("nodes" -> dependsOn, "macros" -> Nil)
   )
 
+  private val Relation = """"([^"]+)"\."([^"]+)"\."([^"]+)"""".r
+
+  /** The SQL on one line, its runs of whitespace a single space */
+  def whitespace(sql: String): String = sql.split("\\s+").filter(_.nonEmpty).mkString(" ")
+
+  /** dbt's compiled SQL as the import renders it: "db"."schema"."t" becomes schema.t, on one line
+    */
+  def dbtNormalize(sql: String): String =
+    whitespace(Relation.replaceAllIn(sql, m => s"${m.group(2)}.${m.group(3)}"))
+
   def node(manifest: DbtManifest, name: String): DbtNode =
     manifest.nodes
       .find(n => n.name == name && n.resourceType != "test")
