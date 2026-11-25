@@ -167,6 +167,8 @@ final class DbtJinjaRelation(val relation: DbtRelation, fullDatabase: Option[Str
     case _          => DbtElResolver.default(default)
   }
 
+  def get(key: String): Object = get(key, null)
+
   override def appendPyishString[T <: Appendable with CharSequence](appendable: T): T = {
     appendable.append(toString)
     appendable
@@ -257,8 +259,12 @@ final class DbtAdapter(
     case _ => None
   }
 
-  private def answer[T](t: Try[T], fallback: T): T = t match {
-    case Success(v) => v
+  /** The warehouse's answer, its read recorded; on a failure, the model skips */
+  private def answer[T](t: Try[T], fallback: T)(read: T => WarehouseRead): T = t match {
+    case Success(v) =>
+      val r = read(v)
+      DbtRenderState.get.read(r.what, r.result)
+      v
     case Failure(DbtSkip(reason)) =>
       DbtRenderState.get.skipWith(reason)
       fallback
@@ -270,17 +276,16 @@ final class DbtAdapter(
   private def columns(relation: Object): List[DbtWarehouseColumn] = relationOf(relation) match {
     case None => Nil
     case Some(r) =>
-      val cols = answer(warehouse.columns(r), Nil)
-      DbtRenderState.get.read(s"columns: ${r.render}", s"${cols.size} columns")
-      cols
+      answer(warehouse.columns(r), Nil)(cols =>
+        WarehouseRead(s"columns: ${r.render}", s"${cols.size} columns")
+      )
   }
 
   /** The relation as the warehouse has it, or null (none) */
-  def relation(r: WarehouseRelation): Object = {
-    val found = answer(warehouse.relation(r), None)
-    DbtRenderState.get.read(s"relation: ${r.render}", if (found.isDefined) "found" else "missing")
-    found.map(toJinja).orNull
-  }
+  def relation(r: WarehouseRelation): Object =
+    answer(warehouse.relation(r), None)(found =>
+      WarehouseRead(s"relation: ${r.render}", if (found.isDefined) "found" else "missing")
+    ).map(toJinja).orNull
 
   def invoke(method: String, args: List[Object]): Option[Object] = method match {
     case m if warehouseMethods.contains(m) && (warehouse.offline || !readingMethods.contains(m)) =>
@@ -369,6 +374,11 @@ final class DbtElResolver extends ELResolver {
       }
       value.foreach(_ => context.setPropertyResolved(true))
       value.orNull
+    case row: DbtTableRow if DbtElResolver.isName(property) =>
+      // row['status'], row.status
+      val index = row.indexOf(String.valueOf(property))
+      index.foreach(_ => context.setPropertyResolved(true))
+      index.map(row.get).orNull
     case c: DbtTableColumns if DbtElResolver.isName(property) =>
       // table.columns['status']
       context.setPropertyResolved(true)

@@ -14,14 +14,34 @@ import scala.jdk.CollectionConverters._
 final class DbtTable(columnNames: List[String], rowList: List[util.List[Object]])
     extends util.AbstractList[util.List[Object]]
     with PyishSerializable {
-  override def get(index: Int): util.List[Object] = rowList(index)
-  override def size(): Int = rowList.size
-  def getRows: util.List[util.List[Object]] = new util.ArrayList(rowList.asJava)
+  private val rows: List[util.List[Object]] = rowList.map(new DbtTableRow(columnNames, _))
+  override def get(index: Int): util.List[Object] = rows(index)
+  override def size(): Int = rows.size
+  def getRows: util.List[util.List[Object]] = new util.ArrayList(rows.asJava)
   def getColumnNames: util.List[String] = new util.ArrayList(columnNames.asJava)
   def getColumns: DbtTableColumns = new DbtTableColumns(columnNames.zipWithIndex.map {
     case (n, i) => new DbtTableColumn(n, new util.ArrayList(rowList.map(_.get(i)).asJava))
   })
   def print_table(): String = ""
+}
+
+/** A row, as agate's: by index (`row[0]`) or by column name (`row['status']`, `row.status`, through
+  * DbtElResolver; not wrapped in a PyList, as [[DbtTable]])
+  */
+final class DbtTableRow(columnNames: List[String], values: util.List[Object])
+    extends util.AbstractList[Object]
+    with PyishSerializable {
+  override def get(index: Int): Object = values.get(index)
+  override def size(): Int = values.size
+
+  /** The index of a column, the exact name first */
+  def indexOf(name: String): Option[Int] =
+    Some(columnNames.indexOf(name))
+      .filter(_ >= 0)
+      .orElse(Some(columnNames.indexWhere(_.equalsIgnoreCase(name))).filter(_ >= 0))
+
+  def get(name: String): Object = indexOf(name).map(values.get).orNull
+  def keys(): util.List[String] = new util.ArrayList(columnNames.asJava)
 }
 
 final class DbtTableColumn(val name: String, vals: util.List[Object]) {

@@ -32,7 +32,8 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
       else Success(table(List("n"), List(List(4L))))
     }
     def columns(r: WarehouseRelation): Try[List[DbtWarehouseColumn]] = Success(
-      if (r.identifier == "raw_customers")
+      if (r.identifier == "customers") Nil // not built yet
+      else if (r.identifier == "raw_customers")
         List(
           new DbtWarehouseColumn("id", "INTEGER", "\""),
           new DbtWarehouseColumn("first_name", "VARCHAR", "\"")
@@ -46,6 +47,15 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
     )
     def relation(r: WarehouseRelation): Try[Option[WarehouseRelation]] =
       Success(Some(r).filterNot(_.identifier == "no_such"))
+  }
+
+  /** A warehouse whose every call fails, as a connection that breaks */
+  private final class Broken extends DbtWarehouse {
+    def name = "broken"
+    private def boom[T]: Try[T] = Failure(new RuntimeException("connection reset\nat line 2"))
+    def query(sql: String, maxRows: Int): Try[DbtTable] = boom
+    def columns(r: WarehouseRelation): Try[List[DbtWarehouseColumn]] = boom
+    def relation(r: WarehouseRelation): Try[Option[WarehouseRelation]] = boom
   }
 
   private def table(cols: List[String], rows: List[List[Any]]): DbtTable =
@@ -101,6 +111,32 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
     )
   }
 
+  "a row of run_query" should "be read by index and by column name" in {
+    val r = render(
+      """{% for row in run_query("select 42 as answer") %}{{ row['answer'] }} {{ row.answer }} {{ row[0] }} {{ row | length }} {{ row.get('answer') }} {{ row.keys() | list }}{% endfor %}"""
+    )
+    r.sql.get.trim shouldBe "42 42 42 1 42 ['answer']"
+  }
+
+  "statement" should "take its name as a keyword argument" in {
+    render(
+      """{% call statement(name='k', fetch_result=True) %}select 42 as answer{% endcall %}{{ load_result('k')['data'][0]['answer'] }}"""
+    ).sql.get.trim shouldBe "42"
+  }
+
+  "a warehouse that fails" should "skip the model with its message, and record no read" in {
+    List(
+      """{% set t = run_query("select 42 as answer") %}""",
+      """{% set c = adapter.get_columns_in_relation(this) %}""",
+      """{% set r = adapter.get_relation(this.database, this.schema, this.identifier) %}""",
+      """{% set r = load_relation(this) %}"""
+    ).foreach { template =>
+      val r = render(template, new Broken)
+      skipped(r) shouldBe "connection reset"
+      r.warehouseReads shouldBe empty
+    }
+  }
+
   "load_result" should "give none for a statement that did not run" in {
     render("""{{ load_result('nothing') is none }}""").sql.get.trim shouldBe "true"
   }
@@ -111,6 +147,12 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
     )
     r.sql.get.trim shouldBe "id:INTEGER:\"id\":false first_name:VARCHAR:\"first_name\":true"
     r.warehouseReads shouldBe List(WarehouseRead("columns: raw.raw_customers", "2 columns"))
+  }
+
+  it should "give no column for a relation that does not exist" in {
+    val r = render("""{{ adapter.get_columns_in_relation(ref('customers')) | length }}""")
+    r.sql.get.trim shouldBe "0"
+    r.warehouseReads shouldBe List(WarehouseRead("columns: marts.customers", "0 columns"))
   }
 
   "adapter.get_missing_columns" should "give the columns of the first relation missing in the second" in {
@@ -132,6 +174,12 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
 
   "load_relation" should "give the relation the warehouse has" in {
     render("""{{ load_relation(ref('stg_orders')) }}""").sql.get.trim shouldBe "staging.stg_orders"
+  }
+
+  "a relation" should "be a mapping with dbt's metadata, read with or without a default" in {
+    render(
+      """{{ this is mapping }} {{ this.get('metadata')['type'] }} {{ this.get('metadata', {})['type'] }} {{ this.get('other', 'd') }}"""
+    ).sql.get.trim shouldBe "true BaseRelation BaseRelation d"
   }
 
   "dbt_utils.get_column_values and star" should "render from the warehouse's answers" in {
