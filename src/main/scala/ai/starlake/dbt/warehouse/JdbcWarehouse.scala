@@ -35,6 +35,12 @@ final class JdbcWarehouse(connectionName: String, options: Map[String, String])
     }
   }
 
+  /** The schema of a row, or its catalog when the engine has no schemas (MySQL) */
+  private def inSchema(rs: java.sql.ResultSet, r: WarehouseRelation): Boolean =
+    Option(rs.getString("TABLE_SCHEM"))
+      .orElse(Option(rs.getString("TABLE_CAT")))
+      .exists(_.equalsIgnoreCase(r.schema))
+
   private def spellings(s: String): List[String] = List(s, s.toUpperCase, s.toLowerCase).distinct
 
   /** getColumns and getTables take LIKE patterns: `_` and `%` in a name must be escaped */
@@ -57,7 +63,7 @@ final class JdbcWarehouse(connectionName: String, options: Map[String, String])
         val buf = ListBuffer.empty[(Int, DbtWarehouseColumn)]
         while (rs.next())
           if (
-            rs.getString("TABLE_SCHEM").equalsIgnoreCase(r.schema) &&
+            inSchema(rs, r) &&
             rs.getString("TABLE_NAME").equalsIgnoreCase(r.identifier)
           )
             buf += rs.getInt("ORDINAL_POSITION") -> new DbtWarehouseColumn(
@@ -82,7 +88,7 @@ final class JdbcWarehouse(connectionName: String, options: Map[String, String])
       ) { rs =>
         var hit = false
         while (!hit && rs.next())
-          hit = rs.getString("TABLE_SCHEM").equalsIgnoreCase(r.schema) &&
+          hit = inSchema(rs, r) &&
             rs.getString("TABLE_NAME").equalsIgnoreCase(r.identifier)
         hit
       }

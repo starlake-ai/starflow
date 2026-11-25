@@ -31,8 +31,10 @@ class DbtWarehouseSpec extends TestHelper {
     var columnCalls = 0
     def name: String = underlying.name
     var lastRows = 0
+    var lastBound = 0
     def query(sql: String, maxRows: Int): Try[DbtTable] = {
       queries += 1
+      lastBound = maxRows
       val t = underlying.query(sql, maxRows)
       lastRows = t.map(_.size).getOrElse(0)
       t
@@ -119,6 +121,7 @@ class DbtWarehouseSpec extends TestHelper {
         case other => fail(s"expected a skip, got $other")
       }
       counting.lastRows shouldBe 2
+      counting.lastBound shouldBe 2
       new JdbcWarehouse("test", duckdb())
         .query("select * from staging.stg_orders", 1)
         .get
@@ -163,11 +166,23 @@ class DbtWarehouseSpec extends TestHelper {
       }
     }
 
+    it should "skip when the cached table is larger than the bound of the call" in {
+      setUp(duckdb())
+      new CachingWarehouse(new JdbcWarehouse("test", duckdb()), 10000)
+        .query("select * from staging.stg_orders", 1) match {
+        case Failure(DbtSkip(reason)) =>
+          reason shouldBe "run_query returned more than 1 rows (--introspect-max-rows)"
+        case other => fail(s"expected a skip, got $other")
+      }
+    }
+
     "DbtWarehouseColumn" should "classify by base type name" in {
       new DbtWarehouseColumn("a", "INTERVAL", "\"").is_number() shouldBe false
       new DbtWarehouseColumn("a", "VARCHAR(20)", "\"").is_string() shouldBe true
       new DbtWarehouseColumn("a", "BIGINT", "\"").is_integer() shouldBe true
       new DbtWarehouseColumn("a", "DECIMAL(10,2)", "\"").is_numeric() shouldBe true
+      new DbtWarehouseColumn("a", "INT UNSIGNED", "\"").is_integer() shouldBe true
+      new DbtWarehouseColumn("a", "UBIGINT", "\"").is_integer() shouldBe true
     }
 
     "DbtResults.value" should "render timestamps as text and widen integers" in {

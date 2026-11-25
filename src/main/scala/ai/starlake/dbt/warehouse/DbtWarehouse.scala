@@ -46,8 +46,9 @@ object OfflineWarehouse {
 
 /** The read-only guard, the row limit, and one answer per statement and per relation for the whole
   * import (both renders of an incremental model, every model reading the same source)
+  *
+  * Used by one import at a time: renders are sequential, the caches are not synchronized
   */
-/** Used by one import at a time: renders are sequential, the caches are not synchronized */
 final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends DbtWarehouse {
   private val queries = mutable.Map.empty[String, Try[DbtTable]]
   private val columnsOf = mutable.Map.empty[WarehouseRelation, Try[List[DbtWarehouseColumn]]]
@@ -56,7 +57,11 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
   def name: String = underlying.name
   override def offline: Boolean = underlying.offline
 
-  def query(sql: String, rows: Int): Try[DbtTable] = query(sql).filter(_.size <= rows)
+  def query(sql: String, rows: Int): Try[DbtTable] = query(sql).flatMap { t =>
+    if (t.size > rows)
+      Failure(DbtSkip(s"run_query returned more than $rows rows (--introspect-max-rows)"))
+    else Success(t)
+  }
 
   override def query(sql: String): Try[DbtTable] = {
     val key = sql.trim.stripSuffix(";").trim
@@ -65,13 +70,16 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
       ReadOnlyGuard.check(key) match {
         case Left(reason) => Failure(DbtSkip(reason))
         case Right(_) =>
-          underlying.query(key, maxRows + 1).recoverWith(asSkip).flatMap { t =>
-            if (t.size > maxRows)
-              Failure(
-                DbtSkip(s"run_query returned more than $maxRows rows (--introspect-max-rows)")
-              )
-            else Success(t)
-          }
+          underlying
+            .query(key, math.min(maxRows, Int.MaxValue - 1) + 1)
+            .recoverWith(asSkip)
+            .flatMap { t =>
+              if (t.size > maxRows)
+                Failure(
+                  DbtSkip(s"run_query returned more than $maxRows rows (--introspect-max-rows)")
+                )
+              else Success(t)
+            }
       }
     )
   }

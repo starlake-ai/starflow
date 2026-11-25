@@ -32,7 +32,7 @@ final class DbtTableColumns(cols: List[DbtTableColumn]) extends util.AbstractLis
 
 /** adapter.get_columns_in_relation()'s column, as dbt's Column */
 final class DbtWarehouseColumn(name: String, dataType: String, quote: String) {
-  private val base = dataType.toLowerCase.takeWhile(_ != '(').trim
+  private val base = dataType.toLowerCase.takeWhile(_ != '(').trim.stripSuffix(" unsigned").trim
   def getName: String = name
   def getColumn: String = name
   def getData_type: String = dataType
@@ -55,7 +55,12 @@ final class DbtWarehouseColumn(name: String, dataType: String, quote: String) {
       "int16",
       "int32",
       "int64",
-      "int128"
+      "int128",
+      "ubigint",
+      "uinteger",
+      "usmallint",
+      "utinyint",
+      "uhugeint"
     ).contains(base)
   def is_float(): Boolean =
     Set("float", "double", "double precision", "real", "float4", "float8").contains(base)
