@@ -54,7 +54,7 @@ class DbtWarehouseSpec extends TestHelper {
         )
         .get
       t.size shouldBe 2
-      t.getColumn_names.asScala shouldBe List("status", "amount", "order_date")
+      t.getColumnNames.asScala shouldBe List("status", "amount", "order_date")
       t.getColumns.get(0).values().asScala shouldBe List("completed", "returned")
       t.getColumns.byName("amount").values().asScala shouldBe List(12.5, 8.0)
       t.get(0).asScala shouldBe List("completed", 12.5, "2024-01-05")

@@ -1,6 +1,8 @@
 package ai.starlake.dbt.jinja
 
+import ai.starlake.dbt.DbtSkip
 import ai.starlake.dbt.manifest.DbtRelation
+import ai.starlake.dbt.warehouse._
 import com.hubspot.jinjava.el.ext.NamedParameter
 import com.hubspot.jinjava.interpret.{Context, JinjavaInterpreter}
 import com.hubspot.jinjava.lib.fn.MacroFunction
@@ -14,6 +16,7 @@ import java.time.{ZoneOffset, ZonedDateTime}
 import java.util
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.{Failure, Success, Try}
 
 /** What one render of a model, hook or test collected. After a return() (see [[DbtReturn]]),
   * nothing is collected.
@@ -25,6 +28,10 @@ final class DbtRenderState {
   val envVars: mutable.LinkedHashMap[String, String] = mutable.LinkedHashMap.empty
   val warnings: mutable.ListBuffer[String] = mutable.ListBuffer.empty
 
+  /** The tables of the statements of the render, by name, for load_result() */
+  val results: mutable.Map[String, DbtTable] = mutable.Map.empty
+  val reads: mutable.LinkedHashSet[WarehouseRead] = mutable.LinkedHashSet.empty
+
   private def live: Boolean = !DbtReturn.anyReturned()
 
   def skipWith(reason: String): Unit = if (live && skip.isEmpty) skip = Some(reason)
@@ -32,6 +39,7 @@ final class DbtRenderState {
   def warn(message: String): Unit = if (live) warnings += message
   def readVar(name: String, value: String): Unit = if (live) vars.put(name, value)
   def readEnvVar(name: String, value: String): Unit = if (live) envVars.put(name, value)
+  def read(what: String, result: String): Unit = if (live) reads += WarehouseRead(what, result)
 }
 
 object DbtRenderState {
@@ -151,6 +159,14 @@ final class DbtJinjaRelation(val relation: DbtRelation, fullDatabase: Option[Str
   def getName: String = relation.identifier
   def getTable: String = relation.identifier
   override def toString: String = relation.render
+
+  /** dbt's Relation is a mapping: `relation.get('metadata', {})`, as dbt_utils._is_relation reads
+    */
+  def get(key: String, default: Object): Object = key match {
+    case "metadata" => util.Map.of("type", "BaseRelation")
+    case _          => DbtElResolver.default(default)
+  }
+
   override def appendPyishString[T <: Appendable with CharSequence](appendable: T): T = {
     appendable.append(toString)
     appendable
@@ -197,12 +213,23 @@ final class DbtDatetimeModule(at: ZonedDateTime) {
   def utcnow(): PyishDate = new PyishDate(at.withZoneSameInstant(ZoneOffset.UTC))
 }
 
-/** `adapter`: what needs the warehouse skips the model; quote() and type() answer */
-final class DbtAdapter(adapterType: String) {
-  private val warehouseMethods = Set(
-    "get_relation",
-    "get_columns_in_relation",
-    "get_missing_columns",
+/** `adapter`: the methods that read the warehouse answer from the import's warehouse (all skip
+  * without --introspect); the other ones that need it skip the model; quote() and type() answer
+  *
+  * @param toRelation
+  *   a relation from get_relation()'s database, schema and identifier, the database normalized
+  * @param toJinja
+  *   the relation that the warehouse found, as the templates see it
+  */
+final class DbtAdapter(
+  adapterType: String,
+  warehouse: DbtWarehouse,
+  toRelation: (Option[String], String, String) => WarehouseRelation,
+  toJinja: WarehouseRelation => DbtJinjaRelation
+) {
+  private val readingMethods = Set("get_relation", "get_columns_in_relation", "get_missing_columns")
+
+  private val warehouseMethods = readingMethods ++ Set(
     "execute",
     "list_relations_without_caching",
     "list_schemas",
@@ -218,10 +245,59 @@ final class DbtAdapter(adapterType: String) {
     "describe_relation"
   )
 
+  /** The argument named `name`, else the positional one at `index` */
+  private def arg(args: List[Object], index: Int, name: String): Option[Object] =
+    args
+      .collectFirst { case p: NamedParameter if p.getName == name => p.getValue }
+      .orElse(args.filterNot(_.isInstanceOf[NamedParameter]).lift(index))
+
+  def relationOf(o: Object): Option[WarehouseRelation] = o match {
+    case r: DbtJinjaRelation =>
+      Some(WarehouseRelation(r.relation.database, r.relation.schema, r.relation.identifier))
+    case _ => None
+  }
+
+  private def answer[T](t: Try[T], fallback: T): T = t match {
+    case Success(v) => v
+    case Failure(DbtSkip(reason)) =>
+      DbtRenderState.get.skipWith(reason)
+      fallback
+    case Failure(e) =>
+      DbtRenderState.get.skipWith(Option(e.getMessage).getOrElse(e.toString))
+      fallback
+  }
+
+  private def columns(relation: Object): List[DbtWarehouseColumn] = relationOf(relation) match {
+    case None => Nil
+    case Some(r) =>
+      val cols = answer(warehouse.columns(r), Nil)
+      DbtRenderState.get.read(s"columns: ${r.render}", s"${cols.size} columns")
+      cols
+  }
+
+  /** The relation as the warehouse has it, or null (none) */
+  def relation(r: WarehouseRelation): Object = {
+    val found = answer(warehouse.relation(r), None)
+    DbtRenderState.get.read(s"relation: ${r.render}", if (found.isDefined) "found" else "missing")
+    found.map(toJinja).orNull
+  }
+
   def invoke(method: String, args: List[Object]): Option[Object] = method match {
-    case m if warehouseMethods.contains(m) =>
-      DbtRenderState.get.skipWith(s"needs the warehouse at import (adapter.$m)")
+    case m if warehouseMethods.contains(m) && (warehouse.offline || !readingMethods.contains(m)) =>
+      DbtRenderState.get.skipWith(OfflineWarehouse.reason(s"adapter.$m"))
       Some("")
+    case "get_columns_in_relation" =>
+      Some(new util.ArrayList[DbtWarehouseColumn](columns(args.headOption.orNull).asJava))
+    case "get_relation" =>
+      val database =
+        arg(args, 0, "database").flatMap(Option(_)).map(String.valueOf).filterNot(_ == "None")
+      val schema = String.valueOf(arg(args, 1, "schema").orNull)
+      val identifier = String.valueOf(arg(args, 2, "identifier").orNull)
+      Some(relation(toRelation(database, schema, identifier)))
+    case "get_missing_columns" =>
+      val to = columns(args.lift(1).orNull).map(_.getName.toLowerCase).toSet
+      val missing = columns(args.headOption.orNull).filterNot(c => to(c.getName.toLowerCase))
+      Some(new util.ArrayList[DbtWarehouseColumn](missing.asJava))
     case "quote" =>
       val q = if (adapterType == "bigquery") "`" else "\""
       Some(q + String.valueOf(args.headOption.orNull) + q)
@@ -283,6 +359,20 @@ final class DbtElResolver extends ELResolver {
       w.touch()
       context.setPropertyResolved(true)
       new util.LinkedHashMap[String, Object]()
+    case t: DbtTable if DbtElResolver.isName(property) =>
+      // a list: Jinjava's list resolver does not read its properties
+      val value: Option[Object] = String.valueOf(property) match {
+        case "columns"      => Some(t.getColumns)
+        case "rows"         => Some(t.getRows)
+        case "column_names" => Some(t.getColumnNames)
+        case _              => None
+      }
+      value.foreach(_ => context.setPropertyResolved(true))
+      value.orNull
+    case c: DbtTableColumns if DbtElResolver.isName(property) =>
+      // table.columns['status']
+      context.setPropertyResolved(true)
+      c.byName(String.valueOf(property))
     case _ => null
   }
 
@@ -306,6 +396,12 @@ object DbtElResolver {
   }
 
   private def str(o: Object): String = String.valueOf(o)
+
+  /** A property read by name, not a list index */
+  def isName(property: Object): Boolean = property match {
+    case s: String => !s.forall(c => c.isDigit || c == '-')
+    case _         => false
+  }
 
   def stringMethod(s: String, name: String, args: List[Object]): Option[Object] = name match {
     case "upper" => Some(s.toUpperCase)

@@ -1,7 +1,8 @@
 package ai.starlake.dbt
 
-import ai.starlake.dbt.jinja.{DbtAdapter, DbtConfigObject, DbtExceptions}
-import ai.starlake.dbt.manifest.DbtMacro
+import ai.starlake.dbt.jinja.{DbtAdapter, DbtConfigObject, DbtExceptions, DbtJinjaRelation}
+import ai.starlake.dbt.manifest.{DbtMacro, DbtRelation}
+import ai.starlake.dbt.warehouse.{OfflineWarehouse, WarehouseRelation}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -219,7 +220,12 @@ class DbtJinjaContextSpec extends AnyFlatSpec with Matchers {
   "the dbt objects" should "do nothing outside a render" in {
     new DbtExceptions().invoke("warn", List("w")) shouldBe Some("")
     new DbtExceptions().invoke("raise_compiler_error", List("e")) shouldBe Some("")
-    new DbtAdapter("duckdb").invoke("execute", Nil) shouldBe Some("")
+    new DbtAdapter(
+      "duckdb",
+      new OfflineWarehouse,
+      WarehouseRelation(_, _, _),
+      r => new DbtJinjaRelation(DbtRelation(r.database, r.schema, r.identifier), r.database)
+    ).invoke("execute", Nil) shouldBe Some("")
     new DbtConfigObject(new util.HashMap[String, Object]()).require("k") shouldBe ""
   }
 

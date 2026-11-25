@@ -1,16 +1,23 @@
 package ai.starlake.dbt.warehouse
 
+import com.hubspot.jinjava.objects.serialization.PyishSerializable
+
 import java.time.format.DateTimeFormatter
 import java.util
 import scala.jdk.CollectionConverters._
 
-/** run_query()'s answer, as dbt's agate table: rows by index, `columns`, `column_names` */
+/** run_query()'s answer, as dbt's agate table: rows by index, `columns`, `column_names`.
+  *
+  * PyishSerializable so that Jinjava does not wrap it in a PyList, which would hide its properties;
+  * as a list, Jinja reads them through DbtElResolver
+  */
 final class DbtTable(columnNames: List[String], rowList: List[util.List[Object]])
-    extends util.AbstractList[util.List[Object]] {
+    extends util.AbstractList[util.List[Object]]
+    with PyishSerializable {
   override def get(index: Int): util.List[Object] = rowList(index)
   override def size(): Int = rowList.size
   def getRows: util.List[util.List[Object]] = new util.ArrayList(rowList.asJava)
-  def getColumn_names: util.List[String] = new util.ArrayList(columnNames.asJava)
+  def getColumnNames: util.List[String] = new util.ArrayList(columnNames.asJava)
   def getColumns: DbtTableColumns = new DbtTableColumns(columnNames.zipWithIndex.map {
     case (n, i) => new DbtTableColumn(n, new util.ArrayList(rowList.map(_.get(i)).asJava))
   })
@@ -22,20 +29,26 @@ final class DbtTableColumn(val name: String, vals: util.List[Object]) {
   def values(): util.List[Object] = vals
 }
 
-/** `table.columns`: by index (`columns[0]`) or by name (`columns['status']`) */
-final class DbtTableColumns(cols: List[DbtTableColumn]) extends util.AbstractList[DbtTableColumn] {
+/** `table.columns`: by index (`columns[0]`) or by name (`columns['status']`, through DbtElResolver;
+  * not wrapped in a PyList, as [[DbtTable]])
+  */
+final class DbtTableColumns(cols: List[DbtTableColumn])
+    extends util.AbstractList[DbtTableColumn]
+    with PyishSerializable {
   override def get(index: Int): DbtTableColumn = cols(index)
   override def size(): Int = cols.size
   def byName(name: String): DbtTableColumn =
     cols.find(_.name == name).orElse(cols.find(_.name.equalsIgnoreCase(name))).orNull
 }
 
-/** adapter.get_columns_in_relation()'s column, as dbt's Column */
+/** adapter.get_columns_in_relation()'s column, as dbt's Column (Jinjava reads `data_type` as
+  * getDataType)
+  */
 final class DbtWarehouseColumn(name: String, dataType: String, quote: String) {
   private val base = dataType.toLowerCase.takeWhile(_ != '(').trim.stripSuffix(" unsigned").trim
   def getName: String = name
   def getColumn: String = name
-  def getData_type: String = dataType
+  def getDataType: String = dataType
   def getDtype: String = dataType
   def getQuoted: String = s"$quote$name$quote"
   def is_string(): Boolean =
@@ -68,7 +81,7 @@ final class DbtWarehouseColumn(name: String, dataType: String, quote: String) {
   def is_number(): Boolean = is_integer() || is_float() || is_numeric()
   override def toString: String = name
   override def equals(o: Any): Boolean = o match {
-    case c: DbtWarehouseColumn => c.getName == name && c.getData_type == dataType
+    case c: DbtWarehouseColumn => c.getName == name && c.getDataType == dataType
     case _                     => false
   }
   override def hashCode(): Int = (name, dataType).hashCode()
