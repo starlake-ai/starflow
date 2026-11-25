@@ -5,7 +5,7 @@ application:
     transform: "airflow_transform_shell"
   loader: "{{ loader }}" # native or spark depending on the env.LOCAL.sl.yml & env.BQ.sl.yml files
   accessPolicies:
-    apply: true
+    apply: {{ apply_access_policies }} # the sample's ACLs use BigQuery roles: off on Redshift
     location: europe-west1
     taxonomy: GDPR
   connections:

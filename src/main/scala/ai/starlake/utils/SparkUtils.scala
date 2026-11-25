@@ -390,13 +390,28 @@ object SparkUtils extends LazyLogging {
               )
             }
             val typ =
-              ddlTyp.getOrElse(getJdbcType(field.dataType, dialect).databaseTypeDefinition)
+              ddlTyp.getOrElse(defaultJdbcType(field.dataType, dialect, dialectName))
             Some(s"$quotedFieldName $typ")
           }
         column
       }
     columns.toList
   }
+
+  /** Redshift goes through Spark's PostgresDialect (see dialectForUrl), which maps TimestampType to
+    * TIMESTAMP WITH TIME ZONE since Spark 4. spark-redshift stages timestamps as text without an
+    * offset, which a COPY into a TIMESTAMPTZ column rejects (error 1206), so Redshift keeps the
+    * TIMESTAMP it got under Spark 3, as in its audit table DDL.
+    */
+  private def defaultJdbcType(
+    dataType: DataType,
+    dialect: JdbcDialect,
+    dialectName: String
+  ): String =
+    dataType match {
+      case TimestampType if dialectName.equalsIgnoreCase("redshift") => "TIMESTAMP"
+      case _ => getJdbcType(dataType, dialect).databaseTypeDefinition
+    }
 
   def sql(session: SparkSession, sql: String): DataFrame = {
     val formattedSQL = SQLUtils.format(sql.trim, JSQLFormatter.OutputFormat.PLAIN)

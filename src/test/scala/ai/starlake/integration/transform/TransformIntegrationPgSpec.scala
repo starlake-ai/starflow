@@ -30,7 +30,7 @@ class TransformIntegrationPgSpec extends JDBCIntegrationSpecBase {
         copyFilesToIncomingDir(sampleDataDir)
         assert(
           new Main().run(
-            Array("transform", "--name", "sales_kpi.byseller_kpi")
+            Array("transform", "--name", "sales_kpi.byseller_kpi0")
           )
         )
       }
