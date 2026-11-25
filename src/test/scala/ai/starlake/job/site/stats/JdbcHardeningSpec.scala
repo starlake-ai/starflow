@@ -146,7 +146,7 @@ class JdbcHardeningSpec extends AnyFlatSpec with Matchers {
   private val orders = PhysicalTable(Some("ignored_db"), "sales", "orders")
   private val group = SchemaGroup(Some("ignored_db"), "sales", List(orders))
 
-  "GenericJdbcStatsCollector" should "pass the schema as the catalog on MySQL and MariaDB" in
+  "GenericJdbcStatsCollector" should "pass the schema as the catalog on MySQL" in
   withDuckDb { c =>
     val calls = ListBuffer.empty[(String, String, String)]
     val res =

@@ -71,7 +71,7 @@ object ImplicitCommits {
     * @param nestedComments
     *   block comments nest, as on PostgreSQL and SQL Server
     * @param executableComments
-    *   the engine runs the content of `/*! ... */` and `/*M! ... */`, as MySQL and MariaDB do
+    *   the engine runs the content of `/*! ... */`, as MySQL does
     */
   private final case class Dialect(
     name: String,
@@ -131,7 +131,6 @@ object ImplicitCommits {
       // A PostgreSQL connection taken for Redshift is read as PostgreSQL too
       "redshift"  -> List(redshift, redshift.copy(nestedComments = false), PostgreSQL),
       "mysql"     -> mysqlDialects,
-      "mariadb"   -> mysqlDialects,
       "snowflake" -> List(snowflake, snowflake.copy(crEndsComments = true)),
       "sqlserver" -> List(sqlServer, sqlServer.copy(crEndsComments = true)),
       "h2" -> List(
@@ -255,12 +254,9 @@ object ImplicitCommits {
         }
       } else if (lineComment) {
         while (index < length && !endsComment(sql.charAt(index))) index += 1
-      } else if (
-        dialect.executableComments && char == '/' && at(1) == '*' &&
-        (at(2) == '!' || at(2) == 'M' && at(3) == '!')
-      ) {
-        // MySQL and MariaDB run the content of an executable comment: only its marker is removed
-        index += (if (at(2) == '!') 3 else 4)
+      } else if (dialect.executableComments && char == '/' && at(1) == '*' && at(2) == '!') {
+        // MySQL runs the content of an executable comment: only its marker is removed
+        index += 3
         while (index < length && sql.charAt(index).isDigit) index += 1
         executableComment = true
         current.append(' ')

@@ -452,9 +452,7 @@ final case class ConnectionInfo(
             val urlKey = if (options.contains("url")) "url" else "sfUrl"
             val engineName =
               if (urlKey == "sfUrl") "snowflake" else options(urlKey).split(':')(1).toLowerCase()
-            if (engineName == "mariadb")
-              "mysql"
-            else if (engineName == "databricks")
+            if (engineName == "databricks")
               "spark"
             else engineName
           case ConnectionType.BQ => "bigquery"
@@ -499,17 +497,11 @@ final case class ConnectionInfo(
   def isPostgreSql(): Boolean = getJdbcEngineName().toString == "postgresql"
 
   @JsonIgnore
-  def isMySQLOrMariaDb(): Boolean = isMySQL() || isMariaDb()
-
-  @JsonIgnore
   def isCLickhouse(): Boolean =
     getJdbcEngineName().toString == "clickhouse" || getJdbcEngineName().toString == "ch"
 
   @JsonIgnore
   def isMySQL(): Boolean = getJdbcEngineName().toString == "mysql"
-
-  @JsonIgnore
-  def isMariaDb(): Boolean = getJdbcEngineName().toString == "mariadb"
 
   @JsonIgnore
   def isDuckDb(): Boolean = getJdbcEngineName().toString == "duckdb"

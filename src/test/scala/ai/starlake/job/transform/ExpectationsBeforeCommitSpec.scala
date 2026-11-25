@@ -575,9 +575,9 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
     }
   }
 
-  // MariaDB commits TRUNCATE and the DDL statements on their own. Its user may use its database only.
-  new Fixture("test-mariadb", "starlake") {
-    "A JDBC transform in APPEND on MariaDB" should
+  // MySQL commits TRUNCATE and the DDL statements on their own. Its user may use its database only.
+  new Fixture("test-mysql", "starlake") {
+    "A JDBC transform in APPEND on MySQL" should
     "append no row when an expectation checked before the commit fails" in {
       val expectations = List(ExpectationItem("without_id(9)"))
       transform(
@@ -593,7 +593,7 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       ids(s"$folder.before_commit_appended") shouldBe List(1L, 2L)
     }
 
-    "The first run of a JDBC transform on MariaDB, whose CREATE TABLE commits on its own" should
+    "The first run of a JDBC transform on MySQL, whose CREATE TABLE commits on its own" should
     "drop the table when an expectation checked before the commit fails" in {
       val result = transform(
         "before_commit_created",
@@ -608,7 +608,7 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       tableExists(folder, "before_commit_created") shouldBe false
     }
 
-    "A JDBC transform in APPEND on a MyISAM table of MariaDB" should
+    "A JDBC transform in APPEND on a MyISAM table of MySQL" should
     "run its expectations after the write, which a rollback would not undo" in {
       execute(s"DROP TABLE IF EXISTS $folder.before_commit_myisam")
       execute(s"CREATE TABLE $folder.before_commit_myisam (id BIGINT) ENGINE = MyISAM")
@@ -624,7 +624,7 @@ class ExpectationsBeforeCommitSpec extends TestHelper {
       ids(s"$folder.before_commit_myisam") shouldBe List(1L, 2L, 3L, 9L)
     }
 
-    "A JDBC transform in OVERWRITE on MariaDB, whose TRUNCATE commits on its own" should
+    "A JDBC transform in OVERWRITE on MySQL, whose TRUNCATE commits on its own" should
     "run its expectations after the write, which a rollback could not undo" in {
       val expectations = List(ExpectationItem("at_least_rows(2)"))
       transform(

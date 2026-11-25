@@ -242,8 +242,8 @@ class GenericJdbcStatsCollector(val engine: String) extends StatsCollector {
 object GenericJdbcStatsCollector {
 
   /** One schema through DatabaseMetaData, trying the schema as written, upper and lower case.
-    * Drivers without schemas in table definitions (MySQL, MariaDB) expose databases as catalogs:
-    * the schema is then passed as the catalog, unescaped since the catalog is not a pattern.
+    * Drivers without schemas in table definitions (MySQL) expose databases as catalogs: the schema
+    * is then passed as the catalog, unescaped since the catalog is not a pattern.
     */
   private[stats] def collectGroup(md: DatabaseMetaData, g: SchemaGroup): GroupResult = {
     val escape = Try(md.getSearchStringEscape).toOption.orNull

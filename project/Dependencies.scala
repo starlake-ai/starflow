@@ -240,11 +240,9 @@ object Dependencies {
     "org.postgresql" % "postgresql" % "42.7.13" % "provided"
   )
 
-  val mariadb = Seq(
-    "com.dimafeng" %% "testcontainers-scala-mariadb" % Versions.testContainers % Test excludeAll (jnaExclusions: _*),
+  val mysql = Seq(
     "com.dimafeng" %% "testcontainers-scala-mysql" % Versions.testContainers % Test excludeAll (jnaExclusions: _*),
     "io.trino" % "trino-jdbc" % "484" % Test,
-    "org.mariadb.jdbc" % "mariadb-java-client" % "3.5.10" % Test,
     "com.mysql" % "mysql-connector-j" % "9.7.0" % Test
   )
 
@@ -313,7 +311,7 @@ object Dependencies {
   def dependencies(isSnapshot: Boolean) =
     jna_apple_arm_testcontainers ++ scalate ++ logging ++ betterfiles ++ snowflake ++ redshift ++ scalaTest ++
     scopt ++ hadoop ++ duckdb ++ gcp ++ azure ++ h2 ++ excelClientApi ++ kafkaClients ++ jinja ++
-    pgGcp ++ jsonSchemaValidator ++ mariadb ++ derbyTestServer ++ jSqlTranspiler(
+    pgGcp ++ jsonSchemaValidator ++ mysql ++ derbyTestServer ++ jSqlTranspiler(
       isSnapshot
     ) ++ cache ++ swaggerParser ++ starlakeStreaming ++ templates
 }

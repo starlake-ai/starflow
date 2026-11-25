@@ -174,11 +174,9 @@ goto :handle_command
     rem in addition to each per-category flag, or the per-category values
     rem below have no effect at all (they would just be OR'd away).
     rem
-    rem NOTE: Setup.java's field is ENABLE_MARIADB but the env var it
-    rem actually reads is ENABLE_MARIA (a pre-existing field/env-var name
-    rem mismatch in Setup.java itself - not a typo here). Every other flag
-    rem below has a matching field/env-var name (verified against every
-    rem envIsTrueWithDefaultTrue("ENABLE_...") call in Setup.java).
+    rem Every flag below has a matching Setup.java field/env-var name
+    rem (verified against every envIsTrueWithDefaultTrue("ENABLE_...") call
+    rem in Setup.java).
     rem
     rem Two sources of truth, in priority order, mirroring starlake.sh's
     rem infer_enable_flags_from_deps (see inference-fix-report.md for the
@@ -203,12 +201,6 @@ goto :handle_command
     set "OLD_ENABLE_SNOWFLAKE=%ENABLE_SNOWFLAKE%"
     set "OLD_ENABLE_REDSHIFT=%ENABLE_REDSHIFT%"
     set "OLD_ENABLE_POSTGRESQL=%ENABLE_POSTGRESQL%"
-    rem ENABLE_MARIA is the odd one out: the *file key* versions.cmd persists
-    rem is ENABLE_MARIADB (generateVersions()'s own naming, verified back to
-    rem v1.6.0), but the *runtime key* Setup.java reads is ENABLE_MARIA - so
-    rem the old recorded value must be read from ENABLE_MARIADB, not
-    rem ENABLE_MARIA (which was never set by the earlier versions.cmd load).
-    set "OLD_ENABLE_MARIA=%ENABLE_MARIADB%"
     set "OLD_ENABLE_TRINODB=%ENABLE_TRINODB%"
     set "OLD_ENABLE_KAFKA=%ENABLE_KAFKA%"
     set "OLD_ENABLE_DUCKDB=%ENABLE_DUCKDB%"
@@ -241,11 +233,6 @@ goto :handle_command
     if defined OLD_ENABLE_POSTGRESQL (set "ENABLE_POSTGRESQL=%OLD_ENABLE_POSTGRESQL%") else (
         set "ENABLE_POSTGRESQL=false"
         if exist "%SCRIPT_DIR%bin\deps\postgresql-*.jar" set "ENABLE_POSTGRESQL=true"
-    )
-
-    if defined OLD_ENABLE_MARIA (set "ENABLE_MARIA=%OLD_ENABLE_MARIA%") else (
-        set "ENABLE_MARIA=false"
-        if exist "%SCRIPT_DIR%bin\deps\mariadb-java-client-*.jar" set "ENABLE_MARIA=true"
     )
 
     if defined OLD_ENABLE_TRINODB (set "ENABLE_TRINODB=%OLD_ENABLE_TRINODB%") else (
