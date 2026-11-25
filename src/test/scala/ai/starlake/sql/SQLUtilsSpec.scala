@@ -20,6 +20,14 @@ class SQLUtilsSpec extends TestHelper {
       assert(true)
     }
 
+    "extractColumnNamesOrStar" should "give the columns, or * when jsqlparser rejects the SQL" in {
+      SQLUtils.extractColumnNamesOrStar("select a, b from t") shouldBe List("a", "b")
+      // `final` is a reserved word of jsqlparser, a common CTE name in dbt projects
+      SQLUtils.extractColumnNamesOrStar(
+        "with d as (select 1 as id), final as (select * from d) select id from final"
+      ) shouldBe List("*")
+    }
+
     val selectWithCTE1 =
       """WITH cte1 as (select *  except(this_col) from thisview),
         |cte2 as (select * from thisview)

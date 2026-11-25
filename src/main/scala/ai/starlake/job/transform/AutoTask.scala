@@ -691,7 +691,7 @@ abstract class AutoTask(
           )
 
         val extractedColumnNames =
-          SQLUtils.extractColumnNames(sqlWithParametersTranspiledIfInTest)
+          SQLUtils.extractColumnNamesOrStar(sqlWithParametersTranspiledIfInTest)
         val resolvedColumnNames =
           if (extractedColumnNames == List("*")) {
             // SELECT * doesn't give us column names; resolve by executing the SQL with LIMIT 0

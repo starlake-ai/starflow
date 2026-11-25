@@ -33,6 +33,19 @@ object SQLUtils extends LazyLogging {
   def extractCTENamesUsingRegEx(sql: String): List[String] =
     SqlParser.extractCTENamesUsingRegEx(sql)
 
+  /** Columns of the select, `List("*")` (resolved by the database) when the SQL does not parse:
+    * jsqlparser rejects valid dialect SQL such as a CTE named `final`.
+    */
+  def extractColumnNamesOrStar(sql: String): List[String] =
+    Try(SqlParser.extractColumnNames(sql)) match {
+      case Success(columns) => columns
+      case Failure(e) =>
+        logger.info(
+          s"Could not parse SQL, the database will resolve its columns: ${e.getMessage}"
+        )
+        List("*")
+    }
+
   /** Tables read by the statement, degrading to the regex extractor when the SQL does not parse
     * (unresolved Jinja, dialect specific syntax jsqlparser does not know, ...). The regex path
     * cannot resolve CTE references, so CTE names are subtracted explicitly there.
