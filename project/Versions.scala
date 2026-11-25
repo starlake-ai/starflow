@@ -39,12 +39,12 @@ object Versions {
   // TransformIntegration2Spec hang bisected to 2.69.0 (see .superpowers/sdd/recipeb-report.md
   // and googleapis/google-cloud-java#14151). Resolved by excluding org.conscrypt in build.sbt:
   // the SDK falls back to the default JSSE provider. Verified green on 2.71.0.
-  val bigquery = "2.71.0"
-  val gcsConnector = "4.0.5" // new versioning scheme, built against Hadoop 3.4.2
+  val bigquery = "2.77.0"
+  val gcsConnector = "4.0.11" // new versioning scheme, built against Hadoop 3.4.2
   val hadoop = "3.5.0" // must match Spark 4.3.0's Hadoop line; aws/azure artifacts use this too
   val awsSdkBundle = "2.35.4" // software.amazon.awssdk (v2), pinned by hadoop-project 3.5.0
   val sparkBigquery =
-    "0.46.1" // artifact spark-4.2-bigquery, no scala suffix. No spark-4.3-bigquery exists yet:
+    "0.46.2" // artifact spark-4.2-bigquery, no scala suffix. No spark-4.3-bigquery exists yet:
   // the 4.2 build runs on Spark 4.3 (DataSource V2 only).
   val bigqueryConnector = "hadoop3-1.2.0"
   val h2 = "2.5.252" // Test only
@@ -52,7 +52,7 @@ object Versions {
   val confluentVersion = "7.9.11"
   val kafkaClients = "7.9.11-ce"
   val testContainers = "0.44.1"
-  val gcpCloudLogging = "3.38.0"
+  val gcpCloudLogging = "3.44.0"
   val gcpDataCatalog = "1.102.0"
   val jinja = "2.7.7" // forces dependency override on guava
   val snowflakeJDBC = "4.3.4" // spark-snowflake 3.2.x requires >= 4.0.2

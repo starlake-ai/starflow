@@ -379,7 +379,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
 
 
     // BIGQUERY
-    private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.46.1");
+    private static final String SPARK_BQ_VERSION = getEnv("SPARK_BQ_VERSION").orElse("0.46.2");
 
     // deltalake
     // Delta 4.5.0, the first release for Spark 4.3, is not out. Until it is, we serve our own build
