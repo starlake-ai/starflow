@@ -157,7 +157,7 @@ object Dependencies {
 
   val scalaTest = Seq(
     "org.scalatest" %% "scalatest" % Versions.scalatest % Test excludeAll (jacksonExclusions: _*),
-    "org.scalatestplus" %% "scalacheck-1-18" % Versions.scalacheckForScalatest % Test excludeAll (jacksonExclusions: _*)
+    "org.scalatestplus" %% "scalacheck-1-19" % Versions.scalacheckForScalatest % Test excludeAll (jacksonExclusions: _*)
   )
 
   val h2 = Seq(
@@ -235,15 +235,15 @@ object Dependencies {
   )
 
   val pgGcp = Seq(
-    "com.google.cloud.sql" % "postgres-socket-factory" % "1.28.6" % Test,
+    "com.google.cloud.sql" % "postgres-socket-factory" % "1.31.0" % Test,
     "com.dimafeng" %% "testcontainers-scala-postgresql" % Versions.testContainers % Test excludeAll (jnaExclusions: _*),
-    "org.postgresql" % "postgresql" % "42.7.13" % "provided"
+    "org.postgresql" % "postgresql" % "42.7.14" % "provided"
   )
 
   val mysql = Seq(
     "com.dimafeng" %% "testcontainers-scala-mysql" % Versions.testContainers % Test excludeAll (jnaExclusions: _*),
     "io.trino" % "trino-jdbc" % "484" % Test,
-    "com.mysql" % "mysql-connector-j" % "9.7.0" % Test
+    "com.mysql" % "mysql-connector-j" % "26.10.0" % Test
   )
 
   val jinja = Seq(
@@ -294,7 +294,7 @@ object Dependencies {
   )
 
   val cache = Seq(
-    "com.github.ben-manes.caffeine" % "caffeine" % "3.2.4"
+    "com.github.ben-manes.caffeine" % "caffeine" % "3.3.1"
   )
 
   val starlakeStreaming = Seq(

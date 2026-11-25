@@ -417,7 +417,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final String SPARK_SNOWFLAKE_VERSION = getEnv("SPARK_SNOWFLAKE_VERSION").orElse("3.2.3-spark_4.1");
 
     // POSTGRESQL
-    private static final String POSTGRESQL_VERSION = getEnv("POSTGRESQL_VERSION").orElse("42.7.13");
+    private static final String POSTGRESQL_VERSION = getEnv("POSTGRESQL_VERSION").orElse("42.7.14");
 
     // CLICKHOUSE
     private static final String CLICKHOUSE_VERSION = getEnv("CLICKHOUSE_VERSION").orElse("0.9.0");
@@ -427,7 +427,7 @@ public class Setup extends ProxySelector implements X509TrustManager {
     private static final String TRINODB_VERSION = getEnv("TRINODB_VERSION").orElse("478");
 
     // DUCKDB
-    private static final String DUCKDB_VERSION = getEnv("DUCKDB_VERSION").orElse("2.0.0.0");
+    private static final String DUCKDB_VERSION = getEnv("DUCKDB_VERSION").orElse("2.0.0.1");
 
     // ARROW FLIGHT SQL
     private static final String FLIGHT_SQL_JDBC_VERSION = getEnv("FLIGHT_SQL_JDBC_VERSION").orElse("19.0.0");
@@ -439,11 +439,11 @@ public class Setup extends ProxySelector implements X509TrustManager {
     // leave S3A/Redshift staging without the credential/client classes hadoop-aws now calls.
     private static final String AWS_JAVA_SDK_V2_VERSION = getEnv("AWS_JAVA_SDK_V2_VERSION").orElse("2.35.4");
     private static final String HADOOP_AWS_VERSION = getEnv("HADOOP_AWS_VERSION").orElse("3.5.0");
-    private static final String REDSHIFT_JDBC_VERSION = getEnv("REDSHIFT_JDBC_VERSION").orElse("2.2.8");
+    private static final String REDSHIFT_JDBC_VERSION = getEnv("REDSHIFT_JDBC_VERSION").orElse("2.2.9");
     private static final String SPARK_REDSHIFT_VERSION = getEnv("SPARK_REDSHIFT_VERSION").orElse("7.0.0");
 
     // KAFKA CONFLUENT
-    private static final String CONFLUENT_VERSION = getEnv("CONFLUENT_VERSION").orElse("7.9.3");
+    private static final String CONFLUENT_VERSION = getEnv("CONFLUENT_VERSION").orElse("7.9.11");
     
     private static final String PYTHON_LIBS_URL = "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/python-libs/";
 
