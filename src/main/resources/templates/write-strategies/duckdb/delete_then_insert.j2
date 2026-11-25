@@ -1,5 +1,14 @@
 
+{# A SELECT that reads its target must give the rows it gave before the DELETE: they go to a
+   temporary table (stageIncoming), except on a data branch, whose proxy does not take temporary
+   tables, and over Arrow Flight SQL, where each statement runs in its own session: the rows then
+   come from a view, as before #}
+{% if stageIncoming %}
+DROP TABLE IF EXISTS temp.SL_INCOMING;
+CREATE TEMPORARY TABLE SL_INCOMING AS {{ selectStatement }};
+{% else %}
 CREATE OR REPLACE VIEW SL_INCOMING AS {{ selectStatement }};
+{% endif %}
 
 {% if strategyOn == 'TARGET' %}
 
@@ -13,7 +22,11 @@ WHERE {{ renderStrategyKeyJoinCondition(tableFullName, 'SL_INCOMING', strategyKe
 
 {% else %} {# strategyOn == 'SOURCE_AND_TARGET' #}
 
+{% if stageIncoming %}
+CREATE OR REPLACE TEMPORARY VIEW SL_VIEW_WITH_ROWNUM AS (
+{% else %}
 CREATE OR REPLACE VIEW SL_VIEW_WITH_ROWNUM AS (
+{% endif %}
 SELECT {{ tableColumnsCsv }}, ROW_NUMBER() OVER (PARTITION BY  {{ strategyKeyCsv }} ORDER BY {{ strategyTimestamp }} DESC) AS SL_SEQ
 FROM SL_INCOMING
 );
@@ -28,6 +41,11 @@ WHERE {{ renderStrategyKeyJoinCondition(tableFullName, 'SL_VIEW_WITH_ROWNUM', st
 
 INSERT INTO {{ tableFullName }} ({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM SL_INCOMING;
 
+{% if stageIncoming %}
+DROP VIEW IF EXISTS temp.SL_VIEW_WITH_ROWNUM;
+DROP TABLE IF EXISTS temp.SL_INCOMING;
+{% else %}
 DROP VIEW IF EXISTS SL_VIEW_WITH_ROWNUM;
 DROP VIEW IF EXISTS SL_INCOMING;
+{% endif %}
 

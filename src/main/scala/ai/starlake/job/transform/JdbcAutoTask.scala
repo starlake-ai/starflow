@@ -106,6 +106,9 @@ class JdbcAutoTask(
     runJDBC(None, this.conn)
   }
 
+  override protected def strategyTemplateVariables(): Map[String, Any] =
+    JdbcAutoTask.strategyTemplateVariables(sinkConnection, this.schemaHandler.dataBranch())
+
   override def tableExists: Boolean = {
     val exists =
       JdbcDbUtils.withJDBCConnection(
@@ -942,6 +945,24 @@ class JdbcAutoTask(
 }
 
 object JdbcAutoTask extends LazyLogging {
+
+  /** Variables that the write strategy templates of a task on this connection receive.
+    *
+    * `stageIncoming`: the DuckDB templates copy the rows of the SELECT into a temporary table
+    * before they change the target, so that a SELECT that reads its target gives the rows it gave
+    * before the DELETE. Not on a data branch, whose starlake-jdbc proxy does not take temporary
+    * tables, nor over Arrow Flight SQL (QoD), where each statement runs in its own session: the
+    * templates then read the incoming rows from a view, as before.
+    *
+    * @param dataBranch
+    *   the data branch the run writes to, the one its connections are opened with
+    */
+  def strategyTemplateVariables(
+    sinkConnection: Settings.ConnectionInfo,
+    dataBranch: Option[String]
+  ): Map[String, Any] =
+    Map("stageIncoming" -> (dataBranch.isEmpty && !sinkConnection.isFlightSql()))
+
   def executeUpdate(sql: String, connectionName: String, accessToken: Option[String])(implicit
     settings: Settings
   ): Try[Boolean] = {
