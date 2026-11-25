@@ -8,7 +8,7 @@ import ai.starlake.schema.model._
 import ai.starlake.utils.YamlSerde
 
 import java.nio.file.Files
-import scala.util.Success
+import scala.util.{Success, Try}
 
 /** One case per row of the model mapping table, asserted on the YAML the import writes */
 class DbtModelMapperSpec extends TestHelper {
@@ -71,6 +71,36 @@ class DbtModelMapperSpec extends TestHelper {
       val t = task("staging", "stg_orders")
       strategy(t) shouldBe (Some(WriteStrategyType.OVERWRITE), Nil)
       t.sink.flatMap(_.materializedView) shouldBe Some(Materialization.VIEW)
+    }
+
+    "A model with a CTE named after a JSqlParser reserved word" should "have it renamed, noted in the report" in {
+      def mapSql(sql: String) =
+        DbtModelMapper.map(DbtFixtures.model("synthetic", Map.empty, sql), ctx).toOption.get
+      val m = mapSql(
+        "with d as (select 1 as id, 'final' as tag), final as (select d.id, 'from final' as s from d) " +
+        "select final.id from final join d on d.id = final.id"
+      )
+      val out = m.sql
+      out should include("sl_final as (")
+      out should include("from sl_final")
+      out should include("join d on")
+      out should include("sl_final.id")
+      out should include("'final' as tag")
+      out should include("'from final' as s")
+      Try(net.sf.jsqlparser.parser.CCJSqlParserUtil.parse(out)).isSuccess shouldBe true
+      m.entry.notes should contain(
+        "CTE final renamed sl_final: final is reserved for Starlake's SQL parser"
+      )
+      mapSql("select 1 as id").entry.notes.exists(_.contains("renamed")) shouldBe false
+    }
+
+    "A model whose SQL stays unparseable after the rename" should "keep it, with a note" in {
+      val sql = "with final as (select 1 as id) select id from final where id in ("
+      val m = DbtModelMapper.map(DbtFixtures.model("synthetic", Map.empty, sql), ctx).toOption.get
+      m.sql shouldBe sql
+      m.entry.notes should contain(
+        "Starlake's SQL parser cannot read this SQL: set parseSQL: false on the task, or rewrite it"
+      )
     }
 
     "An ephemeral model" should "be a view, noted in the report" in {

@@ -99,7 +99,9 @@ export DBT_SEND_ANONYMOUS_USAGE_STATS=false DBT_VERSION_CHECK=false DBT_PROFILES
 starlake bootstrap --template empty-project --no-exit
 starlake dbt import --manifest "$WORK/jaffle/target/manifest.json" --connection duckdb --introspect --vars "$VARS"
 REPORT="$WORK/sl/dbt-import-report.md"
-grep -q 'Warehouse answers' "$REPORT"
+grep -q '^## Warehouse answers' "$REPORT"
+grep -q '^- `main.metricflow_time_spine`: query: ' "$REPORT"
+grep -q 'CTE final renamed sl_final: final is reserved for Starlake' "$REPORT"
 starlake stage
 starlake load
 TASKS="$(sed -n 's/^- next: starlake transform --name //p' "$REPORT")"

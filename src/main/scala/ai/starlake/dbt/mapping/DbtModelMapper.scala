@@ -8,6 +8,7 @@ import ai.starlake.dbt.warehouse.WarehouseRead
 import ai.starlake.dbt.{DbtSkip, IncrementalDiff}
 import ai.starlake.schema.model._
 import ai.starlake.utils.YamlSerde
+import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import org.apache.hadoop.fs.Path
 
 import scala.util.{Failure, Success, Try}
@@ -67,13 +68,14 @@ object DbtModelMapper {
           rendered match {
             case Failure(DbtSkip(reason)) => Left(skip(reason))
             case Failure(e)               => Left(skip(s"render failed: ${e.getMessage}"))
-            case Success((main, presql, postsql)) =>
+            case Success((renderedMain, presql, postsql)) =>
+              val (main, cteNotes) = renameReservedCtes(renderedMain)
               val hooksAndMain = main :: presql ++ postsql
               val split = hooksAndMain.exists(_.split)
               val outside = hooksAndMain.exists(_.outside)
               val renders = hooksAndMain.flatMap(_.renders)
               val (attributes, typeNotes) = attributesOf(node.columns, ctx)
-              val notes = strategyNotes ++ configNotes(node) ++ typeNotes ++
+              val notes = strategyNotes ++ configNotes(node) ++ typeNotes ++ cteNotes ++
                 (if (split) List("a string literal holds a Jinja delimiter: split with CONCAT")
                  else Nil) ++
                 (if (outside)
@@ -128,6 +130,76 @@ object DbtModelMapper {
               )
           }
       }
+  }
+
+  /** Words JSqlParser rejects as a CTE name (checked one by one), common in dbt projects (`final`)
+    */
+  private val reservedCteNames = List("final", "current", "window")
+
+  private val protectedSpans = """'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|--[^\n]*|/\*(?s:.*?)\*/""".r
+
+  /** JSqlParser also trips on whitespace-only lines, which Starlake strips before parsing: strip
+    * them the same way
+    */
+  private def parses(sql: String): Boolean = {
+    val compact = sql.linesIterator.map(_.trim).filter(_.nonEmpty).mkString("\n")
+    Try(CCJSqlParserUtil.parse(compact)).isSuccess
+  }
+
+  /** Renames in `sql` the CTE `name` (definition, `from`/`join` references and qualifiers) to
+    * `sl_name`, outside string literals, quoted identifiers and comments
+    */
+  private def renameCte(sql: String, name: String): String = {
+    val n = java.util.regex.Pattern.quote(name)
+    val definition = s"(?i)(?<![\\w$$.])$n(?=\\s+as\\s*\\()".r
+    val reference = s"(?i)\\b(from|join)(\\s+)$n(?![\\w$$])".r
+    val qualifier = s"(?i)(?<![\\w$$.])$n(?=\\s*\\.)".r
+    def rename(code: String): String = {
+      val d = definition.replaceAllIn(code, _ => s"sl_$name")
+      val r = reference.replaceAllIn(d, m => s"${m.group(1)}${m.group(2)}sl_$name")
+      qualifier.replaceAllIn(r, _ => s"sl_$name")
+    }
+    val out = new StringBuilder
+    var last = 0
+    protectedSpans.findAllMatchIn(sql).foreach { m =>
+      out.append(rename(sql.substring(last, m.start))).append(m.matched)
+      last = m.end
+    }
+    out.append(rename(sql.substring(last))).toString
+  }
+
+  /** The SQL, with the CTEs named like a JSqlParser reserved word renamed when Starlake's parser
+    * rejects it, and the notes for the report
+    */
+  private def renameReservedCtes(rendered: Rendered): (Rendered, List[String]) = {
+    val sql = rendered.sql
+    if (
+      rendered.outside || rendered.split || sql.contains("{{") || sql.contains("{%") || parses(sql)
+    )
+      (rendered, Nil)
+    else {
+      val reserved = reservedCteNames.filter { n =>
+        s"(?i)(?<![\\w$$.])${java.util.regex.Pattern.quote(n)}\\s+as\\s*\\(".r
+          .findFirstIn(protectedSpans.replaceAllIn(sql, " "))
+          .isDefined
+      }
+      if (reserved.isEmpty) (rendered, Nil)
+      else {
+        val renamed = reserved.foldLeft(sql)(renameCte)
+        if (parses(renamed))
+          (
+            rendered.copy(sql = renamed),
+            reserved.map(n => s"CTE $n renamed sl_$n: $n is reserved for Starlake's SQL parser")
+          )
+        else
+          (
+            rendered,
+            List(
+              "Starlake's SQL parser cannot read this SQL: set parseSQL: false on the task, or rewrite it"
+            )
+          )
+      }
+    }
   }
 
   /** The SQL of a template, with `sl_incremental` blocks when its two renders differ. Each render
