@@ -39,6 +39,15 @@ class DbtImportCmdSpec extends TestHelper {
     )
   }
 
+  it should "read --introspect and --introspect-max-rows" in {
+    val c = DbtImportCmd
+      .parse(Seq("import", "--manifest", "m.json", "--introspect", "--introspect-max-rows", "50"))
+      .get
+    c.introspect shouldBe true
+    c.introspectMaxRows shouldBe 50
+    DbtImportCmd.parse(Seq("import", "--manifest", "m.json")).get.introspect shouldBe false
+  }
+
   it should "refuse another action and a missing manifest" in {
     DbtImportCmd.parse(Seq("export", "--manifest", "m.json")) shouldBe None
     DbtImportCmd.parse(Seq("import")) shouldBe None

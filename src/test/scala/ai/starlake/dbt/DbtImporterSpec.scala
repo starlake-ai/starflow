@@ -203,4 +203,54 @@ class DbtImporterSpec extends TestHelper {
       written(result, "/transform/s/m.sl.yml") should include regex "connectionRef: \"?bigquery\"?"
     }
   }
+
+  private def duckdbConfiguration =
+    ConfigFactory
+      .parseString(
+        s"""
+           |connections.test-duckdb {
+           |  type = "jdbc"
+           |  loader = "native"
+           |  options {
+           |    "url": "jdbc:duckdb:$starlakeTestRoot/introspect.db"
+           |    "driver": "org.duckdb.DuckDBDriver"
+           |  }
+           |}
+           |""".stripMargin
+      )
+      .withFallback(super.testConfiguration)
+
+  new WithSettings(duckdbConfiguration) {
+    "--introspect without a connection" should "fail before writing anything" in {
+      val result = DbtImporter.run(
+        DbtImportConfig(
+          action = "import",
+          manifest = DbtFixtures.shopManifestPath.toString,
+          introspect = true
+        )
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage shouldBe
+      "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
+    }
+
+    "--introspect on a DuckDB connection" should "convert the model that runs a query, and report the answer" in {
+      val result = DbtImporter
+        .run(
+          DbtImportConfig(
+            action = "import",
+            manifest = DbtFixtures.shopManifestPath.toString,
+            connection = Some("test-duckdb"),
+            introspect = true,
+            force = true
+          )
+        )
+        .get
+      result.report.converted.map(_.dbtId) should contain("model.shop.needs_warehouse")
+      result.report.warehouseReads.map(r => (r.name, r.value, r.usedBy)) should contain(
+        ("query: select 42 as answer", "1 rows", List("marts.needs_warehouse"))
+      )
+      result.report.general should contain("introspection on connection test-duckdb")
+    }
+  }
 }

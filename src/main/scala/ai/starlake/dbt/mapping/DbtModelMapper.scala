@@ -7,6 +7,7 @@ import ai.starlake.dbt.jinja.DbtRendered
 import ai.starlake.dbt.{DbtSkip, IncrementalDiff}
 import ai.starlake.schema.model._
 import ai.starlake.utils.YamlSerde
+import ai.starlake.dbt.warehouse.WarehouseRead
 import org.apache.hadoop.fs.Path
 
 import scala.util.{Failure, Success, Try}
@@ -16,7 +17,8 @@ final case class MappedModel(
   sql: String,
   entry: ReportEntry,
   vars: Map[String, String],
-  envVars: Map[String, String]
+  envVars: Map[String, String],
+  warehouseReads: List[WarehouseRead] = Nil
 ) {
   def outputs(implicit settings: Settings): List[DbtOutput] = {
     val folder = new Path(DatasetArea.transform, task.domain)
@@ -120,7 +122,8 @@ object DbtModelMapper {
                     node.dependsOnNodes
                   ),
                   renders.flatMap(_.vars).toMap,
-                  renders.flatMap(_.envVars).toMap
+                  renders.flatMap(_.envVars).toMap,
+                  renders.flatMap(_.warehouseReads).distinct
                 )
               )
           }

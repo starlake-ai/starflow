@@ -5,6 +5,7 @@ import ai.starlake.dbt.jinja.{DbtConfigRenderer, DbtJinja, DbtJinjaContext}
 import ai.starlake.dbt.manifest._
 import ai.starlake.dbt.mapping._
 import ai.starlake.dbt.report.{BakedValue, ImportReport}
+import ai.starlake.dbt.warehouse.{CachingWarehouse, DbtWarehouse, JdbcWarehouse, OfflineWarehouse}
 import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.TableAttribute
 import ai.starlake.utils.{ExitCodeJobResult, Utils}
@@ -82,6 +83,7 @@ object DbtImporter {
       packages,
       cliVars
     )
+    val warehouse = warehouseOf(config, connectionEdit)
     val jinja = new DbtJinja(
       manifest,
       relations,
@@ -91,7 +93,8 @@ object DbtImporter {
         project.map(_.dispatch).getOrElse(Map.empty),
         env,
         ZonedDateTime.now()
-      )
+      ),
+      warehouse
     )
     val ctx = DbtMappingContext(
       manifest,
@@ -102,6 +105,7 @@ object DbtImporter {
     )
     val mapped = DbtMapper.plan(ctx, project)
     val notes = connectionNotes(config, profileTarget, connectionEdit, connectionOnObjects) ++
+      (if (config.introspect) List(s"introspection on connection ${warehouse.name}") else Nil) ++
       nextSteps(mapped.report)
     val configEnvVars =
       profileRenderer.envVars.toList.map { case (n, v) =>
@@ -131,6 +135,42 @@ object DbtImporter {
       DbtImportResult(plan.report, written, Nil, exitCode = 0)
     }
   }
+
+  /** Without --introspect, the offline warehouse. With it, the connection's warehouse behind the
+    * read-only guard and the row limit; it must open before anything is rendered or written.
+    */
+  private def warehouseOf(config: DbtImportConfig, edit: Option[ConnectionEdit])(implicit
+    settings: Settings
+  ): DbtWarehouse =
+    if (!config.introspect) new OfflineWarehouse
+    else {
+      val live: DbtWarehouse = config.connection match {
+        case Some(c) =>
+          val info = settings.appConfig.connections(c)
+          if (info.isBigQuery())
+            throw new DbtImportException("--introspect on BigQuery comes with BigQueryWarehouse")
+          new JdbcWarehouse(c, info.options)
+        case None =>
+          edit
+            .map(e =>
+              new JdbcWarehouse(
+                e.name,
+                Map("url" -> e.url, "driver" -> "org.duckdb.DuckDBDriver")
+              )
+            )
+            .getOrElse(
+              throw new DbtImportException(
+                "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
+              )
+            )
+      }
+      live.query("select 1").failed.foreach { e =>
+        throw new DbtImportException(
+          s"--introspect: connection ${live.name} cannot be opened: ${e.getMessage}"
+        )
+      }
+      new CachingWarehouse(live, config.introspectMaxRows)
+    }
 
   private def connectionNotes(
     config: DbtImportConfig,

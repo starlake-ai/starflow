@@ -16,6 +16,8 @@ final case class DbtImportConfig(
   connection: Option[String] = None,
   vars: Option[String] = None,
   force: Boolean = false,
+  introspect: Boolean = false,
+  introspectMaxRows: Int = 10000,
   reportFormat: Option[String] = None
 ) extends ReportFormatConfig
 
@@ -83,7 +85,21 @@ object DbtImportCmd extends Cmd[DbtImportConfig] {
         .opt[Unit]("force")
         .optional()
         .action((_, c) => c.copy(force = true))
-        .text("overwrite the files the import writes; nothing is deleted")
+        .text("overwrite the files the import writes; nothing is deleted"),
+      builder
+        .opt[Unit]("introspect")
+        .optional()
+        .action((_, c) => c.copy(introspect = true))
+        .text(
+          "answer the macros that read the warehouse (run_query, statement, adapter.get_columns_in_relation...) on the import's connection; read-only statements only"
+        ),
+      builder
+        .opt[Int]("introspect-max-rows")
+        .optional()
+        .action((x, c) => c.copy(introspectMaxRows = x))
+        .text(
+          "with --introspect, the most rows a query may return before its model is skipped (default 10000)"
+        )
     )
   }
 
