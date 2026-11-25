@@ -15,7 +15,7 @@ WHEN NOT MATCHED THEN {{ tableInsert }};
 DROP TABLE IF EXISTS SL_INCOMING;
 CREATE  TEMPORARY TABLE SL_INCOMING AS
 SELECT {{ tableColumnsCsv }}
-FROM ({{ selectStatement }})
+FROM ({{ selectStatement }}) AS SL_SOURCE
 QUALIFY ROW_NUMBER() OVER (PARTITION BY {{ strategyKeyCsv }}  ORDER BY 0) = 1;
 
 MERGE INTO {{ tableFullName }} 

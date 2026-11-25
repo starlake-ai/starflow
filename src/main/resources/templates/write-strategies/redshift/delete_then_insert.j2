@@ -1,7 +1,14 @@
-
+{# A SELECT that reads its target must give the rows it gave before the DELETE: they go to a
+   temporary table, #SL_INCOMING (stageIncoming), except on a data branch, whose proxy does not
+   take temporary tables: the rows then come from a view, as before #}
+{% if stageIncoming %}
+DROP TABLE IF EXISTS #SL_INCOMING;
+CREATE TABLE #SL_INCOMING AS {{ selectStatement }};
+{% else %}
 CREATE OR REPLACE VIEW #SL_INCOMING AS {{ selectStatement }};
+{% endif %}
 
-{% if strategyOn == 'TARGET' %}
+{% if strategyOn == 'TARGET' or stageIncoming %}
 
 
 DELETE FROM {{ tableFullName }}
@@ -28,6 +35,9 @@ WHERE EXISTS (
 
 INSERT INTO {{ tableFullName }} ({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }} FROM #SL_INCOMING;
 
+{% if stageIncoming %}
+DROP TABLE IF EXISTS #SL_INCOMING;
+{% else %}
 DROP VIEW IF EXISTS #SL_VIEW_WITH_ROWNUM;
 DROP VIEW IF EXISTS #SL_INCOMING;
-
+{% endif %}
