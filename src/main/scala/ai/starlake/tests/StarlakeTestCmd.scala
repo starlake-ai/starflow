@@ -6,7 +6,7 @@ import ai.starlake.schema.handlers.SchemaHandler
 import ai.starlake.utils.{EmptyJobResult, JobResult}
 import scopt.OParser
 
-import scala.util.{Success, Try}
+import scala.util.{Failure, Success, Try}
 
 /** Command to run tests.
   *
@@ -46,7 +46,7 @@ trait StarlakeTestCmd extends Cmd[StarlakeTestConfig] {
         .optional(),
       builder
         .opt[Option[String]]("table")
-        .action { (x, c) => c.copy(test = x) }
+        .action { (x, c) => c.copy(table = x) }
         .text(s"Test this table or task only in the selected domain")
         .optional(),
       builder
@@ -80,8 +80,16 @@ trait StarlakeTestCmd extends Cmd[StarlakeTestConfig] {
   override def run(config: StarlakeTestConfig, schemaHandler: SchemaHandler)(implicit
     settings: Settings
   ): Try[JobResult] = {
-    workflow(schemaHandler).testLoadAndTransform(config)
-    Success(EmptyJobResult)
+    val (results, _) = workflow(schemaHandler).testLoadAndTransform(config)
+    val selection = List("domain" -> config.domain, "table" -> config.table, "test" -> config.test)
+      .collect {
+        case (option, Some(value)) if value.nonEmpty && value != "*" => s"--$option $value"
+      }
+    if (results.isEmpty && selection.nonEmpty)
+      // a mistyped selection would otherwise run nothing and pass
+      Failure(new IllegalArgumentException(s"No test matches ${selection.mkString(" ")}"))
+    else
+      Success(EmptyJobResult)
   }
 }
 

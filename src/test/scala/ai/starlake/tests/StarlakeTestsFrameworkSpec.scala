@@ -123,4 +123,63 @@ class StarlakeTestsFrameworkSpec extends IntegrationTestBase {
       results.filter(!_.success) shouldBe empty
     }
   }
+
+  "The diff files of a failing comparison" should "hold the expected rows the task did not produce in missing, and the rows it produced unexpectedly in not_expected (#1677)" in {
+    val failed = runTransformTest("kpi", "order_summary", "test_ko").filter(!_.success)
+    failed should have size 1
+    def rows(file: Option[java.io.File]): List[String] =
+      File(file.get.toPath).lines.toList.drop(1).sorted
+    // _expected.csv holds (1, 999), (2, 999); the task gives (1, 40), (2, 20)
+    rows(failed.head.missingRecords) shouldBe List("1,999", "2,999")
+    rows(failed.head.notExpectedRecords) shouldBe List("1,40", "2,20")
+  }
+
+  "starlake test --table" should "select the table or task, not the test (#1676)" in {
+    val config =
+      StarlakeTestCmd.parse(Seq("--transform", "--domain", "kpi", "--table", "order_summary")).get
+    config.table shouldBe Some("order_summary")
+    config.test shouldBe None
+    withEnvs("SL_ROOT" -> projectDir.pathAsString) {
+      val results = StarlakeTestData
+        .runTransforms(
+          StarlakeTestData.loadTests(
+            load = false,
+            config.domain.getOrElse(""),
+            config.table.getOrElse(""),
+            config.test.getOrElse("")
+          )(settings),
+          config
+        )(settings)
+        ._1
+      results.map(_.testName).sorted shouldBe List("test_ko", "test_ok")
+      results.map(_.taskName).distinct shouldBe List("order_summary")
+    }
+  }
+
+  "starlake test" should "fail when the domain, table or test it selects matches no test (#1676)" in {
+    withEnvs("SL_ROOT" -> projectDir.pathAsString) {
+      val result = StarlakeTestCmd.run(
+        StarlakeTestConfig(transform = true, domain = Some("kpi"), table = Some("no_such_task")),
+        settings.schemaHandler()
+      )(settings)
+      result.isFailure shouldBe true
+      result.failed.get.getMessage should include("no_such_task")
+    }
+  }
+
+  it should "succeed when its selection matches tests" in {
+    withEnvs("SL_ROOT" -> projectDir.pathAsString) {
+      StarlakeTestCmd
+        .run(
+          StarlakeTestConfig(
+            transform = true,
+            domain = Some("kpi"),
+            table = Some("order_summary"),
+            test = Some("test_ok")
+          ),
+          settings.schemaHandler()
+        )(settings)
+        .isSuccess shouldBe true
+    }
+  }
 }
