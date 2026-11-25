@@ -200,3 +200,6 @@ samples/starbake/datasets
 site-ui/node_modules/
 site-ui/dist/
 site-ui/public/sl-*.json
+
+# The manifest of the dbt fixture project is committed: scripts/dbt-fixtures.sh writes it
+!src/test/resources/dbt/shop/target/

@@ -1,0 +1,11 @@
+version: 2
+seeds:
+  - name: raw_orders
+    config:
+      column_types:
+        amount_cents: integer
+    columns:
+      - name: id
+        data_tests:
+          - unique
+          - not_null

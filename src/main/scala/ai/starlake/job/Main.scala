@@ -3,6 +3,7 @@ package ai.starlake.job
 import ai.starlake.buildinfo.BuildInfo
 import ai.starlake.config.{DatasetArea, Settings, SettingsCmd}
 import ai.starlake.console.ConsoleCmd
+import ai.starlake.dbt.DbtImportCmd
 import ai.starlake.extract.*
 import ai.starlake.extract.freshness.FreshnessExtractCmd
 import ai.starlake.extract.impl.restapi.{ExtractRestAPIDataCmd, ExtractRestAPISchemaCmd}
@@ -147,7 +148,8 @@ object Main extends LazyLogging {
     SummarizeCmd,
     JobCmd,
     QuackCmd,
-    SemanticExportCmd
+    SemanticExportCmd,
+    DbtImportCmd
   )
 }
 

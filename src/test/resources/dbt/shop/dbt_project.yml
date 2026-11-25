@@ -1,0 +1,34 @@
+name: shop
+version: "1.0.0"
+config-version: 2
+profile: shop
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+snapshot-paths: ["snapshots"]
+docs-paths: ["docs"]
+
+vars:
+  min_amount: 0
+  shop:
+    currency: EUR
+
+seeds:
+  shop:
+    +schema: raw
+
+models:
+  shop:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts
+    incremental:
+      +materialized: incremental
+      +schema: marts
+    other:
+      +schema: marts

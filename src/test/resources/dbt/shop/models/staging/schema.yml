@@ -1,0 +1,67 @@
+version: 2
+sources:
+  - name: shop_raw
+    schema: raw
+    tables:
+      - name: raw_customers
+        columns:
+          - name: id
+            data_tests:
+              - not_null
+  - name: crm
+    schema: legacy
+    description: Accounts from the old CRM
+    freshness:
+      warn_after: {count: 12, period: hour}
+      error_after: {count: 1, period: day}
+    loaded_at_field: synced_at
+    tables:
+      - name: crm_accounts
+        identifier: accounts
+        columns:
+          - name: account_id
+            data_type: integer
+            description: Account id
+          - name: synced_at
+            data_type: timestamp
+models:
+  - name: stg_orders
+    description: "Orders, one row per order. {{ doc('order_status') }}"
+    columns:
+      - name: order_id
+        data_type: integer
+        data_tests:
+          - unique
+          - not_null
+      - name: status
+        description: "{{ doc('order_status') }}"
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['placed', 'completed', 'returned']
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+              config:
+                severity: warn
+      - name: amount
+        data_tests:
+          - not_null:
+              config:
+                where: "status != 'returned'"
+  - name: orders
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "amount >= 0"
+  - name: customers
+    columns:
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('customer_totals')
+                field: customer_id

@@ -1,0 +1,5 @@
+event_date,event_type,events
+2024-03-01,login,2
+2024-03-02,purchase,1
+2024-03-03,login,1
+2024-03-03,purchase,1

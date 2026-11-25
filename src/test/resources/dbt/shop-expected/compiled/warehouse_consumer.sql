@@ -1,0 +1,1 @@
+select answer from "shop"."marts"."needs_warehouse"

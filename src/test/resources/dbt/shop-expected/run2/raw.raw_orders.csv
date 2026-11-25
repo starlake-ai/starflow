@@ -1,0 +1,5 @@
+id,customer_id,order_date,status,amount_cents
+1,1,2024-01-05,completed,1250
+2,1,2024-01-20,returned,800
+3,2,2024-02-11,completed,4300
+4,3,2024-02-28,placed,999
