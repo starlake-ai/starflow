@@ -216,16 +216,16 @@ object StarlakeTestData {
     val selectStatement =
       selectPattern.findFirstMatchIn(sql) match {
         case Some(_) =>
-          if (missing)
-            s"""$sql EXCEPT SELECT * FROM "$targetDomain"."$assertTable""""
-          else // not expected
+          if (missing) // expected, not produced
             s"""SELECT * FROM "$targetDomain"."$assertTable" EXCEPT $sql"""
+          else // produced, not expected
+            s"""$sql EXCEPT SELECT * FROM "$targetDomain"."$assertTable""""
         case None =>
           val columnNames = sql
-          if (missing)
-            s"""SELECT $columnNames FROM "$targetDomain"."$targetTable" EXCEPT SELECT * FROM "$targetDomain"."$assertTable""""
-          else // not expected
+          if (missing) // expected, not produced
             s"""SELECT * FROM "$targetDomain"."$assertTable" EXCEPT SELECT $columnNames FROM "$targetDomain"."$targetTable""""
+          else // produced, not expected
+            s"""SELECT $columnNames FROM "$targetDomain"."$targetTable" EXCEPT SELECT * FROM "$targetDomain"."$assertTable""""
       }
     selectStatement
   }
