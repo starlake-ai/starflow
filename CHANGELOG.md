@@ -30,7 +30,7 @@ __Before upgrading__: the changes that can affect an existing project, detailed 
   - is also triggered by the dataset of that table, under the default `dataset_triggering_strategy: "any"`;
   - waits for it under `"all"`, and on Airflow before 2.9, where a list of datasets means all of them: it no longer runs while no DAG of the same Airflow publishes that dataset, as for a table that another tool loads;
   - no longer passes a date window to its transforms when that table has no `schedule`: the window needs a schedule on every dataset.
-- **Data branches** (`SL_DATA_BRANCH`, on every engine that branches through starlake-jdbc), with starlake-jdbc 0.10:
+- **Data branches** (`SL_DATA_BRANCH`, on every engine that branches through starlake-jdbc), with starlake-jdbc 0.10 (#2015):
   - A statement that the driver cannot parse now fails on a branch, with SQLState `0A000`, where it used to run on production. Statements that touch no table data (`SHOW`, `DESCRIBE`, `EXPLAIN`, `USE`, `SET`, transaction commands...) still run.
   - Prepared statements and batches now run on the branch tables and are replayed by `BRANCH APPLY`: on a branch, the audit rows (rejected rows, `SL_LAST_EXPORT`) go to branch copies of the audit tables and reach production when the branch is applied.
   - `BRANCH APPLY` replays only the writes that ran on the branch, stops at the first failing statement, and resumes from it when run again.
