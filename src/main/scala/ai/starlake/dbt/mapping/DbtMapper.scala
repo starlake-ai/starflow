@@ -19,9 +19,24 @@ object DbtMapper {
     settings: Settings
   ): ImportPlan = {
     val manifest = ctx.manifest
-    val models = manifest.nodesOfType("model").map(DbtModelMapper.map(_, ctx))
-    val seeds = manifest.nodesOfType("seed").map(DbtSeedMapper.map(_, ctx))
-    val sources = manifest.sources.map(DbtSourceMapper.map(_, ctx))
+    val claimed = scala.collection.mutable.Map.empty[String, String]
+    val models = firstOfEachFile(
+      manifest.nodesOfType("model").map(DbtModelMapper.map(_, ctx)),
+      claimed
+    )(_.entry, _.outputs.map(_.path))
+    val seeds =
+      firstOfEachFile(manifest.nodesOfType("seed").map(DbtSeedMapper.map(_, ctx)), claimed)(
+        _.entry,
+        s =>
+          List(
+            new Path(DatasetArea.load, s"${s.domain}/${s.table.name}.sl.yml"),
+            new Path(DatasetArea.incoming(s.domain), s.csv.getFileName.toString)
+          )
+      )
+    val sources = firstOfEachFile(manifest.sources.map(DbtSourceMapper.map(_, ctx)), claimed)(
+      _.entry,
+      s => s.table.toList.map(t => new Path(DatasetArea.external, s"${s.domain}/${t.name}.sl.yml"))
+    )
     val mappedModels = models.collect { case Right(m) => m }
     val mappedSeeds = seeds.collect { case Right(s) => s }
     val mappedSources = sources.collect { case Right(s) => s }
@@ -42,10 +57,12 @@ object DbtMapper {
     )
     val docs = allDocs.filterNot(d => unsafeDocs.exists(_._1 eq d))
 
+    val (seedOutputs, seedNotes) = DbtSeedMapper.plan(tables, ctx.connectionRef)
+    val (sourceOutputs, sourceNotes) = DbtSourceMapper.plan(mappedSources)
     val outputs =
       tasks.flatMap(_.outputs) ++
-      DbtSeedMapper.outputs(tables, ctx.connectionRef) ++
-      DbtSourceMapper.outputs(mappedSources) ++
+      seedOutputs ++
+      sourceOutputs ++
       tests.output.toList ++
       docs.map(docOutput)
 
@@ -95,7 +112,8 @@ object DbtMapper {
     val general = project.toList.flatMap { p =>
       p.onRunStart.map(s => s"on-run-start is not imported: $s") ++
       p.onRunEnd.map(s => s"on-run-end is not imported: $s")
-    } ++ ctx.jinja.definitionErrors.map(e => s"dbt macro not defined: $e")
+    } ++ seedNotes ++ sourceNotes ++
+      ctx.jinja.definitionErrors.map(e => s"dbt macro not defined: $e")
 
     ImportPlan(
       outputs,
@@ -108,6 +126,34 @@ object DbtMapper {
       )
     )
   }
+
+  /** Two objects that map to the same file (the same schema and alias in two databases, say): the
+    * first one is kept, the next ones are skipped with a reason that names it
+    *
+    * @param claimed
+    *   the files of the objects kept so far, with the dbt object that writes each
+    */
+  private def firstOfEachFile[T](
+    mapped: List[Either[ReportEntry, T]],
+    claimed: scala.collection.mutable.Map[String, String]
+  )(entry: T => ReportEntry, paths: T => List[Path]): List[Either[ReportEntry, T]] =
+    mapped.map {
+      case Right(t) =>
+        val files = paths(t).map(_.toString)
+        files.find(claimed.contains) match {
+          case Some(file) =>
+            Left(
+              entry(t).copy(
+                status = EntryStatus.Skipped(s"writes the same file as ${claimed(file)}: $file"),
+                notes = Nil
+              )
+            )
+          case None =>
+            files.foreach(f => claimed.put(f, entry(t).dbtId))
+            Right(t)
+        }
+      case skipped => skipped
+    }
 
   private def baked(uses: List[(String, Map[String, String])]): List[BakedValue] =
     uses

@@ -301,4 +301,44 @@ class DbtImportDuckDbSpec extends TestHelper {
       ).head("c").toInt shouldBe 1
     }
   }
+
+  private val keptDomain = new Project("dbt_import_kept_domain") {
+    "An existing raw/_config.sl.yml" should "be kept, the seeds loading with the metadata of their tables" in {
+      // the user's domain only: the files of the imports above are removed
+      storageHandler.delete(DatasetArea.metadata)
+      storageHandler.delete(new Path(settings.appConfig.datasets))
+      storageHandler.delete(ai.starlake.dbt.write.ProjectWriter.reportPath)
+      val domainFile = new Path(DatasetArea.load, "raw/_config.sl.yml")
+      val user =
+        """version: 1
+          |load:
+          |  name: raw
+          |  metadata:
+          |    format: JSON
+          |    withHeader: false
+          |    separator: ";"
+          |    directory: "{{SL_DATASETS}}/elsewhere/raw"
+          |    writeStrategy:
+          |      type: APPEND
+          |""".stripMargin
+      storageHandler.write(user, domainFile)
+      val result = DbtImporter
+        .run(
+          DbtImportConfig(
+            action = "import",
+            manifest = DbtFixtures.shopManifestPath.toString,
+            connection = Some("test-duckdb")
+          )
+        )
+        .get
+      result.exitCode shouldBe 0
+      result.written should not contain domainFile
+      result.report.general.exists(n =>
+        n.contains("metadata/load/raw/_config.sl.yml") && n.contains("kept")
+      ) shouldBe true
+      loadSeeds().isSuccess shouldBe true
+      differences(DbtFixtures.expectedDir.resolve("run1/raw.raw_orders.csv")) shouldBe 0
+      storageHandler.read(domainFile) shouldBe user
+    }
+  }
 }

@@ -116,9 +116,62 @@ class DbtPathSafetySpec extends TestHelper {
       checked(p)
     }
 
+    "A model, a seed or a doc block with a : in its name" should "be skipped with its reason" in {
+      val p = plan(
+        models = List(
+          DbtFixtures.model("m3").copy(alias = "a:b"),
+          DbtFixtures.model("m4").copy(schema = "c:d")
+        ),
+        seeds = List(seed("s3", "e:f", "ok.csv")),
+        docs = List(DbtDoc("doc.shop.d2", "shop", "g:h", "text"))
+      )
+      skipReason(p, "model.shop.m3") shouldBe Some(
+        """alias "a:b" cannot be a folder or file name"""
+      )
+      skipReason(p, "model.shop.m4") shouldBe Some(
+        """schema "c:d" cannot be a folder or file name"""
+      )
+      skipReason(p, "seed.shop.s3") shouldBe Some(
+        """schema "e:f" cannot be a folder or file name"""
+      )
+      skipReason(p, "doc.shop.d2") shouldBe Some("""name "g:h" cannot be a folder or file name""")
+      p.outputs shouldBe Nil
+    }
+
+    "A seed whose CSV is outside the dbt project" should "be skipped with its reason" in {
+      val outside = Files.createTempDirectory("dbt-outside")
+      Files.createDirectories(outside.resolve("seeds"))
+      Files.writeString(outside.resolve("seeds/far.csv"), "id\n1\n")
+      val absolute = seed("s4", "raw", "ok.csv")
+        .copy(originalFilePath = outside.resolve("seeds/far.csv").toString)
+      val fromPackage = seed("s5", "raw", "far.csv")
+        .copy(packageName = "pkg", rootPath = Some(outside.toString))
+      val p = plan(seeds = List(absolute, fromPackage))
+      List("seed.shop.s4", "seed.shop.s5").foreach { id =>
+        skipReason(p, id).getOrElse(fail(s"$id not skipped")) should include(
+          "outside the dbt project"
+        )
+      }
+      p.outputs shouldBe Nil
+    }
+
+    "Two models that map to the same file" should "be one converted, the other skipped naming it" in {
+      val first = DbtFixtures.model("same").copy(uniqueId = "model.shop.same_db1")
+      val second =
+        DbtFixtures.model("same").copy(uniqueId = "model.shop.same_db2", database = Some("db2"))
+      val p = plan(models = List(first, second))
+      p.report.entries.find(_.dbtId == "model.shop.same_db1").map(_.status) shouldBe Some(
+        EntryStatus.Converted
+      )
+      skipReason(p, "model.shop.same_db2").getOrElse(fail("not skipped")) should include(
+        "model.shop.same_db1"
+      )
+      p.outputs.map(_.path).distinct.size shouldBe p.outputs.size
+    }
+
     "safeName" should "accept one path component only" in {
       List("orders", "a.b", "..x", "a b").foreach(n => DbtText.safeName(n) shouldBe Right(n))
-      List("", ".", "..", "a/b", "/a", "a\\b", "a\u0000b", "a\nb").foreach(n =>
+      List("", ".", "..", "a/b", "/a", "a\\b", "a\u0000b", "a\nb", "a:b").foreach(n =>
         DbtText.safeName(n) shouldBe Left(n)
       )
     }

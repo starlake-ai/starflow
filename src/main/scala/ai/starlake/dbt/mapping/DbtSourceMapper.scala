@@ -119,19 +119,41 @@ object DbtSourceMapper {
   }
 
   def outputs(sources: List[MappedSource])(implicit settings: Settings): List[DbtOutput] =
-    sources.filter(_.table.isDefined).groupBy(_.domain).toList.sortBy(_._1).flatMap {
-      case (domain, tables) =>
-        val folder = new Path(DatasetArea.external, domain)
-        val domainInfo = DomainInfo(name = domain, database = tables.flatMap(_.database).headOption)
-        FileOutput(
-          new Path(folder, "_config.sl.yml"),
-          YamlSerde.serialize(DomainDesc(Settings.latestSchemaVersion, domainInfo))
-        ) ::
-        tables.flatMap(_.table).sortBy(_.name).map { t =>
-          FileOutput(
-            new Path(folder, s"${t.name}.sl.yml"),
-            YamlSerde.serialize(TableDesc(Settings.latestSchemaVersion, t))
+    plan(sources)._1
+
+  /** The outputs of the external tables, and the notes of the domain files that are kept: a domain
+    * file that exists is not written (see [[DomainFile]])
+    */
+  def plan(sources: List[MappedSource])(implicit
+    settings: Settings
+  ): (List[DbtOutput], List[String]) = {
+    val planned =
+      sources.filter(_.table.isDefined).groupBy(_.domain).toList.sortBy(_._1).map {
+        case (domain, tables) =>
+          val folder = new Path(DatasetArea.external, domain)
+          val database = tables.flatMap(_.database).headOption
+          val domainInfo = DomainInfo(name = domain, database = database)
+          val domainFile = DomainFile(
+            new Path(folder, "_config.sl.yml"),
+            YamlSerde.serialize(DomainDesc(Settings.latestSchemaVersion, domainInfo))
           )
-        }
-    }
+          val note =
+            if (!domainFile.kept) None
+            else
+              Some(
+                s"${domainFile.path} exists and is kept" +
+                database
+                  .map(d => s"; database $d is not set: the kept domain file holds it")
+                  .getOrElse("")
+              )
+          val tableOutputs = tables.flatMap(_.table).sortBy(_.name).map { t =>
+            FileOutput(
+              new Path(folder, s"${t.name}.sl.yml"),
+              YamlSerde.serialize(TableDesc(Settings.latestSchemaVersion, t))
+            )
+          }
+          (domainFile.output.toList ++ tableOutputs, note)
+      }
+    (planned.flatMap(_._1), planned.flatMap(_._2))
+  }
 }

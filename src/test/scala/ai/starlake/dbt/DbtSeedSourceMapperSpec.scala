@@ -1,10 +1,12 @@
 package ai.starlake.dbt
 
 import ai.starlake.TestHelper
+import ai.starlake.config.DatasetArea
 import ai.starlake.dbt.manifest.DbtRelations
 import ai.starlake.dbt.mapping._
 import ai.starlake.schema.model._
 import ai.starlake.utils.YamlSerde
+import org.apache.hadoop.fs.Path
 
 import java.nio.file.Files
 import scala.util.Success
@@ -106,6 +108,50 @@ class DbtSeedSourceMapperSpec extends TestHelper {
       mapped.entry.notes should contain(
         "column c: data_type no_such_type has no Starlake type, kept as string"
       )
+    }
+  }
+
+  new WithSettings() {
+    private val manifest = DbtFixtures.shopManifest
+    private val ctx = DbtMappingContext(
+      manifest,
+      new DbtRelations(manifest),
+      DbtFixtures.jinja(),
+      None,
+      (_: java.nio.file.Path, _: String) => Success(List(TableAttribute("id", "long")))
+    )
+    private val userLoad = "version: 1\nload:\n  name: raw\n  metadata:\n    format: JSON\n"
+    private val userExternal = "version: 1\nload:\n  name: legacy\n"
+
+    private def outputs =
+      DbtSeedMapper.outputs(
+        manifest.nodesOfType("seed").map(DbtSeedMapper.map(_, ctx)).collect { case Right(s) => s },
+        None
+      ) ++
+      DbtSourceMapper.outputs(
+        manifest.sources.map(DbtSourceMapper.map(_, ctx)).collect { case Right(s) => s }
+      )
+
+    "An existing domain _config.sl.yml" should "be kept, the seed tables carrying their metadata" in {
+      // in the test: the settings of the spec share one project folder
+      storageHandler.write(userLoad, new Path(DatasetArea.load, "raw/_config.sl.yml"))
+      storageHandler.write(userExternal, new Path(DatasetArea.external, "legacy/_config.sl.yml"))
+      val outputs = this.outputs
+      val paths = outputs.map(_.path.toString)
+      paths.exists(_.endsWith("metadata/load/raw/_config.sl.yml")) shouldBe false
+      paths.exists(_.endsWith("metadata/external/legacy/_config.sl.yml")) shouldBe false
+      val f = outputs.collect {
+        case f: FileOutput if f.path.toString.endsWith("load/raw/raw_orders.sl.yml") => f
+      }.head
+      val metadata = YamlSerde.deserializeYamlTables(f.content, f.path.toString).head.table.metadata
+      metadata.flatMap(_.directory) shouldBe Some("{{SL_DATASETS}}/incoming/raw")
+      metadata.flatMap(_.format) shouldBe Some(Format.DSV)
+      metadata.flatMap(_.withHeader) shouldBe Some(true)
+      metadata.flatMap(_.separator) shouldBe Some(",")
+      metadata.flatMap(_.writeStrategy).flatMap(_.`type`) shouldBe Some(
+        WriteStrategyType.OVERWRITE
+      )
+      storageHandler.read(new Path(DatasetArea.load, "raw/_config.sl.yml")) shouldBe userLoad
     }
   }
 }

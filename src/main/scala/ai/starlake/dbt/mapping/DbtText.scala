@@ -64,12 +64,13 @@ object DbtText {
   def doubleQuoted(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
   /** A manifest name used as one path component (a folder or a file name): not empty, not `.` or
-    * `..`, and without `/`, `\\`, NUL or any control character
+    * `..`, and without `/`, `\\`, `:` (a URI scheme for Hadoop's Path), NUL or any control
+    * character
     */
   def safeName(name: String): Either[String, String] =
     if (
       name.isEmpty || name == "." || name == ".." ||
-      name.exists(c => c == '/' || c == '\\' || Character.isISOControl(c))
+      name.exists(c => c == '/' || c == '\\' || c == ':' || Character.isISOControl(c))
     ) Left(name)
     else Right(name)
 
