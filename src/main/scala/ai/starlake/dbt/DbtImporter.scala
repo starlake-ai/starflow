@@ -5,7 +5,13 @@ import ai.starlake.dbt.jinja.{DbtConfigRenderer, DbtJinja, DbtJinjaContext}
 import ai.starlake.dbt.manifest._
 import ai.starlake.dbt.mapping._
 import ai.starlake.dbt.report.{BakedValue, ImportReport}
-import ai.starlake.dbt.warehouse.{CachingWarehouse, DbtWarehouse, JdbcWarehouse, OfflineWarehouse}
+import ai.starlake.dbt.warehouse.{
+  BigQueryWarehouse,
+  CachingWarehouse,
+  DbtWarehouse,
+  JdbcWarehouse,
+  OfflineWarehouse
+}
 import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.{ConnectionType, TableAttribute}
 import ai.starlake.utils.{ExitCodeJobResult, Utils}
@@ -147,13 +153,12 @@ object DbtImporter {
       val (name, open) = config.connection match {
         case Some(c) =>
           val info = settings.appConfig.connections(c)
-          if (info.isBigQuery())
-            throw new DbtImportException("--introspect on BigQuery comes with BigQueryWarehouse")
-          if (info.`type` != ConnectionType.JDBC)
+          if (info.isBigQuery()) (c, () => new BigQueryWarehouse(c): DbtWarehouse)
+          else if (info.`type` != ConnectionType.JDBC)
             throw new DbtImportException(
               s"--introspect: connection $c is not a JDBC or BigQuery connection"
             )
-          (c, () => new JdbcWarehouse(c, info.options): DbtWarehouse)
+          else (c, () => new JdbcWarehouse(c, info.options): DbtWarehouse)
         case None =>
           val e = edit.getOrElse(
             throw new DbtImportException(
