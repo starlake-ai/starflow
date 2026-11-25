@@ -161,7 +161,14 @@ class DbtMapperSpec extends TestHelper {
         "source.shop.crm.crm_accounts",
         "doc.shop.order_status"
       )
-      plan.report.skipped.map(_.dbtId) shouldBe List("model.shop.needs_warehouse")
+      plan.report.skipped.map(_.dbtId).toSet shouldBe Set(
+        "model.shop.needs_warehouse",
+        "model.shop.order_count",
+        "model.shop.order_status_pivot",
+        "model.shop.customers_star",
+        "model.shop.writes_at_import",
+        "model.shop.customers_filled"
+      )
     }
   }
 }

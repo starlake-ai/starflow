@@ -43,7 +43,17 @@ class DbtImportDuckDbSpec extends TestHelper {
   /** Not in the Starlake project: the model needs the warehouse at import, and the one that reads
     * it
     */
-  private val notImported = Set("marts.needs_warehouse", "marts.warehouse_consumer")
+  // the models that read the warehouse at import are skipped without --introspect (compared
+  // with --introspect elsewhere); model_count reads only the graph and is converted
+  private val notImported = Set(
+    "marts.needs_warehouse",
+    "marts.warehouse_consumer",
+    "marts.order_status_pivot",
+    "marts.customers_star",
+    "marts.order_count",
+    "marts.customers_filled",
+    "marts.writes_at_import"
+  )
 
   private abstract class Project(db: String) extends WithSettings(configuration(db)) {
     def importShop(): DbtImportResult =
@@ -196,9 +206,17 @@ class DbtImportDuckDbSpec extends TestHelper {
       val report = imported.report
       // the exclusions: the model that needs the warehouse is skipped, its reader is converted and
       // blocked, the snapshot is reported only
-      report.skipped.filter(_.kind == "model").map(e => e.dbtId -> e.status) match {
-        case List((id, EntryStatus.Skipped(reason))) =>
-          id shouldBe "model.shop.needs_warehouse"
+      val skippedModels = report.skipped.filter(_.kind == "model").map(e => e.dbtId -> e.status)
+      skippedModels.map(_._1).toSet shouldBe Set(
+        "model.shop.needs_warehouse",
+        "model.shop.order_count",
+        "model.shop.order_status_pivot",
+        "model.shop.customers_star",
+        "model.shop.writes_at_import",
+        "model.shop.customers_filled"
+      )
+      skippedModels.foreach {
+        case (_, EntryStatus.Skipped(reason)) =>
           reason should include("needs the warehouse at import")
         case other => fail(s"unexpected skipped models: $other")
       }

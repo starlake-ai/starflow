@@ -70,12 +70,14 @@ cp target/manifest.json "$FIXTURE/target/manifest.json"
 rm -rf "$EXPECTED"
 mkdir -p "$EXPECTED/compiled"
 rm -f shop.duckdb
-"$DBT" compile
+"$DBT" compile --exclude tag:introspection
 find target/compiled/shop/models -name '*.sql' -not -path '*.yml/*' -exec cp {} "$EXPECTED/compiled/" \;
 
 rm -f shop.duckdb
 "$DBT" build
 export_tables "$EXPECTED/run1"
+"$DBT" compile --select tag:introspection
+find target/compiled/shop/models -name '*.sql' -not -path '*.yml/*' -exec cp {} "$EXPECTED/compiled/" \;
 
 cp "$RUN2_SEEDS"/*.csv seeds/
 "$DBT" build

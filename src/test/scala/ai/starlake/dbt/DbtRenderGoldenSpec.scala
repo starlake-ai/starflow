@@ -15,9 +15,18 @@ class DbtRenderGoldenSpec extends AnyFlatSpec with Matchers {
   private lazy val jinja = DbtFixtures.jinja()
 
   /** customer_totals: dbt inlines the ephemeral model as a CTE, the import reads its table (checked
-    * below). needs_warehouse: run_query, skipped by the import.
+    * below). needs_warehouse and the five introspection models that read the warehouse: skipped by
+    * the import without --introspect (model_count only reads the graph, so it is compared).
     */
-  private val notCompared = Set("customer_totals", "needs_warehouse")
+  private val notCompared = Set(
+    "customer_totals",
+    "needs_warehouse",
+    "order_status_pivot",
+    "customers_star",
+    "order_count",
+    "customers_filled",
+    "writes_at_import"
+  )
 
   private val Relation = """"([^"]+)"\."([^"]+)"\."([^"]+)"""".r
 
