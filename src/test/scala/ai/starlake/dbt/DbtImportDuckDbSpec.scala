@@ -40,11 +40,10 @@ class DbtImportDuckDbSpec extends TestHelper {
       )
       .withFallback(super.testConfiguration)
 
-  /** Not in the Starlake project: the model needs the warehouse at import, and the one that reads
-    * it
+  /** Not in the Starlake project: the models that need the warehouse at import, skipped without
+    * --introspect, and the model that reads one of them. model_count reads only the graph and is
+    * converted.
     */
-  // the models that read the warehouse at import are skipped without --introspect (compared
-  // with --introspect elsewhere); model_count reads only the graph and is converted
   private val notImported = Set(
     "marts.needs_warehouse",
     "marts.warehouse_consumer",

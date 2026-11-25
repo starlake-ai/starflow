@@ -52,7 +52,9 @@ db, out = sys.argv[1], sys.argv[2]
 con = duckdb.connect(db, read_only=True)
 rows = con.sql(
     "SELECT table_schema, table_name FROM information_schema.tables "
-    "WHERE table_schema IN ('raw', 'staging', 'marts') ORDER BY 1, 2"
+    "WHERE table_schema IN ('raw', 'staging', 'marts') "
+    # sl_import_side_effect is dbt's side effect of writes_at_import, not a model
+    "AND table_name <> 'sl_import_side_effect' ORDER BY 1, 2"
 ).fetchall()
 for schema, name in rows:
     con.sql(
