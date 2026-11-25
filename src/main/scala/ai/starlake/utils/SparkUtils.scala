@@ -308,8 +308,8 @@ object SparkUtils extends LazyLogging {
       logger.debug(s"Column $k has DDL types $v")
     }
     // A flight sql url names a transport, not an engine: only the connection knows the engine.
-    // Any other url keeps its historical url derived name (mariadb and databricks urls have their
-    // own engine profile here, unlike the name returned by getJdbcEngineName).
+    // Any other url keeps its historical url derived name (databricks urls have their own engine
+    // profile here, unlike the name returned by getJdbcEngineName).
     val dialectName =
       if (ConnectionInfo.isFlightSqlUrl(url)) engineName
       else {

@@ -38,7 +38,7 @@ import scala.util.{Failure, Success, Try}
   * ==Overview==
   * This task type executes SQL directly on any JDBC-compatible database, without requiring a Spark
   * cluster. Supported databases include:
-  *   - PostgreSQL, MySQL, MariaDB
+  *   - PostgreSQL, MySQL
   *   - Oracle, SQL Server
   *   - Snowflake, Redshift
   *   - DuckDB (embedded analytics)
@@ -532,7 +532,7 @@ class JdbcAutoTask(
       Some("an Arrow Flight SQL connection commits each statement on the server")
     else if (sinkConnection.isQuackClient())
       Some("a Quack attachment commits each statement on the server")
-    else if ((engine == "mysql" || engine == "mariadb") && !createsTable)
+    else if (engine == "mysql" && !createsTable)
       // A table that the run creates is dropped instead
       queryValue(
         "SELECT GROUP_CONCAT(DISTINCT UPPER(ENGINE)) FROM information_schema.TABLES " +

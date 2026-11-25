@@ -299,7 +299,7 @@ object SQLUtils extends LazyLogging {
           JSQLTranspiler.Dialect.DUCK_DB
         else if (conn.isPostgreSql())
           JSQLTranspiler.Dialect.ANY
-        else if (conn.isMySQLOrMariaDb())
+        else if (conn.isMySQL())
           JSQLTranspiler.Dialect.ANY
         else if (conn.isJdbcUrl())
           JSQLTranspiler.Dialect.ANY

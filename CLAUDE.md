@@ -99,7 +99,7 @@ Transform jobs can target different engines via `Engine`: Spark, BigQuery, Snowf
 - **jinjava** for Jinja2 template processing
 - **jsqlparser/jsqltranspiler** for SQL analysis
 - **DuckDB 1.5.0** for local engine support
-- **TestContainers** (PostgreSQL, MariaDB, Kafka) for integration tests
+- **TestContainers** (PostgreSQL, MySQL, Kafka) for integration tests
 
 ## Testing
 
@@ -108,7 +108,7 @@ Base class: `TestHelper` (extends ScalaTest `AnyFlatSpec`). Key traits:
 - `SpecTrait`: Manages domain/job YAML delivery and workflow testing
 - `PgContainerHelper`: PostgreSQL container for JDBC tests
 
-Tests create isolated `starlake-test-{uuid}` temp directories and configure test-specific Spark sessions. Integration tests use TestContainers for PostgreSQL, MariaDB, and Kafka.
+Tests create isolated `starlake-test-{uuid}` temp directories and configure test-specific Spark sessions. Integration tests use TestContainers for PostgreSQL, MySQL, and Kafka.
 
 ## YAML Metadata Layout (for user projects)
 

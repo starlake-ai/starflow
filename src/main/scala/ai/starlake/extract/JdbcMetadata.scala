@@ -202,7 +202,7 @@ final class JdbcColumnDatabaseMetadata(
       Using
         .resource(
           connectionSettings match {
-            case d if d.isMySQLOrMariaDb() =>
+            case d if d.isMySQL() =>
               databaseMetaData.getPrimaryKeys(
                 schemaName,
                 None.orNull,
@@ -242,7 +242,7 @@ final class JdbcColumnDatabaseMetadata(
   override lazy val foreignKeys: Map[String, String] = {
     Try {
       Using.resource(connectionSettings match {
-        case d if d.isMySQLOrMariaDb() =>
+        case d if d.isMySQL() =>
           databaseMetaData.getImportedKeys(
             schemaName,
             None.orNull,
@@ -286,7 +286,7 @@ final class JdbcColumnDatabaseMetadata(
   override lazy val columns: List[TableAttribute] = {
     Using.resource(
       connectionSettings match {
-        case d if d.isMySQLOrMariaDb() =>
+        case d if d.isMySQL() =>
           databaseMetaData.getColumns(
             schemaName,
             None.orNull,

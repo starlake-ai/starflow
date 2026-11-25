@@ -703,7 +703,7 @@ object JdbcDbUtils extends LazyLogging {
     schemaName: String
   ): Try[String] = {
     connectionSettings match {
-      case d if d.isMySQLOrMariaDb() =>
+      case d if d.isMySQL() =>
         Using(
           databaseMetaData.getCatalogs()
         ) { resultSet =>
@@ -899,7 +899,7 @@ object JdbcDbUtils extends LazyLogging {
       val tableTypes =
         if (jdbcSchema.tableTypes.nonEmpty) jdbcSchema.tableTypes.toArray else null
       connectionSettings match {
-        case d if d.isMySQLOrMariaDb() =>
+        case d if d.isMySQL() =>
           databaseMetaData.getTables(
             schemaName,
             "%",

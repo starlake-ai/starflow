@@ -371,8 +371,7 @@ object TMDLConverter extends LazyLogging {
       else {
         val url = info.options.getOrElse("url", "")
         if (url.startsWith("jdbc:")) {
-          val engine = url.split(':').lift(1).map(_.toLowerCase).getOrElse("unknown")
-          if (engine == "mariadb") "mysql" else engine
+          url.split(':').lift(1).map(_.toLowerCase).getOrElse("unknown")
         } else if (info.options.contains("sfUrl")) "snowflake"
         else "unknown"
       }

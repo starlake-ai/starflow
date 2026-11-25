@@ -144,6 +144,6 @@ class DuckDbOverwriteByPartitionSpec
 class PostgresOverwriteByPartitionSpec
     extends OverwriteByPartitionStrategySpec("test-pg", "partitions")
 
-/** MariaDB runs the MySQL templates. The user of the container may only use its database. */
-class MariaDbOverwriteByPartitionSpec
-    extends OverwriteByPartitionStrategySpec("test-mariadb", "starlake", createSchema = false)
+/** MySQL. The user of the container may only use its database. */
+class MySqlOverwriteByPartitionSpec
+    extends OverwriteByPartitionStrategySpec("test-mysql", "starlake", createSchema = false)

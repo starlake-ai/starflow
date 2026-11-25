@@ -10,15 +10,15 @@ import java.sql.DriverManager
 class ExtractIntegrationSpec extends TestHelper {
 
   new WithSettings() {
-    "Extract Data from mariadb" should "succeed" in {
+    "Extract Data from MySQL" should "succeed" in {
       StarlakeJdbcDialects.registerDialects()
-      val jdbcOptions = settings.appConfig.connections("test-mariadb")
+      val jdbcOptions = settings.appConfig.connections("test-mysql")
       val conn = DriverManager.getConnection(
         jdbcOptions.options("url"),
         jdbcOptions.options("user"),
         jdbcOptions.options("password")
       )
-      logger.info(TestHelper.mariadbContainer.jdbcUrl)
+      logger.info(TestHelper.mysqlContainer.jdbcUrl)
       val sqls = """
                    |CREATE SCHEMA IF NOT EXISTS starlake;
                    |create table if not exists starlake.test_table(id int,name varchar(10));
@@ -45,7 +45,7 @@ class ExtractIntegrationSpec extends TestHelper {
         """
           |version: 1
           |extract:
-          |  connectionRef: "test-mariadb" # Connection name as defined in the connections section of the application.conf file
+          |  connectionRef: "test-mysql" # Connection name as defined in the connections section of the application.conf file
           |  jdbcSchemas:
           |    - schema: "starlake" # Database schema where tables are located
           |      tables:

@@ -75,17 +75,16 @@ private object StarlakeDuckDbDialect extends JdbcDialect with SQLConfHelper {
 }
 
 object StarlakeJdbcDialects {
-  val dialects = List(StarlakeSnowflakeDialect, StarlakeDuckDbDialect, MariaDbDialect)
+  val dialects = List(StarlakeSnowflakeDialect, StarlakeDuckDbDialect, MySqlDialect)
   def registerDialects() =
     dialects.foreach { dialect =>
       JdbcDialects.registerDialect(dialect)
     }
 }
 
-private case object MariaDbDialect extends JdbcDialect with SQLConfHelper {
+private case object MySqlDialect extends JdbcDialect with SQLConfHelper {
 
   override def canHandle(url: String): Boolean =
-    url.toLowerCase(Locale.ROOT).startsWith("jdbc:mariadb") ||
     url.toLowerCase(Locale.ROOT).startsWith("jdbc:mysql")
 
   private val distinctUnsupportedAggregateFunctions =
@@ -105,13 +104,7 @@ private case object MariaDbDialect extends JdbcDialect with SQLConfHelper {
     size: Int,
     md: MetadataBuilder
   ): Option[DataType] = {
-    if (sqlType == Types.VARBINARY && typeName.equals("BIT") && size != 1) {
-      // MariaDB connector behaviour
-      // This could instead be a BinaryType if we'd rather return bit-vectors of up to 64 bits as
-      // byte arrays instead of longs.
-      md.putLong("binarylong", 1)
-      Option(LongType)
-    } else if (sqlType == Types.BIT && size > 1) {
+    if (sqlType == Types.BIT && size > 1) {
       // MySQL connector behaviour
       md.putLong("binarylong", 1)
       Option(LongType)

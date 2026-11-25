@@ -69,7 +69,6 @@ class DependencySyncSpec extends AnyFlatSpec with Matchers {
     "https://github.com/starlake-ai/starflow/releases/download/v9.9.9/starlake-core_2.13-9.9.9-assembly.jar" -> "starlake-core_2.13-",
     "https://packages.confluent.io/maven/io/confluent/kafka-schema-registry-client/9.9.9/kafka-schema-registry-client-9.9.9.jar" -> "kafka-schema-registry-client-",
     "https://packages.confluent.io/maven/io/confluent/kafka-avro-serializer/9.9.9/kafka-avro-serializer-9.9.9.jar" -> "kafka-avro-serializer-",
-    "https://repo1.maven.org/maven2/org/mariadb/jdbc/mariadb-java-client/9.9.9/mariadb-java-client-9.9.9.jar" -> "mariadb-java-client-",
     "https://repo1.maven.org/maven2/com/clickhouse/clickhouse-jdbc/9.9.9/clickhouse-jdbc-9.9.9-all.jar" -> "clickhouse-jdbc-",
     "https://repo1.maven.org/maven2/io/trino/trino-jdbc/999/trino-jdbc-999.jar" -> "trino-jdbc-",
     "https://raw.githubusercontent.com/starlake-ai/starflow/master/distrib/python-libs/starlake_airflow-9.9.9-py3-none-any.whl" -> "starlake_airflow-",
