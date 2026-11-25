@@ -4,10 +4,10 @@ import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.dbt.manifest.{DbtColumn, DbtNode}
 import ai.starlake.dbt.report.{EntryStatus, ReportEntry}
 import ai.starlake.dbt.jinja.DbtRendered
+import ai.starlake.dbt.warehouse.WarehouseRead
 import ai.starlake.dbt.{DbtSkip, IncrementalDiff}
 import ai.starlake.schema.model._
 import ai.starlake.utils.YamlSerde
-import ai.starlake.dbt.warehouse.WarehouseRead
 import org.apache.hadoop.fs.Path
 
 import scala.util.{Failure, Success, Try}

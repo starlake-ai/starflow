@@ -7,7 +7,7 @@ import ai.starlake.dbt.mapping._
 import ai.starlake.dbt.report.{BakedValue, ImportReport}
 import ai.starlake.dbt.warehouse.{CachingWarehouse, DbtWarehouse, JdbcWarehouse, OfflineWarehouse}
 import ai.starlake.dbt.write.ProjectWriter
-import ai.starlake.schema.model.TableAttribute
+import ai.starlake.schema.model.{ConnectionType, TableAttribute}
 import ai.starlake.utils.{ExitCodeJobResult, Utils}
 import org.apache.hadoop.fs.Path
 
@@ -144,31 +144,40 @@ object DbtImporter {
   ): DbtWarehouse =
     if (!config.introspect) new OfflineWarehouse
     else {
-      val live: DbtWarehouse = config.connection match {
+      val (name, open) = config.connection match {
         case Some(c) =>
           val info = settings.appConfig.connections(c)
           if (info.isBigQuery())
             throw new DbtImportException("--introspect on BigQuery comes with BigQueryWarehouse")
-          new JdbcWarehouse(c, info.options)
+          if (info.`type` != ConnectionType.JDBC)
+            throw new DbtImportException(
+              s"--introspect: connection $c is not a JDBC or BigQuery connection"
+            )
+          (c, () => new JdbcWarehouse(c, info.options): DbtWarehouse)
         case None =>
-          edit
-            .map(e =>
+          val e = edit.getOrElse(
+            throw new DbtImportException(
+              "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
+            )
+          )
+          (
+            e.name,
+            () =>
               new JdbcWarehouse(
                 e.name,
                 Map("url" -> e.url, "driver" -> "org.duckdb.DuckDBDriver")
-              )
-            )
-            .getOrElse(
-              throw new DbtImportException(
-                "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
-              )
-            )
+              ): DbtWarehouse
+          )
       }
-      live.query("select 1").failed.foreach { e =>
+      val live = Try {
+        val w = open()
+        w.query("select 1").get
+        w
+      }.recover { case e =>
         throw new DbtImportException(
-          s"--introspect: connection ${live.name} cannot be opened: ${e.getMessage}"
+          s"--introspect: connection $name cannot be opened: ${e.getMessage}"
         )
-      }
+      }.get
       new CachingWarehouse(live, config.introspectMaxRows)
     }
 

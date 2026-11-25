@@ -2,6 +2,7 @@ package ai.starlake.dbt
 
 import ai.starlake.dbt.report.{BakedValue, EntryStatus}
 import ai.starlake.TestHelper
+import ai.starlake.config.DatasetArea
 import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.TableAttribute
 import com.typesafe.config.ConfigFactory
@@ -208,6 +209,17 @@ class DbtImporterSpec extends TestHelper {
     ConfigFactory
       .parseString(
         s"""
+           |connections.test-fs {
+           |  type = "fs"
+           |}
+           |connections.test-broken {
+           |  type = "jdbc"
+           |  loader = "native"
+           |  options {
+           |    "url": "jdbc:duckdb:/nonexistent-dir/x/y.db"
+           |    "driver": "org.duckdb.DuckDBDriver"
+           |  }
+           |}
            |connections.test-duckdb {
            |  type = "jdbc"
            |  loader = "native"
@@ -222,6 +234,7 @@ class DbtImporterSpec extends TestHelper {
 
   new WithSettings(duckdbConfiguration) {
     "--introspect without a connection" should "fail before writing anything" in {
+      val before = snapshot()
       val result = DbtImporter.run(
         DbtImportConfig(
           action = "import",
@@ -230,8 +243,44 @@ class DbtImporterSpec extends TestHelper {
         )
       )
       result.isFailure shouldBe true
-      result.failed.get.getMessage shouldBe
-      "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
+      result.failed.get.getMessage shouldBe "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
+      snapshot() shouldBe before
+    }
+
+    private def introspectOn(c: String) =
+      DbtImporter.run(
+        DbtImportConfig(
+          action = "import",
+          manifest = DbtFixtures.shopManifestPath.toString,
+          connection = Some(c),
+          introspect = true,
+          force = true
+        )
+      )
+
+    // earlier tests of this spec left files: what must hold is that this import changed none
+    private def snapshot() =
+      (storageHandler.list(DatasetArea.transform, ".sl.yml", recursive = true) ++
+        storageHandler.list(ProjectWriter.reportPath.getParent, ".md", recursive = false))
+        .map(f => f.path -> f.modificationInstant)
+        .toSet
+
+    "--introspect on a connection that cannot open" should "fail before anything is written" in {
+      val before = snapshot()
+      val result = introspectOn("test-broken")
+      result.isFailure shouldBe true
+      result.failed.get shouldBe a[DbtImportException]
+      result.failed.get.getMessage should startWith(
+        "--introspect: connection test-broken cannot be opened"
+      )
+      snapshot() shouldBe before
+    }
+
+    "--introspect on a connection that is not JDBC" should "fail before anything is written" in {
+      val before = snapshot()
+      val result = introspectOn("test-fs")
+      result.failed.get.getMessage shouldBe "--introspect: connection test-fs is not a JDBC or BigQuery connection"
+      snapshot() shouldBe before
     }
 
     "--introspect on a DuckDB connection" should "convert the model that runs a query, and report the answer" in {

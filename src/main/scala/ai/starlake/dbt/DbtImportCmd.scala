@@ -96,6 +96,7 @@ object DbtImportCmd extends Cmd[DbtImportConfig] {
       builder
         .opt[Int]("introspect-max-rows")
         .optional()
+        .validate(n => if (n > 0) Right(()) else Left("--introspect-max-rows must be positive"))
         .action((x, c) => c.copy(introspectMaxRows = x))
         .text(
           "with --introspect, the most rows a query may return before its model is skipped (default 10000)"
