@@ -257,7 +257,7 @@ object DbtModelMapper {
       val starlakeType = c.dataType.flatMap(DbtTypes.toStarlake(_, ctx.adapterType))
       val note = c.dataType
         .filter(_ => starlakeType.isEmpty)
-        .map(t => s"column ${c.name}: data_type $t has no Starlake type, left out")
+        .map(t => s"column ${c.name}: data_type $t has no Starlake type, kept as string")
       val comment =
         Some(DbtText.withDocRefs(c.description, c.docBlocks, ctx.manifest)).filter(_.nonEmpty)
       (

@@ -341,7 +341,13 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
     state: DbtRenderState
   ): Object = {
     val name = String.valueOf(args.head)
-    ctx.vars.lookup(pkg, name).map(JinjaUtils.toJava).orElse(defaultArg(args, kwargs)) match {
+    val found = ctx.vars.lookup(pkg, name)
+    found.collect { case DbtUnrenderedVar(reason) => reason }.foreach(state.skipWith)
+    found
+      .filterNot(_.isInstanceOf[DbtUnrenderedVar])
+      .map(JinjaUtils.toJava)
+      .orElse(defaultArg(args, kwargs)) match {
+      case _ if found.exists(_.isInstanceOf[DbtUnrenderedVar]) => ""
       case Some(value) =>
         state.readVar(name, String.valueOf(value))
         value
@@ -358,8 +364,14 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
   ): Object = {
     val name = String.valueOf(args.head)
     ctx.env(name).orElse(defaultArg(args, kwargs).map(String.valueOf)) match {
+      case _ if name.startsWith("DBT_ENV_SECRET") =>
+        // dbt rejects them outside profiles.yml and packages.yml: the secret is not baked
+        state.skipWith(
+          s"env_var('$name'): a DBT_ENV_SECRET env var is allowed only in profiles.yml and packages.yml"
+        )
+        ""
       case Some(value) =>
-        state.readEnvVar(name, if (name.startsWith("DBT_ENV_SECRET")) "****" else value)
+        state.readEnvVar(name, value)
         value
       case None =>
         state.skipWith(s"env_var('$name') is not set and has no default")

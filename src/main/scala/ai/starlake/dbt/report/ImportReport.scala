@@ -25,8 +25,21 @@ final case class ReportEntry(
   dependsOn: List[String] = Nil
 )
 
-/** A var or env var whose value the import wrote into the SQL */
+/** A var or env var whose value the import wrote into the SQL or the project */
 final case class BakedValue(name: String, value: String, usedBy: List[String])
+
+object BakedValue {
+
+  /** One entry per name and value, with all their users */
+  def merge(values: List[BakedValue]): List[BakedValue] =
+    values
+      .groupBy(v => (v.name, v.value))
+      .toList
+      .sortBy(_._1)
+      .map { case ((name, value), vs) =>
+        BakedValue(name, value, vs.flatMap(_.usedBy).distinct.sorted)
+      }
+}
 
 final case class ImportReport(
   entries: List[ReportEntry],

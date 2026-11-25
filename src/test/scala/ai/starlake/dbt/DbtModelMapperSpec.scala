@@ -209,5 +209,36 @@ class DbtModelMapperSpec extends TestHelper {
       EntryStatus.Skipped("needs the warehouse at import (run_query)")
     }
 
+    "A model that reads a DBT_ENV_SECRET env var" should "be skipped, its secret not baked" in {
+      val secretCtx = ctx.copy(jinja = DbtFixtures.jinja(env = Map("DBT_ENV_SECRET_TOKEN" -> "s3")))
+      DbtModelMapper.map(
+        DbtFixtures
+          .model("secret", rawCode = "select '{{ env_var(\"DBT_ENV_SECRET_TOKEN\") }}' as t"),
+        secretCtx
+      ) match {
+        case Left(entry) =>
+          entry.status.toString should include("DBT_ENV_SECRET_TOKEN")
+        case Right(m) => fail(s"converted: ${m.sql}")
+      }
+    }
+
+    "A column data_type with no Starlake type" should "be noted as kept as string" in {
+      val entry = DbtModelMapper
+        .map(
+          DbtFixtures
+            .model("typed", rawCode = "select 1 as c")
+            .copy(columns =
+              List(ai.starlake.dbt.manifest.DbtColumn("c", "", Some("no_such_type"), Nil))
+            ),
+          ctx
+        )
+        .toOption
+        .get
+        .entry
+      entry.notes should contain(
+        "column c: data_type no_such_type has no Starlake type, kept as string"
+      )
+    }
+
   }
 }

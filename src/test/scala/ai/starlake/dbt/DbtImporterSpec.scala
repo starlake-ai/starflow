@@ -1,13 +1,17 @@
 package ai.starlake.dbt
 
-import ai.starlake.dbt.report.EntryStatus
+import ai.starlake.dbt.report.{BakedValue, EntryStatus}
 import ai.starlake.TestHelper
+import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.TableAttribute
+import com.typesafe.config.ConfigFactory
 
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, Path, Paths}
 import scala.util.Success
 
-/** The importer on projects of its own: what the next steps run, the notes of the tests */
+/** The importer on projects of its own: what the next steps run, the Jinja of profiles.yml and of
+  * dbt_project.yml, the --connection option
+  */
 class DbtImporterSpec extends TestHelper {
   private val stub =
     Some((_: java.nio.file.Path, _: String) => Success(List(TableAttribute("id", "long"))))
@@ -21,6 +25,12 @@ class DbtImporterSpec extends TestHelper {
           .getOrElse(fail(s"$suffix not written in ${result.written}"))
       )
     )
+
+  private def profiles(output: String): Path = {
+    val file = Files.createTempFile("profiles", ".yml")
+    Files.writeString(file, s"p:\n  target: dev\n  outputs:\n    dev:\n$output")
+    file
+  }
 
   new WithSettings() {
     "The next steps" should "leave out every task downstream of a skipped model" in {
@@ -50,6 +60,90 @@ class DbtImporterSpec extends TestHelper {
       md should include("`s.b` depends on skipped `model.p.a`")
       md should include("`s.c` depends on skipped `model.p.a`")
       md should include("`s.d` depends on skipped `model.p.a`")
+    }
+
+    "Jinja in profiles.yml" should "render the DuckDB path and the schema with env_var" in {
+      val manifest = DbtFixtures.miniProject(
+        List(DbtFixtures.miniModel("m", "select '{{ target.schema }}' as s"))
+      )
+      val file = profiles(
+        "      type: duckdb\n" +
+        "      path: \"{{ env_var('DBT_DUCKDB_PATH') }}\"\n" +
+        "      schema: \"{{ env_var('DBT_SCHEMA', 'analytics') }}\"\n"
+      )
+      val env = Map("DBT_DUCKDB_PATH" -> "/data/shop.duckdb")
+      val result = DbtImporter
+        .run(
+          DbtImportConfig(
+            "import",
+            manifest.toString,
+            profiles = Some(file.toString),
+            force = true
+          ),
+          stub,
+          env.get
+        )
+        .get
+      result.report.general should contain(
+        "connection dbt_dev added to application.sl.yml (jdbc:duckdb:/data/shop.duckdb); the file is rewritten without its comments"
+      )
+      written(result, "/transform/s/m.sql") should include("'analytics' as s")
+      result.report.envVars should contain allOf (
+        BakedValue("DBT_DUCKDB_PATH", "/data/shop.duckdb", List("profiles.yml")),
+        BakedValue("DBT_SCHEMA", "analytics", List("profiles.yml"))
+      )
+    }
+
+    it should "write no connection when a value it uses cannot be rendered" in {
+      val manifest = DbtFixtures.miniProject(List(DbtFixtures.miniModel("m", "select 1 as id")))
+      val file = profiles(
+        "      type: duckdb\n      path: \"{{ env_var('DBT_UNSET_PATH') }}\"\n      schema: main\n"
+      )
+      val result = DbtImporter
+        .run(
+          DbtImportConfig(
+            "import",
+            manifest.toString,
+            profiles = Some(file.toString),
+            force = true
+          ),
+          stub,
+          Map.empty[String, String].get _
+        )
+        .get
+      result.exitCode shouldBe 0
+      result.written should not contain ProjectWriter.applicationPath
+      val note = result.report.general.find(_.contains("DBT_UNSET_PATH")).getOrElse("")
+      note should include("path")
+      note should include("--connection")
+    }
+
+    "Jinja in the vars of dbt_project.yml" should "render with env_var, a var it cannot render skipping its models" in {
+      val manifest = DbtFixtures.miniProject(
+        List(
+          DbtFixtures.miniModel("m1", "select '{{ var(\"region\") }}' as r"),
+          DbtFixtures.miniModel("m2", "select '{{ var(\"missing\") }}' as r")
+        ),
+        projectYml = "name: p\nprofile: p\nvars:\n" +
+          "  region: \"{{ env_var('DBT_REGION', 'eu') }}\"\n" +
+          "  missing: \"{{ env_var('DBT_NOT_SET') }}\"\n"
+      )
+      val result = DbtImporter
+        .run(
+          DbtImportConfig("import", manifest.toString, connection = Some("bigquery"), force = true),
+          stub,
+          Map.empty[String, String].get _
+        )
+        .get
+      written(result, "/transform/s/m1.sql") should include("'eu' as r")
+      result.report.vars.find(_.name == "region").map(_.value) shouldBe Some("eu")
+      result.report.envVars should contain(
+        BakedValue("DBT_REGION", "eu", List("dbt_project.yml"))
+      )
+      result.report.entries.find(_.dbtId == "model.p.m2").map(_.status) match {
+        case Some(EntryStatus.Skipped(reason)) => reason should include("DBT_NOT_SET")
+        case other                             => fail(s"m2 not skipped: $other")
+      }
     }
 
     "A test whose tables have the same depth" should "note that their build order is not known" in {
@@ -84,5 +178,29 @@ class DbtImporterSpec extends TestHelper {
       entry.notes.mkString should include("same depth")
     }
 
+    "--connection" should "fail as a usage error when the project has no such connection" in {
+      val manifest = DbtFixtures.miniProject(List(DbtFixtures.miniModel("m", "select 1 as id")))
+      val failure = DbtImporter
+        .run(DbtImportConfig("import", manifest.toString, connection = Some("nope")), stub)
+        .failed
+        .get
+      failure shouldBe a[DbtImportException]
+      failure.getMessage should include("nope")
+    }
+  }
+
+  new WithSettings(
+    ConfigFactory.parseString("connectionRef = \"\"").withFallback(super.testConfiguration)
+  ) {
+    "--connection" should "go on every task when the project has no default connection" in {
+      val manifest = DbtFixtures.miniProject(List(DbtFixtures.miniModel("m", "select 1 as id")))
+      val result = DbtImporter
+        .run(
+          DbtImportConfig("import", manifest.toString, connection = Some("bigquery"), force = true),
+          stub
+        )
+        .get
+      written(result, "/transform/s/m.sl.yml") should include regex "connectionRef: \"?bigquery\"?"
+    }
   }
 }

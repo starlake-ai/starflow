@@ -1,6 +1,7 @@
 package ai.starlake.dbt.manifest
 
 import ai.starlake.dbt.DbtImportException
+import ai.starlake.dbt.jinja.DbtConfigRenderer
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 
@@ -63,13 +64,19 @@ object DbtProjectFile {
   }
 }
 
-/** The dbt target that `target.*` renders, and the DuckDB file of a DuckDB target */
+/** The dbt target that `target.*` renders, and the DuckDB file of a DuckDB target
+  *
+  * @param unrendered
+  *   the fields of profiles.yml that the import reads but cannot render (an env var not set), with
+  *   the reason: they are left out, and no connection is written
+  */
 final case class DbtTarget(
   name: String,
   adapterType: String,
   schema: Option[String],
   database: Option[String],
-  duckdbPath: Option[Path]
+  duckdbPath: Option[Path],
+  unrendered: List[(String, String)] = Nil
 )
 
 object DbtProfiles {
@@ -77,12 +84,15 @@ object DbtProfiles {
 
   /** @param projectRoot
     *   a relative DuckDB path is relative to it, the directory dbt runs from
+    * @param renderer
+    *   renders the values that hold Jinja (`{{ env_var('X') }}`)
     */
   def read(
     profilesFile: Path,
     profileName: String,
     targetName: Option[String],
-    projectRoot: Path
+    projectRoot: Path,
+    renderer: DbtConfigRenderer = new DbtConfigRenderer(sys.env.get, Map.empty)
   ): Try[DbtTarget] = Try {
     if (!Files.isRegularFile(profilesFile))
       throw new DbtImportException(s"profiles file not found: $profilesFile")
@@ -94,7 +104,19 @@ object DbtProfiles {
       case Some(m: Map[_, _]) => m.asInstanceOf[Map[String, Any]]
       case _ => throw new DbtImportException(s"profile '$profileName' not found in $profilesFile")
     }
-    val target = targetName.orElse(profile.get("target").map(_.toString)).getOrElse("dev")
+    val target = targetName
+      .orElse(profile.get("target").map { t =>
+        renderer
+          .render(t.toString)
+          .fold(
+            e =>
+              throw new DbtImportException(
+                s"target of profile '$profileName' in $profilesFile: $e; pass --target"
+              ),
+            identity
+          )
+      })
+      .getOrElse("dev")
     val output = profile.get("outputs").collect { case m: Map[_, _] => m } match {
       case Some(outputs) =>
         outputs.asInstanceOf[Map[String, Any]].get(target) match {
@@ -106,9 +128,18 @@ object DbtProfiles {
         }
       case None => throw new DbtImportException(s"profile '$profileName' has no outputs")
     }
-    def str(key: String): Option[String] = output.get(key).collect {
-      case s: String if s.nonEmpty => s
-    }
+    val unrendered = scala.collection.mutable.ListBuffer.empty[(String, String)]
+    def str(key: String): Option[String] = output
+      .get(key)
+      .collect { case s: String if s.nonEmpty => s }
+      .flatMap { s =>
+        renderer.render(s) match {
+          case Right(value) => Some(value).filter(_.nonEmpty)
+          case Left(reason) =>
+            unrendered += key -> reason
+            None
+        }
+      }
     val adapterType = str("type").getOrElse("")
     val duckdbPath =
       if (adapterType != "duckdb") None
@@ -121,9 +152,15 @@ object DbtProfiles {
       .orElse(str("dbname"))
       .orElse(str("project"))
       .orElse(duckdbPath.map(_.getFileName.toString.replaceAll("\\.[^.]*$", "")))
-    DbtTarget(target, adapterType, str("schema").orElse(str("dataset")), database, duckdbPath)
+    val schema = str("schema").orElse(str("dataset"))
+    DbtTarget(target, adapterType, schema, database, duckdbPath, unrendered.toList)
   }
 }
+
+/** A var of dbt_project.yml whose value holds Jinja that cannot be rendered: the models that read
+  * it are skipped with the reason
+  */
+final case class DbtUnrenderedVar(reason: String)
 
 /** dbt's var() lookup: --vars, then the vars scoped to the package, then the global ones */
 final case class DbtVars(
@@ -153,6 +190,29 @@ object DbtVars {
       packages.contains(k) && v.isInstanceOf[Map[_, _]]
     }
     DbtVars(global, scoped.map { case (k, v) => k -> v.asInstanceOf[Map[String, Any]] }, cli)
+  }
+
+  /** The vars of dbt_project.yml, their values that hold Jinja rendered: one that cannot be
+    * rendered becomes a [[DbtUnrenderedVar]]. The vars scoped to a package are rendered one by one.
+    */
+  def rendered(
+    projectVars: Map[String, Any],
+    packages: Set[String],
+    renderer: DbtConfigRenderer
+  ): Map[String, Any] = {
+    def one(name: String, value: Any): Any =
+      renderer.renderValue(value) match {
+        case Right(v) => v
+        case Left(reason) =>
+          DbtUnrenderedVar(s"var('$name') of dbt_project.yml cannot be rendered: $reason")
+      }
+    scala.collection.immutable.ListMap(projectVars.toList.map {
+      case (pkg, scoped: Map[_, _]) if packages.contains(pkg) =>
+        pkg -> scala.collection.immutable.ListMap(
+          scoped.asInstanceOf[Map[String, Any]].toList.map { case (k, v) => k -> one(k, v) }: _*
+        )
+      case (k, v) => k -> one(k, v)
+    }: _*)
   }
 
   /** --vars, a YAML or JSON map as dbt reads it */

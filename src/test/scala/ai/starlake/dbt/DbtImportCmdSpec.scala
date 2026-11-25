@@ -58,7 +58,11 @@ class DbtImportCmdSpec extends TestHelper {
 
     it should "exit with 1, writing nothing, when its files exist; with 0 under --force" in {
       val config =
-        DbtImportConfig("import", DbtFixtures.shopManifestPath.toString, connection = Some("x"))
+        DbtImportConfig(
+          "import",
+          DbtFixtures.shopManifestPath.toString,
+          connection = Some("bigquery")
+        )
       DbtImporter.run(config, stub).get.exitCode shouldBe 0
       val second = DbtImporter.run(config, stub).get
       second.exitCode shouldBe 1

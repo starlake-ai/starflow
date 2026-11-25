@@ -93,5 +93,19 @@ class DbtSeedSourceMapperSpec extends TestHelper {
       DbtSourceMapper.duration(ai.starlake.dbt.manifest.DbtPeriod(12, "hour")) shouldBe "12 hours"
       DbtSourceMapper.duration(ai.starlake.dbt.manifest.DbtPeriod(1, "day")) shouldBe "1 day"
     }
+
+    "A source column data_type with no Starlake type" should "be noted as kept as string" in {
+      val source = manifest.sources
+        .find(_.uniqueId == "source.shop.crm.crm_accounts")
+        .get
+        .copy(columns =
+          List(ai.starlake.dbt.manifest.DbtColumn("c", "", Some("no_such_type"), Nil))
+        )
+      val mapped = DbtSourceMapper.map(source, ctx).toOption.get
+      mapped.table.get.attributes.map(a => a.name -> a.`type`) shouldBe List("c" -> "string")
+      mapped.entry.notes should contain(
+        "column c: data_type no_such_type has no Starlake type, kept as string"
+      )
+    }
   }
 }

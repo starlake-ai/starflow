@@ -72,7 +72,7 @@ object DbtSourceMapper {
           val attributes = source.columns.map { c =>
             val starlakeType = c.dataType.flatMap(DbtTypes.toStarlake(_, ctx.adapterType))
             c.dataType.filter(_ => starlakeType.isEmpty).foreach { t =>
-              notes += s"column ${c.name}: data_type $t has no Starlake type, left out"
+              notes += s"column ${c.name}: data_type $t has no Starlake type, kept as string"
             }
             TableAttribute(
               name = c.name,
