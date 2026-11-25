@@ -92,16 +92,23 @@ object DbtTestMapper {
           // Starlake runs an expectation right after its task: it goes to the last built of the
           // tables it reads, which names the tested table when it is another one
           val holder = reads.filter(converted.contains).maxBy(r => (rank(r), r == id))
-          val testedTable =
-            if (holder == id) None
-            else Some(ctx.relations.ofNode(ctx.manifest.nodesById(id)).render)
+          def table(node: String) = ctx.relations.ofNode(ctx.manifest.nodesById(node)).render
+          val testedTable = if (holder == id) None else Some(table(id))
+          // of equal depth, the other tables it reads may be built after the holder
+          val sameDepth =
+            reads.filter(r => r != holder && converted.contains(r) && rank(r) == rank(holder))
           val failOnError = !test.configString("severity").exists(_.equalsIgnoreCase("warn"))
           val notes = reportedConfig(test) ++
             testedTable
-              .map(t =>
-                s"runs after ${ctx.relations.ofNode(ctx.manifest.nodesById(holder)).render}, the last table it reads, on $t"
-              )
-              .toList
+              .map(t => s"runs after ${table(holder)}, the last table it reads, on $t")
+              .toList ++
+            (if (sameDepth.isEmpty) Nil
+             else
+               List(
+                 s"runs after ${table(holder)}; ${sameDepth.map(table).mkString(", ")} " +
+                 s"${if (sameDepth.size == 1) "has" else "have"} the same depth in the dbt graph: " +
+                 "no build order between them is guaranteed"
+               ))
           val expect = test.testMetadata match {
             case Some(meta) if Builtins.contains(meta.name) && meta.namespace.forall(_ == "dbt") =>
               builtin(test, meta.name, meta.kwargs, testedTable, ctx)

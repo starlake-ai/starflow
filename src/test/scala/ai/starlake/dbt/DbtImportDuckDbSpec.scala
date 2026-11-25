@@ -69,10 +69,7 @@ class DbtImportDuckDbSpec extends TestHelper {
       }
 
     def transform(result: DbtImportResult): Try[String] = {
-      val blocked = result.report.dependentsOfSkipped.flatMap(_._2).toSet
-      workflow().autoJob(
-        TransformConfig(name = result.report.convertedTasks.filterNot(blocked).mkString(","))
-      )
+      workflow().autoJob(TransformConfig(name = result.report.runnableTasks.mkString(",")))
     }
 
     def incoming(file: JPath): Unit =
@@ -205,8 +202,9 @@ class DbtImportDuckDbSpec extends TestHelper {
           reason should include("needs the warehouse at import")
         case other => fail(s"unexpected skipped models: $other")
       }
-      report.dependentsOfSkipped.toMap.get("model.shop.needs_warehouse") shouldBe
-      Some(List("marts.warehouse_consumer"))
+      report.downstreamOfSkipped shouldBe List(
+        "marts.warehouse_consumer" -> List("model.shop.needs_warehouse")
+      )
       report.reportedOnly.map(_.dbtId) should contain("snapshot.shop.customers_snapshot")
       report.convertedTasks should not contain "marts.needs_warehouse"
       // what was converted is what is compared: the models but the reader of the skipped one, and

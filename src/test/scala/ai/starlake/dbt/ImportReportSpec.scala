@@ -4,7 +4,7 @@ import ai.starlake.TestHelper
 import ai.starlake.config.DatasetArea
 import ai.starlake.dbt.manifest.{DbtProjectFile, DbtRelations}
 import ai.starlake.dbt.mapping._
-import ai.starlake.dbt.report.EntryStatus
+import ai.starlake.dbt.report.{EntryStatus, ImportReport, ReportEntry}
 import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.TableAttribute
 import ai.starlake.utils.YamlSerde
@@ -48,9 +48,37 @@ class ImportReportSpec extends TestHelper {
     }
 
     it should "list the tasks that read a skipped model" in {
-      report.dependentsOfSkipped shouldBe List(
-        "model.shop.needs_warehouse" -> List("marts.warehouse_consumer")
+      report.downstreamOfSkipped shouldBe List(
+        "marts.warehouse_consumer" -> List("model.shop.needs_warehouse")
       )
+    }
+
+    it should "list every task downstream of a skipped object, through any number of levels" in {
+      import EntryStatus._
+      val chain = ImportReport(
+        List(
+          ReportEntry("model", "model.p.a", Some("s.a"), Skipped("run_query")),
+          ReportEntry("model", "model.p.x", Some("s.x"), NotImported("enabled: false")),
+          ReportEntry("model", "model.p.b", Some("s.b"), Converted, dependsOn = List("model.p.a")),
+          ReportEntry("model", "model.p.c", Some("s.c"), Converted, dependsOn = List("model.p.b")),
+          ReportEntry(
+            "model",
+            "model.p.d",
+            Some("s.d"),
+            Converted,
+            dependsOn = List("model.p.c", "model.p.x")
+          ),
+          ReportEntry("model", "model.p.ok", Some("s.ok"), Converted)
+        ),
+        Nil,
+        Nil,
+        Nil
+      )
+      val md = chain.toMarkdown
+      md should include("- `s.b` depends on skipped `model.p.a`\n")
+      md should include("- `s.c` depends on skipped `model.p.a`\n")
+      md should include("- `s.d` depends on skipped `model.p.a`, `model.p.x`\n")
+      md should not include "`s.ok` depends"
     }
 
     it should "render all of it as Markdown" in {
@@ -61,7 +89,9 @@ class ImportReportSpec extends TestHelper {
         "model `model.shop.needs_warehouse`: needs the warehouse at import (run_query)"
       )
       md should include("## Downstream of skipped objects")
-      md should include("`model.shop.needs_warehouse` is read by `marts.warehouse_consumer`")
+      md should include(
+        "`marts.warehouse_consumer` depends on skipped `model.shop.needs_warehouse`"
+      )
       md should include("## Baked env vars")
       md should include("`SHOP_CHANNEL` = `web` in `marts.orders`")
     }

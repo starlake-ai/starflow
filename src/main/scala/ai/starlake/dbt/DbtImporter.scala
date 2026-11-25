@@ -141,11 +141,9 @@ object DbtImporter {
   }
 
   private def nextSteps(report: ImportReport): List[String] = {
-    val tasks =
-      report.convertedTasks.filterNot(t => report.dependentsOfSkipped.exists(_._2.contains(t)))
     List(
       "next: starlake stage && starlake load, to load the seeds",
-      s"next: starlake transform --name ${tasks.mkString(",")}"
+      s"next: starlake transform --name ${report.runnableTasks.mkString(",")}"
     )
   }
 }

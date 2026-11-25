@@ -2,8 +2,10 @@ package ai.starlake.dbt
 
 import ai.starlake.dbt.jinja.{DbtJinja, DbtJinjaContext}
 import ai.starlake.dbt.manifest._
+import ai.starlake.utils.JinjaUtils
+import com.fasterxml.jackson.databind.ObjectMapper
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.{Files, Path, Paths}
 import java.time.{ZoneOffset, ZonedDateTime}
 
 /** The committed artifacts of the fixture dbt project (scripts/dbt-fixtures.sh) */
@@ -56,6 +58,65 @@ object DbtFixtures {
       Nil,
       Paths.get("/nonexistent/target/manifest.json")
     )
+
+  /** A dbt project of its own, project `p` on DuckDB: dbt_project.yml and target/manifest.json made
+    * of the given nodes and sources (manifest fields, unique_id first)
+    *
+    * @return
+    *   the manifest
+    */
+  def miniProject(
+    nodes: List[Map[String, Any]],
+    sources: List[Map[String, Any]] = Nil,
+    projectYml: String = "name: p\nprofile: p\n"
+  ): Path = {
+    val dir = Files.createTempDirectory("dbt-mini")
+    Files.createDirectories(dir.resolve("target"))
+    Files.writeString(dir.resolve("dbt_project.yml"), projectYml)
+    def byId(objects: List[Map[String, Any]]) =
+      objects.map(o => o("unique_id").toString -> o).toMap
+    val manifest = Map(
+      "metadata" -> Map(
+        "dbt_schema_version" -> "https://schemas.getdbt.com/dbt/manifest/v12.json",
+        "dbt_version"        -> "1.12.7",
+        "adapter_type"       -> "duckdb",
+        "project_name"       -> "p"
+      ),
+      "nodes"    -> byId(nodes),
+      "sources"  -> byId(sources),
+      "macros"   -> Map.empty,
+      "docs"     -> Map.empty,
+      "disabled" -> Map.empty
+    )
+    val file = dir.resolve("target/manifest.json")
+    Files.writeString(file, new ObjectMapper().writeValueAsString(JinjaUtils.toJava(manifest)))
+    file
+  }
+
+  /** A model of [[miniProject]], in database db */
+  def miniModel(
+    name: String,
+    rawCode: String,
+    dependsOn: List[String] = Nil,
+    schema: String = "s",
+    database: String = "db",
+    materialized: String = "table",
+    columns: Map[String, Any] = Map.empty
+  ): Map[String, Any] = Map(
+    "unique_id"          -> s"model.p.$name",
+    "resource_type"      -> "model",
+    "package_name"       -> "p",
+    "name"               -> name,
+    "database"           -> database,
+    "schema"             -> schema,
+    "alias"              -> name,
+    "language"           -> "sql",
+    "raw_code"           -> rawCode,
+    "original_file_path" -> s"models/$name.sql",
+    "config"             -> Map("materialized" -> materialized, "enabled" -> true),
+    "columns"            -> columns,
+    "depends_on"         -> Map("nodes" -> dependsOn, "macros" -> Nil)
+  )
 
   def node(manifest: DbtManifest, name: String): DbtNode =
     manifest.nodes

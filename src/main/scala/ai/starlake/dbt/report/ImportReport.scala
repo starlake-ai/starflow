@@ -14,7 +14,7 @@ object EntryStatus {
   * @param target
   *   what it became in Starlake: `domain.table`, an expectation, a doc block
   * @param dependsOn
-  *   the dbt objects it reads, for the dependents of the skipped ones
+  *   the dbt objects it reads, for the objects downstream of the skipped ones
   */
 final case class ReportEntry(
   kind: String,
@@ -46,14 +46,45 @@ final case class ImportReport(
 
   def reportedOnly: List[ReportEntry] = entries.filter(_.status.isInstanceOf[ReportedOnly])
 
-  /** Each skipped or disabled object, with the converted objects that read it */
-  def dependentsOfSkipped: List[(String, List[String])] = {
+  /** Each converted object that reads a skipped or disabled object, directly or through other
+    * converted objects (any number of levels, views and ephemeral models included), with the
+    * skipped or disabled objects it reaches
+    */
+  def downstreamOfSkipped: List[(String, List[String])] = {
     val missing = (skipped ++ notImported).map(_.dbtId).toSet
-    missing.toList.sorted.flatMap { id =>
-      val dependents =
-        converted.filter(_.dependsOn.contains(id)).map(e => e.target.getOrElse(e.dbtId))
-      if (dependents.isEmpty) None else Some(id -> dependents.sorted)
-    }
+    val byId = converted.map(e => e.dbtId -> e).toMap
+    val memo = scala.collection.mutable.Map.empty[String, Set[String]]
+    def reached(id: String, seen: Set[String]): Set[String] =
+      memo.getOrElse(
+        id, {
+          val result = byId
+            .get(id)
+            .map(
+              _.dependsOn
+                .filterNot(seen)
+                .flatMap { d =>
+                  if (missing.contains(d)) Set(d) else reached(d, seen + id)
+                }
+                .toSet
+            )
+            .getOrElse(Set.empty)
+          memo.put(id, result)
+          result
+        }
+      )
+    converted
+      .map(e => e.target.getOrElse(e.dbtId) -> reached(e.dbtId, Set.empty))
+      .filter(_._2.nonEmpty)
+      .groupBy(_._1)
+      .toList
+      .map { case (target, uses) => target -> uses.flatMap(_._2).distinct.sorted }
+      .sortBy(_._1)
+  }
+
+  /** The converted transform tasks that do not depend on a skipped object */
+  def runnableTasks: List[String] = {
+    val blocked = downstreamOfSkipped.map(_._1).toSet
+    convertedTasks.filterNot(blocked)
   }
 
   /** The converted transform tasks, `domain.table` */
@@ -107,8 +138,8 @@ final case class ImportReport(
     )
     section(
       "Downstream of skipped objects",
-      dependentsOfSkipped.map { case (id, deps) =>
-        s"`$id` is read by ${deps.map(d => s"`$d`").mkString(", ")}"
+      downstreamOfSkipped.map { case (task, missing) =>
+        s"`$task` depends on skipped ${missing.map(m => s"`$m`").mkString(", ")}"
       }
     )
     section(
