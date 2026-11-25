@@ -1,4 +1,13 @@
+{# A SELECT that reads its target must give the rows it gave before the DELETE: they go to a
+   temporary table (stageIncoming), except on a data branch, whose proxy does not take temporary
+   tables: the rows then come from a view, as before. MySQL takes no view over a temporary table,
+   and reads a temporary table once per statement: the numbered rows go to a temporary table too #}
+{% if stageIncoming %}
+DROP TEMPORARY TABLE IF EXISTS {{ tableDomain }}.SL_INCOMING;
+CREATE TEMPORARY TABLE {{ tableDomain }}.SL_INCOMING AS {{ selectStatement }};
+{% else %}
 CREATE OR REPLACE VIEW {{ tableDomain }}.SL_INCOMING AS {{ selectStatement }};
+{% endif %}
 
 {% if strategyOn == 'TARGET' %}
 
@@ -13,10 +22,15 @@ INSERT INTO {{ tableFullName }} ({{ tableColumnsCsv }}) SELECT {{ tableColumnsCs
 
 {% else %} {# strategyOn == 'SOURCE_AND_TARGET' #}
 
+{% if stageIncoming %}
+DROP TEMPORARY TABLE IF EXISTS {{ tableDomain }}.SL_VIEW_WITH_ROWNUM;
+CREATE TEMPORARY TABLE {{ tableDomain }}.SL_VIEW_WITH_ROWNUM AS
+{% else %}
 CREATE OR REPLACE VIEW {{ tableDomain }}.SL_VIEW_WITH_ROWNUM AS (
+{% endif %}
 SELECT {{ tableColumnsCsv }}, ROW_NUMBER() OVER (PARTITION BY  {{ strategyKeyCsv }} ORDER BY {{ strategyTimestamp }} DESC) AS SL_SEQ
 FROM {{ tableDomain }}.SL_INCOMING
-);
+{% if not stageIncoming %}){% endif %};
 
 DELETE FROM {{ tableFullName }}
 WHERE EXISTS (
@@ -27,8 +41,16 @@ WHERE {{ renderStrategyKeyJoinCondition(tableFullName, 'SL_VIEW_WITH_ROWNUM', st
 INSERT INTO {{ tableFullName }} ({{ tableColumnsCsv }}) 
 SELECT {{ tableColumnsCsv }} FROM {{ tableDomain }}.SL_VIEW_WITH_ROWNUM WHERE SL_SEQ = 1;
 
+{% if stageIncoming %}
+DROP TEMPORARY TABLE IF EXISTS {{ tableDomain }}.SL_VIEW_WITH_ROWNUM;
+{% else %}
 DROP VIEW IF EXISTS {{ tableDomain }}.SL_VIEW_WITH_ROWNUM;
+{% endif %}
 
 {% endif %}
 
+{% if stageIncoming %}
+DROP TEMPORARY TABLE IF EXISTS {{ tableDomain }}.SL_INCOMING;
+{% else %}
 DROP VIEW IF EXISTS {{ tableDomain }}.SL_INCOMING;
+{% endif %}

@@ -27,7 +27,6 @@ SL_VIEW_WITH_ROWNUM AS (
   FROM SL_INCOMING
 )
 SELECT {{ tableColumnsCsv }} FROM SL_VIEW_WITH_ROWNUM WHERE SL_SEQ = 1;
-""".stripMargin
 
 {%  endif %}
 

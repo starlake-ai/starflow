@@ -1,25 +1,20 @@
-
-{% macro makeMD5(columnNames) %}
-{% for columnName in columnNames %}{{ columnName }}{% if not loop.last %} || '-' {% endif %}{%endfor%}
-{% endmacro %}
-
-{% if columnNames|length > 1 %}
-
-DELETE FROM {{ tableFullName }} 
-WHERE {{ makeMD5(quotedStrategyKey) }} in
-(
-    SELECT {{ makeMD5(quotedStrategyKey) }} FROM ({{ selectStatement }})
-);
-
+{# A SELECT that reads its target must give the rows it gave before the DELETE: they go to a
+   temporary table (stageIncoming) that the DELETE and the INSERT read, except on a data branch,
+   whose proxy does not take temporary tables: the SELECT then runs in each statement, as before #}
+{% if stageIncoming %}
+CREATE OR REPLACE TEMPORARY TABLE SL_INCOMING AS {{ selectStatement }};
+{% set incoming = 'SL_INCOMING' %}
 {% else %}
+{% set incoming = '(' + selectStatement + ')' %}
+{% endif %}
 
-DELETE FROM {{ tableFullName }} 
-WHERE {{ strategyKeyCsv }} in 
-(
-    SELECT {{ strategyKeyCsv }} FROM ({{ selectStatement }})
-);
+DELETE FROM {{ tableFullName }}
+USING (SELECT DISTINCT {{ strategyKeyCsv }} FROM {{ incoming }}) AS SL_INCOMING
+WHERE {{ renderStrategyKeyJoinCondition(tableFullName, 'SL_INCOMING', strategyKey) }};
 
-{% endif%}
 INSERT INTO {{ tableFullName }} ({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }}
-FROM ({{ selectStatement }});
+FROM {{ incoming }};
 
+{% if stageIncoming %}
+DROP TABLE IF EXISTS SL_INCOMING;
+{% endif %}

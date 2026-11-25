@@ -1,25 +1,17 @@
+{# A SELECT that reads its target must give the rows it gave before the DELETE. Spark has no
+   temporary table, and recomputes a cached one once the DELETE changes the table it reads: the
+   rows go to a table of the domain, SL_INCOMING_<table>, dropped at the end. Delta takes no
+   subquery in a DELETE: a MERGE deletes the rows whose key comes in #}
+{% set incomingTable = tableDomain + '.SL_INCOMING_' + tableName %}
+DROP TABLE IF EXISTS {{ incomingTable }};
+CREATE TABLE {{ incomingTable }} USING {{ tableFormat }} AS {{ selectStatement }};
 
-{% macro makeMD5(columnNames) %}
-{% for columnName in columnNames %}{{ columnName }}{% if not loop.last %} || '-' {% endif %}{%endfor%}
-{% endmacro %}
+MERGE INTO {{ tableFullName }} AS SL_EXISTING
+USING (SELECT DISTINCT {{ strategyKeyCsv }} FROM {{ incomingTable }}) AS SL_INCOMING
+ON {{ renderStrategyKeyJoinCondition('SL_EXISTING', 'SL_INCOMING', strategyKey) }}
+WHEN MATCHED THEN DELETE;
 
-{% if columnNames|length > 1 %}
-
-DELETE FROM {{ tableFullName }} 
-WHERE {{ makeMD5(quotedStrategyKey) }} in
-(
-    SELECT {{ makeMD5(quotedStrategyKey) }} FROM ({{ selectStatement }})
-);
-
-{% else %}
-
-DELETE FROM {{ tableFullName }} 
-WHERE {{ strategyKeyCsv }} in 
-(
-    SELECT {{ strategyKeyCsv }} FROM ({{ selectStatement }})
-);
-
-{% endif%}
 INSERT INTO {{ tableFullName }} ({{ tableColumnsCsv }}) SELECT {{ tableColumnsCsv }}
-FROM ({{ selectStatement }});
+FROM {{ incomingTable }};
 
+DROP TABLE IF EXISTS {{ incomingTable }};
