@@ -45,18 +45,19 @@ object AuditTableDdl {
     parts.result()
   }
 
-  /** The DDL columns the table lacks. With no known table column, nothing: the columns could not be
-    * read, and adding every column would fail on the first that exists.
+  /** The DDL columns the table lacks. Nothing when no column of the table is in the DDL: either its
+    * columns could not be read, or it is not an audit table of an older Starflow, which always
+    * shares most of them, and its writes keep failing rather than the table being reshaped.
     */
   def missing(
     ddlColumns: List[(String, String)],
     tableColumns: List[String]
-  ): List[(String, String)] =
-    if (tableColumns.isEmpty) Nil
-    else {
-      val existing = tableColumns.map(_.toLowerCase).toSet
-      ddlColumns.filterNot { case (name, _) => existing.contains(name.toLowerCase) }
-    }
+  ): List[(String, String)] = {
+    val existing = tableColumns.map(_.toLowerCase).toSet
+    val (present, absent) =
+      ddlColumns.partition { case (name, _) => existing.contains(name.toLowerCase) }
+    if (present.isEmpty) Nil else absent
+  }
 
   def addColumnSql(engine: String, table: String, column: String, typ: String): String =
     engine.toLowerCase match {

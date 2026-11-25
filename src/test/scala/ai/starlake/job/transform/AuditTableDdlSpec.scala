@@ -33,6 +33,11 @@ class AuditTableDdlSpec extends TestHelper {
     AuditTableDdl.missing(ddl, List("JobId", "scheduled_date")) shouldBe Nil
   }
 
+  it should "add nothing to a table that has none of the DDL columns" in {
+    // not an audit table of an older Starflow: its writes keep failing
+    AuditTableDdl.missing(List("JOBID" -> "TEXT"), List("not_an_audit_column")) shouldBe Nil
+  }
+
   it should "add nothing when the table columns are unknown" in {
     AuditTableDdl.missing(List("JOBID" -> "TEXT"), Nil) shouldBe Nil
   }
