@@ -306,6 +306,9 @@ final class DbtJinja(
     "tags"               -> node.tags
   )
 
+  /** The manifest's graph as Java maps, built once: templates only read it */
+  private lazy val graphView: Object = JinjaUtils.toJava(manifest.graph)
+
   private def staticBindings(): util.Map[String, Object] = {
     val b = new util.HashMap[String, Object]()
     b.put(
@@ -335,7 +338,7 @@ final class DbtJinja(
     b.put("run_started_at", new PyishDate(ctx.now))
     b.put("adapter", adapter)
     b.put("exceptions", new DbtExceptions)
-    b.put("graph", JinjaUtils.toJava(manifest.graph))
+    b.put("graph", graphView)
     b.put("project_name", root)
     packageOrder.filterNot(internalPackages.contains).foreach(p => b.put(p, macrosByPackage(p)))
     b.put("dbt", dbtNamespace)
