@@ -2,6 +2,7 @@ package ai.starlake.job.metrics
 
 import ai.starlake.config.Settings
 import ai.starlake.job.common.TaskSQLStatements
+import ai.starlake.job.ingest.AuditLog
 import ai.starlake.job.transform.TransformContext
 import ai.starlake.schema.handlers.{SchemaHandler, StorageHandler}
 import ai.starlake.schema.model.*
@@ -67,7 +68,7 @@ case class ExpectationReport(
         "database"  -> escapeLiteral(database.getOrElse("")),
         "domain"    -> escapeLiteral(domain),
         "schema"    -> escapeLiteral(schema),
-        "timestamp" -> timestamp.toString(),
+        "timestamp" -> AuditLog.timestampLiteral(timestamp, engineName),
         "name"      -> escapeText(name),
         "params"    -> escapeText(params),
         "sql"       -> escapeText(sql.getOrElse("")),

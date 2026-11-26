@@ -70,6 +70,9 @@ class SparkEnv private (
       if (conn.isBigQuery()) {
         SparkEnv.bigQueryConf(conn).foreach { case (key, value) => config.set(key, value) }
       }
+      SparkEnv.sessionTimeZone(config, settings.appConfig.timezone).foreach { zone =>
+        config.set(SparkEnv.SessionTimeZoneKey, zone)
+      }
       val sysProps = System.getProperties()
       if (!SparkSessionBuilder.isSparkConnectActive) {
         val localCatalog = jobConf.getOption("spark.localCatalog").getOrElse("none")
@@ -188,6 +191,15 @@ object SparkEnv {
     }
   }
   private var sparkEnv: SparkEnv = _
+  val SessionTimeZoneKey = "spark.sql.session.timeZone"
+
+  /** The session time zone to set: Starflow's timezone setting (UTC by default), in which it reads
+    * zone-less timestamps, so that Spark renders and writes them in that same zone instead of the
+    * JVM's. None when spark.sql.session.timeZone is set explicitly.
+    */
+  def sessionTimeZone(config: SparkConf, timezone: java.util.TimeZone): Option[String] =
+    if (config.contains(SessionTimeZoneKey)) None else Some(timezone.getID)
+
   def get(
     name: String,
     confTransformer: SparkConf => SparkConf = identity,

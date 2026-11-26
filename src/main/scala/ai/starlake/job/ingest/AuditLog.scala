@@ -32,6 +32,8 @@ import com.typesafe.scalalogging.LazyLogging
 import org.apache.spark.sql.types._
 
 import java.sql.Timestamp
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.regex.Pattern
 import scala.util.{Success, Try}
 
@@ -118,13 +120,15 @@ case class AuditLog(
         "count"         -> count,
         "countAccepted" -> countAccepted,
         "countRejected" -> countRejected,
-        "timestamp"     -> timestamp.toString(),
+        "timestamp"     -> AuditLog.timestampLiteral(timestamp, engineName),
         "duration"      -> duration,
         "message"       -> escapeLiteral(limitMessage),
         "step"          -> step,
         "database"      -> escapeLiteral(database.getOrElse("")),
         "tenant"        -> escapeLiteral(tenant),
-        "scheduledDate" -> escapeLiteral(scheduledDate.getOrElse(timestamp.toString))
+        "scheduledDate" -> escapeLiteral(
+          scheduledDate.getOrElse(AuditLog.timestampLiteral(timestamp, engineName))
+        )
       ),
       Map.empty
     )
@@ -152,6 +156,21 @@ case class AuditLog(
 }
 
 object AuditLog extends LazyLogging {
+
+  private val UtcLiteral =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssxxx").withZone(ZoneOffset.UTC)
+
+  /** The text of an audit timestamp in the SQL that writes the audit row. java.sql.Timestamp prints
+    * the wall clock of the JVM zone, while Spark reads a literal without a zone in its session zone
+    * (the timezone setting) and BigQuery in UTC: on a machine outside UTC, the row would be off by
+    * the offset. For these two engines the literal carries the instant with an explicit UTC offset.
+    * The JDBC engines store the wall clock in TIMESTAMP columns and keep it.
+    */
+  def timestampLiteral(timestamp: Timestamp, engine: Engine): String =
+    engine.toString match {
+      case "spark" | "bigquery" => UtcLiteral.format(timestamp.toInstant)
+      case _                    => timestamp.toString
+    }
   def selectTemplate(engineName: Engine)(implicit settings: Settings): String = {
     val template = settings.appConfig.jdbcEngines
       .get(engineName.toString.toLowerCase())
