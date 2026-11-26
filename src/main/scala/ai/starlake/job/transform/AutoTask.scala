@@ -268,6 +268,37 @@ abstract class AutoTask(
 
   def createAuditTable(): Boolean
 
+  /** Adds the columns that an existing audit table lacks compared with its DDL (see AuditTableDdl).
+    * Never fails the task: on an error, the write that follows fails with the missing column error.
+    *
+    * @param engine
+    *   the engine name that selects the ALTER TABLE syntax
+    * @param tableColumns
+    *   the columns of the existing table
+    * @param run
+    *   runs one ALTER TABLE statement
+    */
+  protected def evolveAuditTable(engine: String, tableColumns: => List[String])(
+    run: String => Unit
+  ): Unit =
+    taskDesc._auditTableName.flatMap(jdbcSinkEngine.tables.get).foreach { ddl =>
+      Try(
+        AuditTableDdl.evolve(
+          s"$sinkConnectionRef|$fullTableName",
+          engine,
+          fullTableName,
+          ddl.createSql,
+          tableColumns
+        )(run)
+      ) match {
+        case Success(Nil) =>
+        case Success(added) =>
+          logger.info(s"Added the column(s) ${added.mkString(", ")} to $fullTableName")
+        case Failure(e) =>
+          logger.warn(s"Could not add the missing columns of $fullTableName", e)
+      }
+    }
+
   /** Build the SQL statements to create or alter the table schema in the target database.
     * @param incomingSchema
     * @param tableName

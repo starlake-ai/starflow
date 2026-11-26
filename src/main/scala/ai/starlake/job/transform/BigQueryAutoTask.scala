@@ -187,8 +187,15 @@ class BigQueryAutoTask(
 
     if (!tableExists && taskDesc._auditTableName.isDefined) {
       createAuditTable()
-    } else
+    } else {
+      if (tableExists && taskDesc._auditTableName.isDefined)
+        evolveAuditTable("bigquery", bqTargetColumns()) { sql =>
+          bqNativeJob(bigQuerySinkConfig, sql, Some(settings.appConfig.shortJobTimeoutMs))
+            .runBigQueryJob()
+            .get
+        }
       tableExists
+    }
   }
 
   def createAuditTable(): Boolean = {
