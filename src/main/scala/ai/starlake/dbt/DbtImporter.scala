@@ -17,7 +17,7 @@ import ai.starlake.schema.model.{ConnectionType, TableAttribute}
 import ai.starlake.utils.{ExitCodeJobResult, Utils}
 import org.apache.hadoop.fs.Path
 
-import java.nio.file.Paths
+import java.nio.file.{Files, Paths}
 import java.time.ZonedDateTime
 import scala.util.Try
 
@@ -89,7 +89,11 @@ object DbtImporter {
       packages,
       cliVars
     )
-    val warehouse = warehouseOf(config, connectionEdit)
+    val warehouse =
+      warehouseOf(
+        config,
+        connectionEdit.flatMap(e => profileTarget.flatMap(_.duckdbPath).map(e -> _))
+      )
     val jinja = new DbtJinja(
       manifest,
       relations,
@@ -144,12 +148,20 @@ object DbtImporter {
 
   /** Without --introspect, the offline warehouse. With it, the connection's warehouse behind the
     * read-only guard and the row limit; it must open before anything is rendered or written.
+    *
+    * @param profileDuckDb
+    *   the connection added from the DuckDB target of --profiles, and its file: opened read-only,
+    *   and it must exist (DuckDB would create it)
     */
-  private def warehouseOf(config: DbtImportConfig, edit: Option[ConnectionEdit])(implicit
+  private def warehouseOf(
+    config: DbtImportConfig,
+    profileDuckDb: Option[(ConnectionEdit, java.nio.file.Path)]
+  )(implicit
     settings: Settings
   ): DbtWarehouse =
     if (!config.introspect) new OfflineWarehouse
     else {
+      val timeoutMs = settings.appConfig.shortJobTimeoutMs
       val (name, open) = config.connection match {
         case Some(c) =>
           val info = settings.appConfig.connections(c)
@@ -158,19 +170,38 @@ object DbtImporter {
             throw new DbtImportException(
               s"--introspect: connection $c is not a JDBC or BigQuery connection"
             )
-          else (c, () => new JdbcWarehouse(c, info.options): DbtWarehouse)
+          else
+            (
+              c,
+              () =>
+                new JdbcWarehouse(
+                  c,
+                  info.options,
+                  JdbcWarehouse.queryTimeoutSeconds(info.options, timeoutMs)
+                ): DbtWarehouse
+            )
         case None =>
-          val e = edit.getOrElse(
+          val (e, file) = profileDuckDb.getOrElse(
             throw new DbtImportException(
               "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
             )
+          )
+          if (!Files.isRegularFile(file))
+            throw new DbtImportException(
+              s"--introspect: the DuckDB file of the dbt target does not exist: $file"
+            )
+          val options = Map(
+            "url"              -> e.url,
+            "driver"           -> "org.duckdb.DuckDBDriver",
+            "duckdb.read_only" -> "true"
           )
           (
             e.name,
             () =>
               new JdbcWarehouse(
                 e.name,
-                Map("url" -> e.url, "driver" -> "org.duckdb.DuckDBDriver")
+                options,
+                JdbcWarehouse.queryTimeoutSeconds(options, timeoutMs)
               ): DbtWarehouse
           )
       }
@@ -183,7 +214,7 @@ object DbtImporter {
           s"--introspect: connection $name cannot be opened: ${e.getMessage}"
         )
       }.get
-      new CachingWarehouse(live, config.introspectMaxRows)
+      new CachingWarehouse(live, config.maxRows)
     }
 
   private def connectionNotes(

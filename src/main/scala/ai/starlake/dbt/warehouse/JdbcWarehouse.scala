@@ -2,7 +2,7 @@ package ai.starlake.dbt.warehouse
 
 import ai.starlake.extract.JdbcDbUtils
 
-import java.sql.{Connection, DatabaseMetaData}
+import java.sql.{Connection, DatabaseMetaData, Statement}
 import java.util
 import scala.collection.mutable.ListBuffer
 import scala.util.{Try, Using}
@@ -10,9 +10,15 @@ import scala.util.{Try, Using}
 /** A JDBC connection of the project: queries through the driver, columns and tables from its
   * DatabaseMetaData. Names are tried as written, then upper case, then lower case, since engines
   * store them differently (Snowflake upper, DuckDB and PostgreSQL lower).
+  *
+  * @param queryTimeoutSeconds
+  *   the timeout of every statement, see [[JdbcWarehouse.queryTimeoutSeconds]]
   */
-final class JdbcWarehouse(connectionName: String, options: Map[String, String])
-    extends DbtWarehouse {
+final class JdbcWarehouse(
+  connectionName: String,
+  options: Map[String, String],
+  queryTimeoutSeconds: Int
+) extends DbtWarehouse {
   def name: String = connectionName
 
   private def withConnection[T](f: Connection => T): Try[T] =
@@ -20,7 +26,7 @@ final class JdbcWarehouse(connectionName: String, options: Map[String, String])
 
   def query(sql: String, maxRows: Int): Try[DbtTable] = withConnection { conn =>
     Using.resource(conn.createStatement()) { st =>
-      st.setMaxRows(maxRows)
+      JdbcWarehouse.configure(st, maxRows, queryTimeoutSeconds)
       Using.resource(st.executeQuery(sql)) { rs =>
         val md = rs.getMetaData
         val names = (1 to md.getColumnCount).map(md.getColumnLabel).toList
@@ -94,5 +100,23 @@ final class JdbcWarehouse(connectionName: String, options: Map[String, String])
       }
     } yield r
     found.nextOption()
+  }
+}
+
+object JdbcWarehouse {
+
+  /** The connection's `queryTimeout` option, the one Spark's JDBC reader and writer use (0: no
+    * limit), else Starlake's short job timeout, at least one second
+    */
+  def queryTimeoutSeconds(options: Map[String, String], shortJobTimeoutMs: Long): Int =
+    options
+      .collectFirst { case (k, v) if k.equalsIgnoreCase("queryTimeout") => v.trim }
+      .flatMap(_.toIntOption)
+      .filter(_ >= 0)
+      .getOrElse(math.min(Int.MaxValue.toLong, math.max(1L, shortJobTimeoutMs / 1000)).toInt)
+
+  def configure(st: Statement, maxRows: Int, queryTimeoutSeconds: Int): Unit = {
+    st.setMaxRows(maxRows)
+    st.setQueryTimeout(queryTimeoutSeconds)
   }
 }

@@ -297,9 +297,61 @@ class DbtImporterSpec extends TestHelper {
         .get
       result.report.converted.map(_.dbtId) should contain("model.shop.needs_warehouse")
       result.report.warehouseReads.map(r => (r.name, r.value, r.usedBy)) should contain(
-        ("query: select 42 as answer", "1 rows", List("marts.needs_warehouse"))
+        ("query: select 42 as answer", "1 row", List("marts.needs_warehouse"))
       )
       result.report.general should contain("introspection on connection test-duckdb")
+    }
+
+    private def shopProfiles(duckdbFile: Path): Path = {
+      val file = Files.createTempFile("profiles", ".yml")
+      Files.writeString(
+        file,
+        s"shop:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: \"$duckdbFile\"\n      schema: main\n"
+      )
+      file
+    }
+
+    private def introspectProfiles(profilesFile: Path) =
+      DbtImporter.run(
+        DbtImportConfig(
+          action = "import",
+          manifest = DbtFixtures.shopManifestPath.toString,
+          profiles = Some(profilesFile.toString),
+          introspect = true,
+          force = true
+        )
+      )
+
+    "--introspect with --profiles" should "read dbt's DuckDB file read-only, leaving it unchanged" in {
+      val dir = Files.createTempDirectory("dbt-profile-duckdb")
+      val db = dir.resolve("shop.duckdb")
+      val conn = java.sql.DriverManager.getConnection(s"jdbc:duckdb:$db")
+      try conn.createStatement().execute("CREATE TABLE t AS SELECT 1 AS id")
+      finally conn.close()
+      val bytes = Files.readAllBytes(db).toList
+      val modified = Files.getLastModifiedTime(db)
+      val filesBefore = Files.list(dir).toArray.toList.map(_.toString).sorted
+
+      val result = introspectProfiles(shopProfiles(db)).get
+      result.exitCode shouldBe 0
+      result.report.converted.map(_.dbtId) should contain("model.shop.needs_warehouse")
+      result.report.general should contain("introspection on connection dbt_dev")
+
+      Files.readAllBytes(db).toList shouldBe bytes
+      Files.getLastModifiedTime(db) shouldBe modified
+      Files.list(dir).toArray.toList.map(_.toString).sorted shouldBe filesBefore
+    }
+
+    it should "fail before anything is written when the DuckDB file does not exist" in {
+      val db = Files.createTempDirectory("dbt-profile-duckdb").resolve("missing.duckdb")
+      val before = snapshot()
+      val result = introspectProfiles(shopProfiles(db))
+      result.isFailure shouldBe true
+      result.failed.get shouldBe a[DbtImportException]
+      result.failed.get.getMessage shouldBe
+      s"--introspect: the DuckDB file of the dbt target does not exist: $db"
+      Files.exists(db) shouldBe false
+      snapshot() shouldBe before
     }
   }
 }

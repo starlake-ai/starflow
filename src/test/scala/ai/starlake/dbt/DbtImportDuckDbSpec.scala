@@ -342,10 +342,10 @@ class DbtImportDuckDbSpec extends TestHelper {
       report.warehouseReads shouldBe List(
         BakedValue("columns: raw.raw_customers", "3 columns", List("marts.customers_filled")),
         BakedValue("columns: staging.stg_customers", "3 columns", List("marts.customers_star")),
-        BakedValue("query: select 42 as answer", "1 rows", List("marts.needs_warehouse")),
+        BakedValue("query: select 42 as answer", "1 row", List("marts.needs_warehouse")),
         BakedValue(
           "query: select count(*) as n from staging.stg_orders",
-          "1 rows",
+          "1 row",
           List("marts.order_count")
         ),
         BakedValue(

@@ -98,7 +98,7 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
       """{% set t = run_query("select 42 as answer") %}{{ t.columns[0].values()[0] }} {{ t[0][0] }} {{ t | length }} {{ t.columns['answer'].values() | list }}"""
     )
     r.sql.get.trim shouldBe "42 42 1 [42]"
-    r.warehouseReads shouldBe List(WarehouseRead("query: select 42 as answer", "1 rows"))
+    r.warehouseReads shouldBe List(WarehouseRead("query: select 42 as answer", "1 row"))
   }
 
   "statement and load_result" should "run the call body and give its data" in {
@@ -107,7 +107,7 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
     )
     r.sql.get.trim shouldBe "4 [4] 1"
     r.warehouseReads shouldBe List(
-      WarehouseRead("query: select count(*) as n from staging.stg_orders", "1 rows")
+      WarehouseRead("query: select count(*) as n from staging.stg_orders", "1 row")
     )
   }
 
@@ -155,6 +155,25 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
     r.warehouseReads shouldBe List(WarehouseRead("columns: marts.customers", "0 columns"))
   }
 
+  it should "note on the model that the relation was not found, its columns read as empty" in {
+    val r = render("""{{ adapter.get_columns_in_relation(ref('customers')) | length }}""")
+    r.notes shouldBe List(
+      "`marts.customers` not found in the warehouse at import: its columns were read as empty"
+    )
+    render(
+      """{{ adapter.get_columns_in_relation(ref('stg_customers')) | length }}"""
+    ).notes shouldBe empty
+  }
+
+  it should "skip the model when its argument is not a relation" in {
+    skipped(
+      render("""{{ adapter.get_columns_in_relation('staging.stg_orders') }}""")
+    ) shouldBe "adapter.get_columns_in_relation: the argument is not a relation ('staging.stg_orders')"
+    skipped(
+      render("""{{ adapter.get_columns_in_relation(none) }}""")
+    ) shouldBe "adapter.get_columns_in_relation: the argument is not a relation (none)"
+  }
+
   "adapter.get_missing_columns" should "give the columns of the first relation missing in the second" in {
     render(
       """{% for c in adapter.get_missing_columns(ref('stg_customers'), source('shop_raw', 'raw_customers')) %}{{ c.name }} {% endfor %}"""
@@ -169,6 +188,14 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
     r.warehouseReads shouldBe List(
       WarehouseRead("relation: staging.stg_orders", "found"),
       WarehouseRead("relation: staging.no_such", "missing")
+    )
+  }
+
+  it should "note on the model a relation that was not found" in {
+    render(
+      """{{ adapter.get_relation(database=this.database, schema='staging', identifier='no_such') is none }}"""
+    ).notes shouldBe List(
+      "`staging.no_such` not found in the warehouse at import: the SQL is converted as if it does not exist"
     )
   }
 
@@ -212,6 +239,20 @@ class DbtIntrospectionJinjaSpec extends TestHelper {
       render("""{% do run_query("create table marts.x as select 1") %}select 1""", fake)
     ) should startWith("statement is not read-only: create table marts.x")
     fake.queries shouldBe empty
+  }
+
+  "an adapter method that writes" should "skip the model as a write under --introspect" in {
+    skipped(render("""{% do adapter.drop_relation(this) %}select 1""")) shouldBe
+    "writes to the warehouse at import (adapter.drop_relation)"
+    skipped(render("""{% do adapter.create_schema(this) %}select 1""")) shouldBe
+    "writes to the warehouse at import (adapter.create_schema)"
+    skipped(
+      jinja(new OfflineWarehouse).render(
+        node("stg_orders"),
+        """{% do adapter.drop_relation(this) %}select 1""",
+        false
+      )
+    ) shouldBe "needs the warehouse at import (adapter.drop_relation)"
   }
 
   "without --introspect" should "skip as before introspection" in {

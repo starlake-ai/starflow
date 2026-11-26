@@ -13,6 +13,12 @@ final case class WarehouseRelation(database: Option[String], schema: String, ide
 /** What a render read from the warehouse, for the report */
 final case class WarehouseRead(what: String, result: String)
 
+object WarehouseRead {
+
+  /** `1 row`, `2 rows` */
+  def count(n: Int, noun: String): String = if (n == 1) s"1 $noun" else s"$n ${noun}s"
+}
+
 /** The warehouse that the import's macros read. A Failure(DbtSkip) skips the model. */
 trait DbtWarehouse {
   def name: String
@@ -59,7 +65,7 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
 
   def query(sql: String, rows: Int): Try[DbtTable] = query(sql).flatMap { t =>
     if (t.size > rows)
-      Failure(DbtSkip(s"run_query returned more than $rows rows (--introspect-max-rows)"))
+      Failure(DbtSkip(CachingWarehouse.overflow(rows)))
     else Success(t)
   }
 
@@ -75,9 +81,7 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
             .recoverWith(asSkip)
             .flatMap { t =>
               if (t.size > maxRows)
-                Failure(
-                  DbtSkip(s"run_query returned more than $maxRows rows (--introspect-max-rows)")
-                )
+                Failure(DbtSkip(CachingWarehouse.overflow(maxRows)))
               else Success(t)
             }
       }
@@ -102,4 +106,9 @@ final class CachingWarehouse(underlying: DbtWarehouse, maxRows: Int) extends Dbt
         )
       )
   }
+}
+
+object CachingWarehouse {
+  def overflow(maxRows: Int): String =
+    s"run_query returned more than ${WarehouseRead.count(maxRows, "row")} (--introspect-max-rows)"
 }

@@ -89,6 +89,7 @@ object DbtModelMapper {
                 (if (timeDependent(node, ctx))
                    List("renders the time of the import (run_started_at, modules.datetime)")
                  else Nil) ++
+                renders.flatMap(_.notes).distinct ++
                 renders.flatMap(_.warnings).distinct.map(w => s"warning: $w")
               val materialization =
                 if (Set("view", "ephemeral").contains(node.materialized)) Some(Materialization.VIEW)

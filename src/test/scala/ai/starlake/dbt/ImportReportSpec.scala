@@ -144,10 +144,10 @@ class ImportReportSpec extends TestHelper {
 
     it should "list the warehouse answers per task" in {
       val r = report.copy(warehouseReads =
-        List(BakedValue("query: select 42 as answer", "1 rows", List("marts.needs_warehouse")))
+        List(BakedValue("query: select 42 as answer", "1 row", List("marts.needs_warehouse")))
       )
       r.toMarkdown should include(
-        "## Warehouse answers\n\n- `marts.needs_warehouse`: query: select 42 as answer -> 1 rows\n"
+        "## Warehouse answers\n\n- `marts.needs_warehouse`: query: select 42 as answer -> 1 row\n"
       )
     }
 

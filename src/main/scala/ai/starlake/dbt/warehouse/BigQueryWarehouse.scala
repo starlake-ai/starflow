@@ -19,7 +19,9 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.Try
 
-/** A BigQuery connection of the project: queries and table schemas through the BigQuery client. */
+/** A BigQuery connection of the project: queries and table schemas through the BigQuery client.
+  * Queries time out after Starlake's short job timeout.
+  */
 final class BigQueryWarehouse(connectionName: String)(implicit settings: Settings)
     extends DbtWarehouse {
   def name: String = connectionName
@@ -34,7 +36,13 @@ final class BigQueryWarehouse(connectionName: String)(implicit settings: Setting
 
   def query(sql: String, maxRows: Int): Try[DbtTable] = Try {
     val result =
-      bigquery.query(QueryJobConfiguration.newBuilder(sql).setUseLegacySql(false).build())
+      bigquery.query(
+        QueryJobConfiguration
+          .newBuilder(sql)
+          .setUseLegacySql(false)
+          .setJobTimeoutMs(settings.appConfig.shortJobTimeoutMs)
+          .build()
+      )
     val fields = result.getSchema.getFields.asScala.toList
     val rows = ListBuffer.empty[util.List[Object]]
     // pages are fetched lazily: stop as soon as maxRows rows are read

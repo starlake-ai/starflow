@@ -17,9 +17,17 @@ final case class DbtImportConfig(
   vars: Option[String] = None,
   force: Boolean = false,
   introspect: Boolean = false,
-  introspectMaxRows: Int = 10000,
+  introspectMaxRows: Option[Int] = None,
   reportFormat: Option[String] = None
-) extends ReportFormatConfig
+) extends ReportFormatConfig {
+
+  /** The most rows an introspection query may return: --introspect-max-rows, else 10000 */
+  def maxRows: Int = introspectMaxRows.getOrElse(DbtImportConfig.DefaultMaxRows)
+}
+
+object DbtImportConfig {
+  val DefaultMaxRows = 10000
+}
 
 /** `starlake dbt import`: Main finds commands by their first word, `dbt`, and `import` is the
   * action argument, as `starlake quack serve` is
@@ -97,10 +105,15 @@ object DbtImportCmd extends Cmd[DbtImportConfig] {
         .opt[Int]("introspect-max-rows")
         .optional()
         .validate(n => if (n > 0) Right(()) else Left("--introspect-max-rows must be positive"))
-        .action((x, c) => c.copy(introspectMaxRows = x))
+        .action((x, c) => c.copy(introspectMaxRows = Some(x)))
         .text(
-          "with --introspect, the most rows a query may return before its model is skipped (default 10000)"
-        )
+          "only with --introspect: the most rows a query may return before its model is skipped (default 10000)"
+        ),
+      builder.checkConfig(c =>
+        if (c.introspectMaxRows.isDefined && !c.introspect)
+          Left("--introspect-max-rows needs --introspect")
+        else Right(())
+      )
     )
   }
 

@@ -18,14 +18,20 @@ import java.util
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
-/** One render: the SQL, or why it failed (a [[DbtSkip]] or an error), and what it read */
+/** One render: the SQL, or why it failed (a [[DbtSkip]] or an error), and what it read
+  *
+  * @param notes
+  *   for the report entry of the model: answers of the warehouse that the SQL bakes and the user
+  *   should check (a relation not found)
+  */
 final case class DbtRendered(
   sql: Try[String],
   config: Map[String, Object],
   vars: Map[String, String],
   envVars: Map[String, String],
   warnings: List[String],
-  warehouseReads: List[WarehouseRead] = Nil
+  warehouseReads: List[WarehouseRead] = Nil,
+  notes: List[String] = Nil
 )
 
 /** The values that dbt's context gives every render */
@@ -189,7 +195,7 @@ final class DbtJinja(
     } else
       warehouse.query(sql) match {
         case Success(t) =>
-          state.read(s"query: ${oneLine(sql)}", s"${t.size} rows")
+          state.read(s"query: ${oneLine(sql)}", WarehouseRead.count(t.size, "row"))
           t
         case Failure(DbtSkip(reason)) =>
           state.skipWith(reason)
@@ -370,7 +376,8 @@ final class DbtJinja(
       state.vars.toMap,
       state.envVars.toMap,
       state.warnings.toList,
-      state.reads.toList
+      state.reads.toList,
+      state.notes.toList
     )
   }
 
