@@ -67,7 +67,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 
 import java.time.format.DateTimeFormatter
-import java.time.{LocalDateTime, ZoneId}
+import java.time.{LocalDateTime, ZonedDateTime}
 import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 import scala.jdk.CollectionConverters.*
@@ -124,8 +124,11 @@ object IncrementalYamlException {
 
 object SchemaHandler {
 
-  /** The `sl_*` date variables (sl_date, sl_datetime, sl_epoch_milli ...) as of `today`. */
-  def slDateVars(today: LocalDateTime): Map[String, String] = {
+  /** The `sl_*` date variables (sl_date, sl_datetime, sl_epoch_milli ...) as of `now`, the calendar
+    * fields in the zone of `now`.
+    */
+  def slDateVars(now: ZonedDateTime): Map[String, String] = {
+    val today = now.toLocalDateTime
     val dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
     val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
     val yearFormatter = DateTimeFormatter.ofPattern("yyyy")
@@ -135,7 +138,7 @@ object SchemaHandler {
     val minuteFormatter = DateTimeFormatter.ofPattern("mm")
     val secondFormatter = DateTimeFormatter.ofPattern("ss")
     val milliFormatter = DateTimeFormatter.ofPattern("SSS")
-    val epochMillis = today.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli
+    val epochMillis = now.toInstant.toEpochMilli
     Map(
       "sl_date"         -> today.format(dateFormatter),
       "sl_datetime"     -> today.format(dateTimeFormatter),
@@ -150,6 +153,13 @@ object SchemaHandler {
       "sl_epoch_milli"  -> epochMillis.toString
     )
   }
+
+  /** The `sl_*` date variables as of now, in the `timezone` setting (UTC by default), the session
+    * time zone of Spark: a variable compared with a timestamp in Spark SQL means the same time. It
+    * is not the zone of the machine.
+    */
+  def slDateVarsNow()(implicit settings: Settings): Map[String, String] =
+    slDateVars(ZonedDateTime.now(settings.appConfig.timezone.toZoneId))
 
   private val watcherMap: scala.collection.concurrent.TrieMap[String, Settings] =
     scala.collection.concurrent.TrieMap.empty
@@ -610,7 +620,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   }
 
   /** The `sl_*` date variables, as of the first use of this handler. */
-  lazy val slDateVars: Map[String, String] = SchemaHandler.slDateVars(LocalDateTime.now)
+  lazy val slDateVars: Map[String, String] = SchemaHandler.slDateVarsNow()
 
   def dataBranch(connectionOptions: Map[String, String] = Map.empty): Option[String] = {
     val envVars = this.activeEnvVars()
