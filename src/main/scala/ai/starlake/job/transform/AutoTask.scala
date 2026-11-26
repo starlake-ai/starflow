@@ -473,6 +473,8 @@ abstract class AutoTask(
     *   Force native execution (disable Spark format)
     * @param templateVariables
     *   variables of the write-strategy templates, besides those of the task
+    * @param offline
+    *   builds the SQL from the project alone, see `buildAllSQLQueries`
     * @return
     *   Concatenated ALTER + main SQL statements
     */
@@ -480,13 +482,15 @@ abstract class AutoTask(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean] = None,
     forceNative: Boolean = false,
-    templateVariables: Map[String, Any] = Map.empty
+    templateVariables: Map[String, Any] = Map.empty,
+    offline: Boolean = false
   ) = {
     val (alterSqlOpt, mainSql) = buildAllSQLQueries(
       sql,
       tableExistsForcedValue,
       forceNative,
-      templateVariables
+      templateVariables,
+      offline
     )
     val alterSql = alterSqlOpt.getOrElse("")
     alterSql + mainSql
@@ -515,6 +519,13 @@ abstract class AutoTask(
     *   Force native execution (disable Spark format)
     * @param templateVariables
     *   variables of the write-strategy templates, besides those of the task
+    * @param offline
+    *   builds the SQL from the project alone, without any connection to the warehouse, as the
+    *   documentation site does: the columns of a `SELECT *` stay unresolved, the variables that the
+    *   write strategy reads from the target table (on BigQuery, whether it requires a partition
+    *   filter) are left out, so the templates go by the sink, and the schema of the table is not
+    *   aligned with the declared columns (`syncYamlWithDb`). Pass `tableExistsForcedValue` too,
+    *   since checking whether the table exists also reaches the warehouse.
     * @return
     *   Tuple of (Optional ALTER statements, main SQL statement)
     */
@@ -522,7 +533,8 @@ abstract class AutoTask(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean] = None,
     forceNative: Boolean = false,
-    templateVariables: Map[String, Any] = Map.empty
+    templateVariables: Map[String, Any] = Map.empty,
+    offline: Boolean = false
   ): (Option[String], String) = {
     val runConnection =
       if (forceNative) {
@@ -550,7 +562,7 @@ abstract class AutoTask(
         val extractedColumnNames =
           SQLUtils.extractColumnNames(sqlWithParametersTranspiledIfInTest)
         val resolvedColumnNames =
-          if (extractedColumnNames == List("*")) {
+          if (extractedColumnNames == List("*") && !offline) {
             // SELECT * doesn't give us column names; resolve by executing the SQL with LIMIT 0
             scala.util
               .Try {
@@ -601,7 +613,8 @@ abstract class AutoTask(
           materializedView = resolveMaterializedView(),
           jdbcRunEngine,
           sinkConfig,
-          strategyTemplateVariables() ++ templateVariables
+          (if (offline) Map.empty[String, Any]
+           else strategyTemplateVariables()) ++ templateVariables
         )
         // When syncSqlWithYaml is enabled (SL_SYNC_SQL_WITH_YAML=true), align the task's YAML
         // attributes with the SQL before running, so that a column added to the SELECT flows into
@@ -629,6 +642,7 @@ abstract class AutoTask(
 
         // synched if ready for sync and syncYamlWithDb is true (SL_SYNC_YAML_WITH_DB=true) and not an audit table (to avoid recursion)
         if (
+          !offline &&
           updatedTaskDesc.readyForSync() &&
           settings.appConfig.syncYamlWithDb &&
           updatedTaskDesc._auditTableName.isEmpty

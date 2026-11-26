@@ -175,9 +175,10 @@ class BigQueryExportTask(
   /** @return
     *   the EXPORT DATA statement of the task
     */
-  private def exportStatement(sql: Option[String]): String = {
+  /** Offline, without the dry run, the statement exports every column as BigQuery types it */
+  private def exportStatement(sql: Option[String], offline: Boolean = false): String = {
     val selectStatement = select(sql)
-    val asText = columnsAsText(selectStatement)
+    val asText = if (offline) Nil else columnsAsText(selectStatement)
     if (asText.nonEmpty)
       logger.info(
         s"$name exports the columns ${asText.map(_._1).mkString(", ")} as text: BigQuery does not export their type to $format"
@@ -190,12 +191,13 @@ class BigQueryExportTask(
     sql: Option[String],
     tableExistsForcedValue: Option[Boolean],
     forceNative: Boolean,
-    templateVariables: Map[String, Any]
+    templateVariables: Map[String, Any],
+    offline: Boolean
   ): (Option[String], String) = {
     unsupported(name, strategy, fsSink).foreach(message =>
       throw new IllegalArgumentException(message)
     )
-    (None, exportStatement(sql))
+    (None, exportStatement(sql, offline))
   }
 
   private def warnIgnoredFeatures(): Unit = {
