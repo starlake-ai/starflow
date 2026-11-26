@@ -1,0 +1,73 @@
+name: Assembly smoke
+# Builds the assembly, installs Starflow from the pins of the PR (Setup.java) with it, and runs
+# the stage, load and transform of samples/any-engine with the real launcher. The test suite
+# runs on the sbt classpath and misses what only the shipped jar breaks: shading errors
+# (Jinjava 2.7.7 broke sbt assembly unseen, #2028), installer pins that do not resolve, jars
+# that clash with Spark's own. No secrets and no remote engine: it runs beside the test suite.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+      - branch-*
+    paths:
+      - 'build.sbt'
+      - 'version.sbt'
+      - 'project/**'
+      - 'src/main/**'
+      - 'distrib/starlake.sh'
+      - 'distrib/python-libs/**'
+      - 'samples/any-engine/**'
+      - 'scripts/assembly-smoke-test.sh'
+      - '.github/workflows/assembly-smoke.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'build.sbt'
+      - 'version.sbt'
+      - 'project/**'
+      - 'src/main/**'
+      - 'distrib/starlake.sh'
+      - 'distrib/python-libs/**'
+      - 'samples/any-engine/**'
+      - 'scripts/assembly-smoke-test.sh'
+      - '.github/workflows/assembly-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assembly-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assembly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+          cache: 'sbt'
+      - name: Setup sbt launcher
+        uses: sbt/setup-sbt@v1
+      - name: Build assembly
+        env:
+          SBT_OPTS: "-Xss4M -Xms1g -Xmx4g"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sbt assembly
+      - name: Install and run samples/any-engine
+        run: |
+          V=$(sed -n 's/.*"\(.*\)".*/\1/p' version.sbt)
+          scripts/assembly-smoke-test.sh "target/scala-2.13/starlake-core_2.13-${V}-assembly.jar" "$RUNNER_TEMP/smoke"
+      - name: Upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assembly-smoke-logs
+          path: ${{ runner.temp }}/smoke/logs
+          if-no-files-found: ignore
