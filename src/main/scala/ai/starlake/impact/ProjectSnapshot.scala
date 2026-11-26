@@ -19,7 +19,6 @@ import org.apache.hadoop.fs.Path
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.time.LocalDateTime
 import java.util.regex.{Matcher, Pattern}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -53,13 +52,13 @@ object ProjectSnapshot {
     *   the `sl_*` date variables the YAML and SQL are rendered with. Both sides of a comparison
     *   must get the same map, otherwise SQL using `{{sl_datetime}}` changes between the two loads.
     *   They replace the date variables of the schema handler everywhere, env files included; an env
-    *   file that defines one of them still wins, as in a run.
+    *   file that defines one of them still wins, as in a run. By default, as of now.
     */
   def load(
     projectDir: File,
     label: String,
     env: Option[String],
-    dateVars: Map[String, String] = SchemaHandler.slDateVars(LocalDateTime.now)
+    dateVars: Option[Map[String, String]] = None
   )(implicit
     settings: Settings
   ): Try[SnapshotView] =
@@ -77,7 +76,7 @@ object ProjectSnapshot {
         val defaultEnv = workDir / "metadata" / "env.sl.yml"
         if (!defaultEnv.exists) defaultEnv.createFile()
         val local = localSettings(workDir, env)
-        val handler = schemaHandler(dateVars)(local)
+        val handler = schemaHandler(dateVars.getOrElse(SchemaHandler.slDateVarsNow()))(local)
         build(projectDir, workDir, label, env, handler)(local)
       } finally {
         Utils.resetJinjaClassLoader()
