@@ -187,6 +187,48 @@ object SchemaHandler {
     tpe.primitiveType == base.primitiveType && tpe.pattern == base.pattern &&
     tpe.ddlMapping.map(_ - "bigquery") == base.ddlMapping.map(_ - "bigquery") &&
     tpe.getDdlMappingForDB("bigquery").flatMap(BigQueryType.parse).exists(_.hasParameters)
+
+  /** The table `tableName` of the domain, job or external domain `domainName` among the declared
+    * objects, names compared case-insensitively.
+    *
+    * A load domain, a job and an external domain may share a name, each with its own tables, and
+    * `objectNames` lists them as separate entries, in no guaranteed order: every entry of that name
+    * is searched. A task is listed under the name of its job, even when it declares another
+    * `domain`. When several entries declare the table, see `preferListedColumns`.
+    */
+  private[starlake] def findDeclaredTable(
+    objects: List[DomainWithNameOnly],
+    domainName: String,
+    tableName: String
+  ): Option[TableWithNameAndType] =
+    preferListedColumns(
+      objects
+        .filter(_.name.equalsIgnoreCase(domainName))
+        .flatMap(_.tables)
+        .filter(_.name.equalsIgnoreCase(tableName))
+    )
+
+  /** Among the declarations of one table, as a task that writes the load table of the same name,
+    * the first one that lists columns, since a task often lists none; when several of them list
+    * columns, the winner depends on the order of `objectNames`.
+    */
+  private[starlake] def preferListedColumns(
+    declarations: List[TableWithNameAndType]
+  ): Option[TableWithNameAndType] =
+    declarations.find(_.attrs.nonEmpty).orElse(declarations.headOption)
+
+  /** The declaration of the table that the column lineage uses. A declaration without columns gives
+    * no lineage: unless the lineage keeps to the declared tables, as the site does, it is left
+    * aside, and `col-lineage` reads the table from the warehouse, as it does for a table that is
+    * not declared.
+    */
+  private[starlake] def declarationForLineage(
+    objects: List[DomainWithNameOnly],
+    domainName: String,
+    tableName: String,
+    declaredOnly: Boolean
+  ): Option[TableWithNameAndType] =
+    findDeclaredTable(objects, domainName, tableName).filter(t => declaredOnly || t.attrs.nonEmpty)
 }
 
 /** Handles access to datasets metadata, eq. domains / types / schemas.
@@ -971,22 +1013,16 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       val domainNameAndTable =
         domainName match {
           case null =>
-            objects
-              .flatMap(_.tables)
-              .find {
-                _.name.toLowerCase() == tableName.toLowerCase()
-              }
+            SchemaHandler
+              .preferListedColumns(
+                objects.flatMap(_.tables).filter(_.name.equalsIgnoreCase(tableName))
+              )
               .map {
                 ("", _)
               }
           case _ =>
-            objects
-              .find { d =>
-                d.name.toLowerCase() == domainName.toLowerCase()
-              }
-              .flatMap { d =>
-                d.tables.find(_.name.toLowerCase() == tableName.toLowerCase())
-              }
+            SchemaHandler
+              .declarationForLineage(objects, domainName, tableName, declaredOnly)
               .map { t =>
                 (domainName, t)
               }
