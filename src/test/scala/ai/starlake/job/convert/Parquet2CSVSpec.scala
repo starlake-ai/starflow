@@ -174,17 +174,17 @@ class Parquet2CSVSpec extends TestHelper {
           |
           |Parameter|Cardinality|Description
           |---|---|---
-          |--input_dir `<value>`|*Required*|Full Path to input directory
-          |--output_dir `<value>`|*Optional*|Full Path to output directory, if not specified, input_dir is used as output dir
+          |--delete_source|*Optional*|Should we delete source parquet files after conversion ?
           |--domain `<value>`|*Optional*|Domain name to convert. All schemas in this domain are converted. If not specified, all schemas of all domains are converted
-          |--schema `<value>`|*Optional*|Schema name to convert. If not specified, all schemas are converted.
-          |--delete_source `<value>`|*Optional*|Should we delete source parquet files after conversion ?
-          |--write_mode `<value>`|*Optional*|One of Set(OVERWRITE, APPEND)
+          |--input_dir `<value>`|*Required*|Full Path to input directory
           |--options `k1=v1,k2=v2...`|*Optional*|Any Spark option to use (sep, delimiter, quote, quoteAll, escape, header ...)
+          |--output_dir `<value>`|*Optional*|Full Path to output directory, if not specified, input_dir is used as output dir
           |--partitions `<value>`|*Optional*|How many output partitions
           |--reportFormat `<value>`|*Optional*|Report format: console, json, html
+          |--schema `<value>`|*Optional*|Schema name to convert. If not specified, all schemas are converted.
+          |--write_mode `<value>`|*Optional*|One of Set(OVERWRITE, APPEND)
           |""".stripMargin
-      println(Parquet2CSVCmd.markdown(1))
+      // options sorted by name and flags without a value, as CliConfig.markdown renders them (#2017)
       Parquet2CSVCmd.markdown(1).replaceAll("\\s", "") shouldEqual expected.replaceAll("\\s", "")
     }
   }
