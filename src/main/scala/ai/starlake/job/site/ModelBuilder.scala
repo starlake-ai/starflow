@@ -440,6 +440,11 @@ object ModelBuilder {
       )
   }
 
+  /** Compiles the SQL of a task as `transform` builds it, from the project files alone. Without
+    * `--stats` the site connects to no warehouse: the compilation neither aligns the schema of the
+    * target table, which on BigQuery reads the dataset, creates it when it is missing and alters
+    * the table, nor reads the target table, nor runs a query to resolve the columns of the SELECT.
+    */
   def defaultCompiler(
     schemaHandler: SchemaHandler
   )(implicit settings: Settings): AutoTaskInfo => Try[String] = taskDesc =>
@@ -461,7 +466,12 @@ object ModelBuilder {
       )(settings, settings.storageHandler(), schemaHandler)
       context
         .toTask(taskDesc.getRunEngine())
-        .buildAllSQLQueriesMerged(None, Some(true), incrementalForcedValue = Some(true))
+        .buildAllSQLQueriesMerged(
+          None,
+          Some(true),
+          incrementalForcedValue = Some(true),
+          offline = true
+        )
     }
 
   /** Columns of the referenced tables, read from the declared project only. */
