@@ -1,6 +1,18 @@
 
 # Release notes
 
+# 1.7.13:
+__Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
+- **Orchestration templates** (starlake-airflow 0.6.21, starlake-dagster 0.5.11, starlake-orchestration 0.5.8, starlake-snowflake 0.4.3): with `data_cycle_enabled` and a declared `data_cycle`, a dependency that fires in every period of the cycle is checked from the start of the period, without freshness widening (starlake-ai/starlake-orchestration#167). A transform run can now fail when a triggering event and an event accepted by the start check carry the same run variable with different values, unless it is declared `union` (starlake-ai/starlake-orchestration#168).
+
+__Improvement__:
+- **Orchestration templates move to starlake-airflow 0.6.21, starlake-dagster 0.5.11, starlake-orchestration 0.5.8 and starlake-snowflake 0.4.3** (from 0.6.17, 0.5.9, 0.5.6.1 and 0.4.1), and the bundled wheels with them:
+  - load DAGs publish the freshness of their tables in their events, so a consumer checks a triggering dataset with its producer's freshness (starlake-ai/starlake-orchestration#166);
+  - a delivery spread over several ticks (e.g. `0 6 1-3 * *`) is checked from the start of the declared data cycle, on Airflow, Dagster and Snowflake (starlake-ai/starlake-orchestration#167);
+  - the run variables of the events accepted by the start check reach the transforms (starlake-ai/starlake-orchestration#168), and list-valued run variables of coalesced events can be merged by union (starlake-ai/starlake-orchestration#158);
+  - Airflow: a transform triggered by a non-scheduled load (manual, replay or bootstrap) is no longer skipped on Airflow 3, and pre-loads with a not-ready sentinel submit their rendered payload (starlake-ai/starlake-orchestration#162);
+  - Snowflake: DAGs build again with snowflake-core >= 1.13 (starlake-ai/starlake-orchestration#160).
+
 # 1.7.12:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
 - **`starlake test`** (#1676, #1677): a `--domain`, `--table` or `--test` selection that matches no test now fails, with exit code 1, where it passed with 0 tests: a script that runs `starlake test --domain <d>` over every domain must skip the domains that have no tests. `--table` takes the name of a table or task folder, so the `--table <domain>.<table>` form, which selected nothing, now fails. The rows of `missing<name>.csv` and `not_expected<name>.csv`, and the counts of the JUnit failure message, are swapped back: a script or a reader that took one file for the other must be updated. A failing test still exits 0: the JUnit report remains the verdict.
