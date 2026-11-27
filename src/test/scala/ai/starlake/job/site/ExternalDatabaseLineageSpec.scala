@@ -13,6 +13,10 @@ import better.files.File
   * of the project `proj-a`: they read `shared_ds.orders` with a two-part name, with a three-part
   * name, and through a `SELECT *` over a three-part name, and the load table `sales.customers`. The
   * site is built offline: the credentials point to a missing file.
+  *
+  * Two more external domains check when the database of an external reaches the SQL: `literal_ds`
+  * writes it as a literal, as the schema extractions do, and `blank_ds` with a variable that the
+  * environment leaves empty.
   */
 class ExternalDatabaseLineageSpec extends IntegrationTestBase with SiteFixture {
   import ExternalDatabaseLineageSpec.*
@@ -27,24 +31,32 @@ class ExternalDatabaseLineageSpec extends IntegrationTestBase with SiteFixture {
       "        authType: \"APPLICATION_DEFAULT\"\n"
     )
     (tmp / "metadata" / "env.sl.yml").overwrite(
-      "version: 1\nenv:\n  producer_project_id: \"proj-b\"\n"
+      "version: 1\nenv:\n  producer_project_id: \"proj-b\"\n  blank_project_id: \"\"\n"
     )
-    val shared = (tmp / "metadata" / "external" / "shared_ds").createDirectories()
-    (shared / "_config.sl.yml").overwrite(
-      "version: 1\nload:\n  name: \"shared_ds\"\n  database: \"{{producer_project_id}}\"\n"
-    )
-    (shared / "orders.sl.yml").overwrite(
-      """version: 1
-        |table:
-        |  name: "orders"
-        |  pattern: "orders.*"
-        |  attributes:
-        |    - name: "id"
-        |      type: "long"
-        |    - name: "amount"
-        |      type: "decimal"
-        |""".stripMargin
-    )
+    for (
+      (domain, database) <- List(
+        "shared_ds"  -> "{{producer_project_id}}",
+        "literal_ds" -> "proj-extracted",
+        "blank_ds"   -> "{{blank_project_id}}"
+      )
+    ) {
+      val dir = (tmp / "metadata" / "external" / domain).createDirectories()
+      (dir / "_config.sl.yml").overwrite(
+        s"version: 1\nload:\n  name: \"$domain\"\n  database: \"$database\"\n"
+      )
+      (dir / "orders.sl.yml").overwrite(
+        """version: 1
+          |table:
+          |  name: "orders"
+          |  pattern: "orders.*"
+          |  attributes:
+          |    - name: "id"
+          |      type: "long"
+          |    - name: "amount"
+          |      type: "decimal"
+          |""".stripMargin
+      )
+    }
     val jobDir = (tmp / "metadata" / "transform" / "exports").createDirectories()
     for ((name, sql) <- tasks) {
       (jobDir / s"$name.sql").overwrite(sql)
@@ -104,6 +116,28 @@ class ExternalDatabaseLineageSpec extends IntegrationTestBase with SiteFixture {
     val task = handler.tasks().find(_.fullName() == "exports.orders_two_part").get
     handler.substituteRefTaskMainSQL(task.sql.get, task.getRunConnection()) shouldBe
     "SELECT src.id, src.amount FROM `proj-b`.`shared_ds`.`orders` AS src"
+  }
+
+  it should "ignore a literal database and keep the default one for a blank variable" in
+  offline() {
+    val handler = settings.schemaHandler()
+    val bq = handler.tasks().find(_.fullName() == "exports.orders_two_part").get.getRunConnection()
+    for (domain <- List("literal_ds", "blank_ds"))
+      handler.substituteRefTaskMainSQL(s"SELECT o.id FROM $domain.orders AS o", bq) shouldBe
+      s"SELECT o.id FROM `$domain`.`orders` AS o"
+  }
+
+  it should "not get the database of an external domain under starlake test" in offline() {
+    val handler = settings.schemaHandler()
+    val task = handler.tasks().find(_.fullName() == "exports.orders_two_part").get
+    val sql = handler.transpileAndSubstituteSelectStatement(
+      task.sql.get,
+      task.getRunConnection(),
+      Map.empty,
+      test = true
+    )
+    sql should include("shared_ds")
+    sql should not include "proj-b"
   }
 
   "getTablesWithColumnNames" should "keep the database a table is cited with" in offline() {

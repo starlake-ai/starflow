@@ -154,6 +154,10 @@ object SchemaHandler {
     * aside, and `col-lineage` reads the table from the warehouse, as it does for a table that is
     * not declared.
     */
+  /** True when the value holds a Jinja expression or statement: `{{ ... }}` or `{% ... %}`. */
+  private[starlake] def isJinjaExpression(value: String): Boolean =
+    value.contains("{{") || value.contains("{%")
+
   private[starlake] def declarationForLineage(
     objects: List[DomainWithNameOnly],
     domainName: String,
@@ -1121,6 +1125,11 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   @volatile private var _externals = List.empty[DomainInfo]
   @volatile private var _externalsFingerprint: Option[List[(String, Long, Long)]] = None
 
+  /** Names, lowercase, of the external domains whose `_config.sl.yml` writes their `database` with
+    * a Jinja expression, read from the raw files when the externals are loaded.
+    */
+  @volatile private var _externalsWithVariableDatabase = Set.empty[String]
+
   private def externalsFingerprint(): List[(String, Long, Long)] =
     filesFingerprint(DatasetArea.external, ".sl.yml")
 
@@ -1167,10 +1176,44 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
         }
         valid.collect { case Success(domain) => domain }
       }
+    _externalsWithVariableDatabase =
+      if (fingerprint.isEmpty) Set.empty
+      else
+        deserializedDomains(DatasetArea.external, Nil, raw = true).collect {
+          case (_, Success(domain)) if domain.database.exists(SchemaHandler.isJinjaExpression) =>
+            domain.name.toLowerCase
+        }.toSet
     _externalsFingerprint = Some(fingerprint)
     _externalsCheckedAt = System.nanoTime()
     _externals
   }
+
+  /** The external domains as the SQL of a task resolves them (#2038).
+    *
+    * The `database` of an external domain is kept only when its `_config.sl.yml` writes it with a
+    * Jinja expression, such as `database: "{{producer_project_id}}"`, which selects the database of
+    * each environment. A literal value is dropped: it is the project a table was extracted from, as
+    * `extract-bq-schema --external` and `autoExportSchema` write it, and it would make every
+    * environment read the database of the one it was extracted in; the table then gets the default
+    * database, as before. An external domain cited in SQL with a literal database keeps being read
+    * through a three-part name written in the SQL.
+    *
+    * The externals are left out when they cannot be read: the SQL of a task did not depend on them
+    * before.
+    */
+  def externalsForSql(): List[DomainInfo] =
+    Try(synchronized((externals(), _externalsWithVariableDatabase))) match {
+      case Success((domains, withVariableDatabase)) =>
+        domains.map { domain =>
+          if (withVariableDatabase.contains(domain.name.toLowerCase)) domain
+          else domain.copy(database = None)
+        }
+      case Failure(e) =>
+        logger.warn(
+          s"The external domains could not be read; table references are resolved without them: ${e.getMessage}"
+        )
+        Nil
+    }
 
   def listDagNames(): List[String] =
     DagHandler.listDagNames(storage)
@@ -2277,7 +2320,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       domains(),
       tasks(),
       allVars,
-      externals()
+      externalsForSql()
     )
 
   def transpileAndSubstituteSelectStatement(
@@ -2294,7 +2337,9 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       tasks(),
       allVars,
       test,
-      externals()
+      // `starlake test` runs on a local DuckDB that holds the test data of an external table under
+      // "domain"."table": the database of the external domain must not be written there
+      if (test) Nil else externalsForSql()
     )
 
   def deleteTablePK(

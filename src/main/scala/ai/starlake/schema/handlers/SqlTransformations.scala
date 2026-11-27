@@ -17,8 +17,8 @@ object SqlTransformations extends LazyLogging {
     refs: RefDesc,
     domains: List[DomainInfo],
     tasks: List[AutoTaskInfo],
-    allVars: Map[String, String] = Map.empty,
-    externals: List[DomainInfo] = Nil
+    allVars: Map[String, String],
+    externals: List[DomainInfo]
   )(implicit settings: Settings): String = {
     if (sql.trim.isEmpty)
       sql
@@ -73,9 +73,9 @@ object SqlTransformations extends LazyLogging {
     refs: RefDesc,
     domains: List[DomainInfo],
     tasks: List[AutoTaskInfo],
-    allVars: Map[String, String] = Map.empty,
+    allVars: Map[String, String],
     test: Boolean,
-    externals: List[DomainInfo] = Nil
+    externals: List[DomainInfo]
   )(implicit settings: Settings): String = {
 
     if (sql.startsWith("DESCRIBE ")) {

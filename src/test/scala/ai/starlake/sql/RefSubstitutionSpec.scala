@@ -35,7 +35,8 @@ class RefSubstitutionSpec extends TestHelper {
         Nil,
         SQLUtils.fromsRegex,
         "FROM",
-        connection
+        connection,
+        Nil
       )
 
     "Ref substitution" should "not treat the table name as a regular expression" in {

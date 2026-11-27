@@ -7,9 +7,12 @@ import ai.starlake.schema.model.*
 
 import java.util.regex.Pattern
 
-/** The SQL of a task reads a table declared in metadata/external from the database that the
-  * external domain declares (#2038). The externals are consulted after the load domains and the
-  * tasks, so a reference that resolved before keeps its resolution.
+/** The SQL of a task reads a table declared in metadata/external, cited with its domain, from the
+  * database that the external domain declares (#2038). The externals are consulted after the load
+  * domains and the tasks, so a reference that resolved before keeps its resolution.
+  *
+  * The externals are given here as `SchemaHandler.externalsForSql` passes them, which keeps a
+  * database only when the domain writes it with a variable (see ExternalDatabaseLineageSpec).
   */
 class ExternalTableRefSpec extends TestHelper {
   new WithSettings() {
@@ -29,35 +32,41 @@ class ExternalTableRefSpec extends TestHelper {
       sql: String,
       connection: ConnectionInfo,
       domains: List[DomainInfo] = Nil,
+      tasks: List[AutoTaskInfo] = Nil,
       externals: List[DomainInfo] = Nil,
       refs: RefDesc = noRefs
     ): String =
-      SQLUtils.substituteRefInSQLSelect(sql, refs, domains, Nil, connection, externals)
+      SQLUtils.substituteRefInSQLSelect(sql, refs, domains, tasks, connection, externals)
 
-    private val producer = domain("pack", Some("proj-cli"), "stg")
+    private val shared = domain("shared_ds", Some("proj-b"), "orders")
 
     "A table of an external domain" should "be read from the database the external declares" in {
-      resolve("select * from pack.stg", bigquery, externals = List(producer)) shouldBe
-      "select * from `proj-cli`.`pack`.`stg`"
+      resolve(
+        "select * from shared_ds.orders o join shared_ds.orders p on o.id = p.id",
+        bigquery,
+        externals = List(shared)
+      ) shouldBe
+      "select * from `proj-b`.`shared_ds`.`orders` o join `proj-b`.`shared_ds`.`orders` p on o.id = p.id"
     }
 
-    it should "be read from that database when cited without its domain" in {
-      resolve(
-        "select * from stg s join pack.stg p on s.id = p.id",
-        bigquery,
-        externals = List(producer)
-      ) shouldBe
-      "select * from `proj-cli`.`pack`.`stg` s join `proj-cli`.`pack`.`stg` p on s.id = p.id"
+    it should "be left as before when cited without its domain" in {
+      // a temporary table or a CTE may share its name with an external table
+      resolve("select * from orders", bigquery, externals = List(shared)) shouldBe
+      resolve("select * from orders", bigquery)
+    }
+
+    it should "be left as before when its external domain does not declare it" in {
+      resolve("select * from shared_ds.missing", bigquery, externals = List(shared)) shouldBe
+      resolve("select * from shared_ds.missing", bigquery)
     }
 
     it should "get its database on every engine, as a table of a load domain does" in {
       // unquoted on JDBC: a database name with a dash would not parse, for a load domain too
       resolve(
-        "select * from pack.stg",
+        "select * from shared_ds.orders",
         jdbc,
-        externals = List(domain("pack", Some("cli"), "stg"))
-      ) shouldBe
-      "select * from cli.pack.stg"
+        externals = List(domain("shared_ds", Some("ext_db"), "orders"))
+      ) shouldBe "select * from ext_db.shared_ds.orders"
       resolve(
         "select * from sales.orders",
         jdbc,
@@ -65,23 +74,24 @@ class ExternalTableRefSpec extends TestHelper {
       ) shouldBe "select * from dwh.sales.orders"
     }
 
-    it should "keep the default database when its database renders blank" in {
-      for (blank <- List(Some(""), Some("  "), None)) {
-        resolve(
-          "select * from pack.stg",
-          bigquery,
-          externals = List(domain("pack", blank, "stg"))
-        ) shouldBe resolve("select * from pack.stg", bigquery)
-      }
+    it should "keep the default database when its database is blank" in {
+      for {
+        connection <- List(bigquery, jdbc)
+        blank      <- List(Some(""), Some("  "), None)
+      } resolve(
+        "select * from shared_ds.orders",
+        connection,
+        externals = List(domain("shared_ds", blank, "orders"))
+      ) shouldBe resolve("select * from shared_ds.orders", connection)
     }
 
     "A load domain" should "win over an external domain of the same name" in {
       resolve(
-        "select * from pack.stg",
+        "select * from shared_ds.orders",
         bigquery,
-        domains = List(domain("pack", Some("proj-a"), "stg")),
-        externals = List(producer)
-      ) shouldBe "select * from `proj-a`.`pack`.`stg`"
+        domains = List(domain("shared_ds", Some("proj-a"), "orders")),
+        externals = List(shared)
+      ) shouldBe "select * from `proj-a`.`shared_ds`.`orders`"
     }
 
     it should "keep a table cited without its domain that an external also declares" in {
@@ -90,16 +100,40 @@ class ExternalTableRefSpec extends TestHelper {
         "select * from orders",
         bigquery,
         domains = sales,
-        externals = List(domain("shared", Some("proj-b"), "orders"))
+        externals = List(shared)
       ) shouldBe resolve("select * from orders", bigquery, domains = sales)
     }
 
-    "Two external domains" should "leave unresolved a table they both declare, cited alone" in {
+    "A task" should "win over an external domain that declares its table" in {
+      val task = AutoTaskInfo(
+        name = "orders",
+        sql = None,
+        database = Some("proj-a"),
+        domain = "shared_ds",
+        table = "orders"
+      )
       resolve(
-        "select * from t",
+        "select * from shared_ds.orders",
         bigquery,
-        externals = List(domain("a", Some("p1"), "t"), domain("b", Some("p2"), "t"))
-      ) shouldBe resolve("select * from t", bigquery)
+        tasks = List(task),
+        externals = List(shared)
+      ) shouldBe "select * from `proj-a`.`shared_ds`.`orders`"
+    }
+
+    "External domains of the same name" should "leave the table as before when their databases differ" in {
+      resolve(
+        "select * from shared_ds.orders",
+        bigquery,
+        externals = List(shared, domain("shared_ds", Some("proj-c"), "orders"))
+      ) shouldBe resolve("select * from shared_ds.orders", bigquery)
+    }
+
+    it should "resolve the table when they agree on the database" in {
+      resolve(
+        "select * from shared_ds.orders",
+        bigquery,
+        externals = List(shared, domain("shared_ds", Some("proj-b"), "orders", "customers"))
+      ) shouldBe "select * from `proj-b`.`shared_ds`.`orders`"
     }
 
     "A ref of refs.sl.yml" should "still win over an external domain" in {
@@ -107,13 +141,17 @@ class ExternalTableRefSpec extends TestHelper {
         latestSchemaVersion,
         List(
           Ref(
-            InputRef(Pattern.compile("stg"), Some(Pattern.compile("pack")), None),
-            OutputRef("proj-ref", "pack", "stg")
+            InputRef(Pattern.compile("orders"), Some(Pattern.compile("shared_ds")), None),
+            OutputRef("proj-ref", "shared_ds", "orders")
           )
         )
       )
-      resolve("select * from pack.stg", bigquery, externals = List(producer), refs = refs) shouldBe
-      "select * from `proj-ref`.`pack`.`stg`"
+      resolve(
+        "select * from shared_ds.orders",
+        bigquery,
+        externals = List(shared),
+        refs = refs
+      ) shouldBe "select * from `proj-ref`.`shared_ds`.`orders`"
     }
   }
 }
