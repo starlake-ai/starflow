@@ -1,39 +1,21 @@
 package ai.starlake.job.transform
 
-import ai.starlake.TestHelper
 import ai.starlake.config.Settings
 import ai.starlake.extract.JdbcDbUtils
 import ai.starlake.job.strategies.TransformStrategiesBuilder
 import ai.starlake.schema.model._
 import ai.starlake.utils.Formatter._
 import ai.starlake.workflow.IngestionWorkflow
-import com.typesafe.config.Config
 import org.apache.hadoop.fs.Path
 
 /** A DELETE_THEN_INSERT or UPSERT_BY_KEY task whose SELECT reads its own table inserts the rows
   * that SELECT returned before the delete (#2013). Each subclass runs the scenario on one engine,
   * through the connection its configuration names.
   */
-abstract class SelfReadingStrategiesSpecBase(engine: String) extends TestHelper {
-
-  /** The configuration of the run, whose connectionRef names the connection of the engine */
-  protected def engineConfiguration: Config
+abstract class SelfReadingStrategiesSpecBase(engine: String) extends EngineSpec {
 
   /** The schema of the tables: the domain of the task */
-  protected def domain: String = "selfdb"
-
-  /** Whether the engine is available to this run */
-  protected def enabled: Boolean = true
-
-  /** The statements that create the schema of the tables, when the engine needs them */
-  protected def createSchema: List[String] = List(s"CREATE SCHEMA IF NOT EXISTS $domain")
-
-  protected def stringType: String = "VARCHAR(10)"
-
-  /** Whether the scenario runs the SQL of the write strategy directly, in autocommit, instead of
-    * running the task: for an engine whose writes need autocommit, which a task does not use
-    */
-  protected def runsStrategySqlOnly: Boolean = false
+  override protected def domain: String = "selfdb"
 
   /** The strategies and `on` modes the engine supports */
   protected def cases: List[(WriteStrategyType, MergeOn)] =
