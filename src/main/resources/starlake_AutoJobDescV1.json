@@ -294,7 +294,14 @@
         },
         "timestamp": {
           "$ref": "#/definitions/ConvertibleToString",
-          "description": "timestamp column to use for the target table.\n This is used to update existing records in the target table by strategies UPSERT_BY_KEY_AND_TIMESTAMP and SCD2."
+          "description": "timestamp column to use for the target table.\n This is used to update existing records in the target table by strategies UPSERT_BY_KEY_AND_TIMESTAMP and SCD2 (or checkColumns for SCD2)."
+        },
+        "checkColumns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConvertibleToString"
+          },
+          "description": "Columns that strategy SCD2 compares to detect a new version, instead of a timestamp: a new version is created when one of them differs from the current row, a null on one side only included.\n [\"*\"] compares every column except the key and the validity columns. Cannot be used with timestamp."
         },
         "queryFilter": {
           "$ref": "#/definitions/ConvertibleToString",
