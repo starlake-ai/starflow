@@ -89,7 +89,8 @@ final case class DbtManifest(
   macros: List[DbtMacro],
   docs: List[DbtDoc],
   reportedOnly: List[(String, String)],
-  manifestPath: Path
+  manifestPath: Path,
+  graph: Map[String, Map[String, Any]] = Map.empty
 ) {
 
   /** The dbt project: manifest.json is in its target/ folder */

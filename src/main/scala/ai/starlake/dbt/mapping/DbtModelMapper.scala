@@ -4,9 +4,12 @@ import ai.starlake.config.{DatasetArea, Settings}
 import ai.starlake.dbt.manifest.{DbtColumn, DbtNode}
 import ai.starlake.dbt.report.{EntryStatus, ReportEntry}
 import ai.starlake.dbt.jinja.DbtRendered
+import ai.starlake.dbt.warehouse.WarehouseRead
 import ai.starlake.dbt.{DbtSkip, IncrementalDiff}
 import ai.starlake.schema.model._
 import ai.starlake.utils.YamlSerde
+import ai.starlake.sql.{SQLUtils, SqlParser}
+import ai.starlake.utils.{IncrementalVariable, Utils}
 import org.apache.hadoop.fs.Path
 
 import scala.util.{Failure, Success, Try}
@@ -16,7 +19,8 @@ final case class MappedModel(
   sql: String,
   entry: ReportEntry,
   vars: Map[String, String],
-  envVars: Map[String, String]
+  envVars: Map[String, String],
+  warehouseReads: List[WarehouseRead] = Nil
 ) {
   def outputs(implicit settings: Settings): List[DbtOutput] = {
     val folder = new Path(DatasetArea.transform, task.domain)
@@ -35,7 +39,9 @@ object DbtModelMapper {
   private val TimeDependent = """run_started_at|modules\.datetime""".r
   private val mergeByDefault = Set("bigquery", "snowflake", "databricks", "spark")
 
-  def map(node: DbtNode, ctx: DbtMappingContext): Either[ReportEntry, MappedModel] = {
+  def map(node: DbtNode, ctx: DbtMappingContext)(implicit
+    settings: Settings
+  ): Either[ReportEntry, MappedModel] = {
     val relation = ctx.relations.ofNode(node)
     def skip(reason: String) =
       ReportEntry(
@@ -65,13 +71,14 @@ object DbtModelMapper {
           rendered match {
             case Failure(DbtSkip(reason)) => Left(skip(reason))
             case Failure(e)               => Left(skip(s"render failed: ${e.getMessage}"))
-            case Success((main, presql, postsql)) =>
+            case Success((renderedMain, presql, postsql)) =>
+              val (main, cteNotes) = renameReservedCtes(renderedMain)
               val hooksAndMain = main :: presql ++ postsql
               val split = hooksAndMain.exists(_.split)
               val outside = hooksAndMain.exists(_.outside)
               val renders = hooksAndMain.flatMap(_.renders)
               val (attributes, typeNotes) = attributesOf(node.columns, ctx)
-              val notes = strategyNotes ++ configNotes(node) ++ typeNotes ++
+              val notes = strategyNotes ++ configNotes(node) ++ typeNotes ++ cteNotes ++
                 (if (split) List("a string literal holds a Jinja delimiter: split with CONCAT")
                  else Nil) ++
                 (if (outside)
@@ -82,6 +89,7 @@ object DbtModelMapper {
                 (if (timeDependent(node, ctx))
                    List("renders the time of the import (run_started_at, modules.datetime)")
                  else Nil) ++
+                renders.flatMap(_.notes).distinct ++
                 renders.flatMap(_.warnings).distinct.map(w => s"warning: $w")
               val materialization =
                 if (Set("view", "ephemeral").contains(node.materialized)) Some(Materialization.VIEW)
@@ -120,11 +128,100 @@ object DbtModelMapper {
                     node.dependsOnNodes
                   ),
                   renders.flatMap(_.vars).toMap,
-                  renders.flatMap(_.envVars).toMap
+                  renders.flatMap(_.envVars).toMap,
+                  renders.flatMap(_.warehouseReads).distinct
                 )
               )
           }
       }
+  }
+
+  /** Words JSqlParser rejects as a CTE name, common in dbt projects (`final`). DbtModelMapperSpec
+    * checks each one against the parser, so the list follows its upgrades.
+    */
+  val reservedCteNames: List[String] =
+    List("final", "window", "output", "pivot", "unpivot", "lateral", "natural")
+
+  /** String literals, quoted identifiers, comments and Jinja tags: copied verbatim */
+  private val protectedSpans =
+    """'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|--[^\n]*|/\*(?s:.*?)\*/|\{%-?(?s:.*?)-?%\}|\{\{(?s:.*?)\}\}|\{#(?s:.*?)#\}""".r
+
+  /** Whether the text parses as Starlake parses a task: with `sl_incremental` false, and true when
+    * the text mentions it, after the comments are stripped
+    */
+  private def parses(text: String)(implicit settings: Settings): Boolean = {
+    val renders = false :: (if (IncrementalVariable.mentionedIn(List(text))) List(true) else Nil)
+    renders.forall { incremental =>
+      Try(
+        SqlParser.parseQuietly(
+          Utils
+            .parseJinja(SQLUtils.stripComments(text), Map(IncrementalVariable.Name -> incremental))
+            .trim
+        )
+      ).isSuccess
+    }
+  }
+
+  /** `text` with every protected span replaced by spaces */
+  private def blanked(text: String): String =
+    protectedSpans.replaceAllIn(text, m => " " * m.matched.length)
+
+  /** Renames in `sql` the CTE `name` (definition, `from`/`join` references and qualifiers) to
+    * `sl_name`, outside the protected spans
+    */
+  private def renameCte(sql: String, name: String): String = {
+    val n = java.util.regex.Pattern.quote(name)
+    val definition = s"(?i)(?<![\\w$$.])$n(?=\\s+as\\s*\\()".r
+    val reference = s"(?i)\\b(from|join)(\\s+)$n(?![\\w$$])".r
+    val qualifier = s"(?i)(?<![\\w$$.])$n(?=\\s*\\.)".r
+    def rename(code: String): String = {
+      val d = definition.replaceAllIn(code, _ => s"sl_$name")
+      val r = reference.replaceAllIn(d, m => s"${m.group(1)}${m.group(2)}sl_$name")
+      qualifier.replaceAllIn(r, _ => s"sl_$name")
+    }
+    val out = new StringBuilder
+    var last = 0
+    protectedSpans.findAllMatchIn(sql).foreach { m =>
+      out.append(rename(sql.substring(last, m.start))).append(m.matched)
+      last = m.end
+    }
+    out.append(rename(sql.substring(last))).toString
+  }
+
+  private val cannotRead =
+    "Starlake's SQL parser cannot read this SQL: rewrite it, or set parseSQL: false and make the SQL write the table itself"
+
+  /** The SQL, with the CTEs named like a JSqlParser reserved word renamed when Starlake's parser
+    * rejects it, and the notes for the report. The rename is kept only when every render of the SQL
+    * (sl_incremental false and true) parses after it.
+    */
+  private def renameReservedCtes(rendered: Rendered)(implicit
+    settings: Settings
+  ): (Rendered, List[String]) = {
+    val sql = rendered.sql
+    if (rendered.outside || rendered.split || parses(sql)) (rendered, Nil)
+    else {
+      val code = blanked(sql)
+      val reserved = reservedCteNames.filter { n =>
+        s"(?i)(?<![\\w$$.])${java.util.regex.Pattern.quote(n)}\\s+as\\s*\\(".r
+          .findFirstIn(code)
+          .isDefined
+      }
+      // a backslash in a literal may escape a quote (BigQuery, Spark, MySQL): the spans can drift
+      val backslashLiteral =
+        "'(?:[^']|'')*'".r.findAllIn(sql).exists(_.contains("\\"))
+      if (reserved.isEmpty) (rendered, Nil)
+      else if (backslashLiteral) (rendered, List(cannotRead))
+      else {
+        val renamed = reserved.foldLeft(sql)(renameCte)
+        if (parses(renamed))
+          (
+            rendered.copy(sql = renamed),
+            reserved.map(n => s"CTE $n renamed sl_$n: $n is reserved for Starlake's SQL parser")
+          )
+        else (rendered, List(cannotRead))
+      }
+    }
   }
 
   /** The SQL of a template, with `sl_incremental` blocks when its two renders differ. Each render

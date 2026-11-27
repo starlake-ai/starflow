@@ -1,6 +1,7 @@
 package ai.starlake.dbt.jinja
 
 import ai.starlake.dbt.manifest._
+import ai.starlake.dbt.warehouse._
 import ai.starlake.dbt.{DbtImportException, DbtSkip}
 import ai.starlake.utils.JinjaUtils
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -15,15 +16,22 @@ import java.security.MessageDigest
 import java.time.ZonedDateTime
 import java.util
 import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Try}
+import scala.util.{Failure, Success, Try}
 
-/** One render: the SQL, or why it failed (a [[DbtSkip]] or an error), and what it read */
+/** One render: the SQL, or why it failed (a [[DbtSkip]] or an error), and what it read
+  *
+  * @param notes
+  *   for the report entry of the model: answers of the warehouse that the SQL bakes and the user
+  *   should check (a relation not found)
+  */
 final case class DbtRendered(
   sql: Try[String],
   config: Map[String, Object],
   vars: Map[String, String],
   envVars: Map[String, String],
-  warnings: List[String]
+  warnings: List[String],
+  warehouseReads: List[WarehouseRead] = Nil,
+  notes: List[String] = Nil
 )
 
 /** The values that dbt's context gives every render */
@@ -38,8 +46,17 @@ final case class DbtJinjaContext(
 /** A Jinjava instance of its own (Starlake's shared one is untouched) with dbt's context and the
   * macros of the manifest, defined once. Package macros are global, the root project's last so that
   * they win, and each package is also a namespace (`dbt_utils.star`, `dbt.date_trunc`).
+  *
+  * @param warehouse
+  *   what run_query(), statement, load_relation() and the adapter read; offline, they skip the
+  *   model
   */
-final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJinjaContext) {
+final class DbtJinja(
+  manifest: DbtManifest,
+  relations: DbtRelations,
+  ctx: DbtJinjaContext,
+  warehouse: DbtWarehouse = new OfflineWarehouse
+) {
   private val adapterType = manifest.metadata.adapterType
   private val root = manifest.metadata.projectName
 
@@ -76,6 +93,7 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
   private val json = new ObjectMapper()
   private val global: Context = jinjava.getGlobalContext
   global.registerTag(new ReturningMacroTag)
+  global.registerExpTest(new DbtIsMapping)
   global.registerFunction(
     new ELFunctionDefinition("", "return", classOf[DbtReturn], "ret", classOf[Object])
   )
@@ -144,14 +162,79 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
     fn: (List[Object], Map[String, Object]) => Object
   ): Unit = context.addGlobalMacro(new DbtBuiltin(name, context)(fn))
 
-  private def warehouse(name: String): (List[Object], Map[String, Object]) => Object = (_, _) => {
-    DbtRenderState.get.skipWith(s"needs the warehouse at import ($name)")
-    ""
+  /** A database equal to the project's default one is not named, as in [[DbtRelation]] */
+  private def normalize(database: Option[String]): Option[String] =
+    database.filterNot(d => d.isEmpty || relations.defaultDatabase.exists(_.equalsIgnoreCase(d)))
+
+  private def toJinja(r: WarehouseRelation): DbtJinjaRelation =
+    new DbtJinjaRelation(
+      DbtRelation(r.database, r.schema, r.identifier),
+      r.database.orElse(relations.defaultDatabase)
+    )
+
+  private val adapter = new DbtAdapter(
+    adapterType,
+    warehouse,
+    (database, schema, identifier) => WarehouseRelation(normalize(database), schema, identifier),
+    toJinja
+  )
+
+  private def oneLine(sql: String): String = sql.trim.replaceAll("\\s+", " ")
+
+  private def skipOffline(call: String): Unit =
+    DbtRenderState.get.skipWith(OfflineWarehouse.reason(call))
+
+  /** The table of a statement; on a skip, an empty one. `call` names the builtin in the reason of
+    * the skip without --introspect.
+    */
+  private def runQuery(sql: String, call: String): DbtTable = {
+    val state = DbtRenderState.get
+    if (warehouse.offline) {
+      skipOffline(call)
+      new DbtTable(Nil, Nil)
+    } else
+      warehouse.query(sql) match {
+        case Success(t) =>
+          state.read(s"query: ${oneLine(sql)}", WarehouseRead.count(t.size, "row"))
+          t
+        case Failure(DbtSkip(reason)) =>
+          state.skipWith(reason)
+          new DbtTable(Nil, Nil)
+        case Failure(e) =>
+          state.skipWith(DbtJinja.message(e))
+          new DbtTable(Nil, Nil)
+      }
   }
 
   private def registerBuiltins(): Unit = {
-    List("run_query", "statement", "load_result", "load_relation").foreach { name =>
-      builtin(name, global)(warehouse(name))
+    builtin("run_query", global)((args, _) =>
+      runQuery(String.valueOf(args.headOption.orNull), "run_query")
+    )
+    builtin("statement", global) { (args, kwargs) =>
+      if (warehouse.offline) skipOffline("statement")
+      else {
+        val name = args.headOption.orElse(kwargs.get("name")).map(String.valueOf).getOrElse("main")
+        // the body of {% call statement(...) %}: the call tag defines it as the macro `caller`
+        val sql = Option(JinjavaInterpreter.getCurrent)
+          .flatMap(i => Option(i.getContext.getGlobalMacro("caller")))
+          .map(caller => String.valueOf(caller.evaluate()))
+          .getOrElse("")
+        // after a return() in the body (dbt_utils.get_column_values' default), nothing runs
+        if (sql.trim.nonEmpty && !DbtReturn.anyReturned())
+          DbtRenderState.get.results.put(name, runQuery(sql, "statement"))
+      }
+      ""
+    }
+    builtin("load_result", global) { (args, _) =>
+      val found = DbtRenderState.get.results.get(String.valueOf(args.headOption.orNull))
+      if (found.isEmpty && warehouse.offline) skipOffline("load_result")
+      found.map(DbtLoadResult(_)).orNull
+    }
+    builtin("load_relation", global) { (args, _) =>
+      if (warehouse.offline) {
+        skipOffline("load_relation")
+        null
+      } else adapter.relationOf(args.headOption.orNull).map(adapter.relation).orNull
     }
     List("log", "print", "debug").foreach(name => builtin(name, global)((_, _) => ""))
     builtin("dict", global)((_, kwargs) => new util.LinkedHashMap[String, Object](kwargs.asJava))
@@ -229,6 +312,9 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
     "tags"               -> node.tags
   )
 
+  /** The manifest's graph as Java maps, built once: templates only read it */
+  private lazy val graphView: Object = JinjaUtils.toJava(manifest.graph)
+
   private def staticBindings(): util.Map[String, Object] = {
     val b = new util.HashMap[String, Object]()
     b.put(
@@ -256,9 +342,9 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
       JinjaUtils.toJava(Map("datetime" -> Map("datetime" -> new DbtDatetimeModule(ctx.now))))
     )
     b.put("run_started_at", new PyishDate(ctx.now))
-    b.put("adapter", new DbtAdapter(adapterType))
+    b.put("adapter", adapter)
     b.put("exceptions", new DbtExceptions)
-    b.put("graph", new DbtWarehouseOnly("graph"))
+    b.put("graph", graphView)
     b.put("project_name", root)
     packageOrder.filterNot(internalPackages.contains).foreach(p => b.put(p, macrosByPackage(p)))
     b.put("dbt", dbtNamespace)
@@ -289,7 +375,9 @@ final class DbtJinja(manifest: DbtManifest, relations: DbtRelations, ctx: DbtJin
       dbtConfig.map(_.captured.toMap).getOrElse(Map.empty),
       state.vars.toMap,
       state.envVars.toMap,
-      state.warnings.toList
+      state.warnings.toList,
+      state.reads.toList,
+      state.notes.toList
     )
   }
 

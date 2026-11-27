@@ -1,0 +1,14 @@
+version: 2
+models:
+  - name: order_status_pivot
+    config: {tags: [introspection]}
+  - name: customers_star
+    config: {tags: [introspection]}
+  - name: order_count
+    config: {tags: [introspection]}
+  - name: customers_filled
+    config: {tags: [introspection]}
+  - name: model_count
+    config: {tags: [introspection]}
+  - name: writes_at_import
+    config: {tags: [introspection]}

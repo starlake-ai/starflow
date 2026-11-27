@@ -2,8 +2,8 @@
 # Acceptance of `starlake dbt import` on the real jaffle-shop, local only (not CI):
 #   1. dbt deps, parse and build jaffle-shop on DuckDB (load_source_data: true);
 #   2. starlake bootstrap, dbt import, stage, load and transform, on another DuckDB file;
-#   3. every table of dbt's database equals Starlake's, except metricflow_time_spine, which
-#      the import skips: dbt.date_spine queries the warehouse at compile time.
+#   3. every one of the 19 tables of dbt's database equals Starlake's, metricflow_time_spine
+#      included: the import runs with --introspect, so dbt.date_spine's warehouse query is answered.
 #
 #   JAFFLE_SHOP  a checkout of https://github.com/dbt-labs/jaffle-shop (not modified)
 #   DBT_VENV     venv with dbt-core 1.12.7 and dbt-duckdb 1.11.1 (default: target/dbt-venv)
@@ -97,9 +97,11 @@ export DBT_SEND_ANONYMOUS_USAGE_STATS=false DBT_VERSION_CHECK=false DBT_PROFILES
 )
 
 starlake bootstrap --template empty-project --no-exit
-starlake dbt import --manifest "$WORK/jaffle/target/manifest.json" --connection duckdb --vars "$VARS"
+starlake dbt import --manifest "$WORK/jaffle/target/manifest.json" --connection duckdb --introspect --vars "$VARS"
 REPORT="$WORK/sl/dbt-import-report.md"
-grep -q 'model `model.jaffle_shop.metricflow_time_spine`: needs the warehouse at import' "$REPORT"
+grep -q '^## Warehouse answers' "$REPORT"
+grep -q '^- `main.metricflow_time_spine`: query: ' "$REPORT"
+grep -q 'CTE final renamed sl_final: final is reserved for Starlake' "$REPORT"
 starlake stage
 starlake load
 TASKS="$(sed -n 's/^- next: starlake transform --name //p' "$REPORT")"
@@ -122,7 +124,7 @@ def lit(value):
 con = duckdb.connect()
 con.sql(f"ATTACH {lit(sys.argv[1])} AS dbt (READ_ONLY)")
 con.sql(f"ATTACH {lit(sys.argv[2])} AS sl (READ_ONLY)")
-skipped = {("main", "metricflow_time_spine")}
+skipped = set()
 SCHEMAS = "('main', 'raw')"
 
 def tables_of(catalog):

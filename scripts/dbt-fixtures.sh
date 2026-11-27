@@ -52,7 +52,9 @@ db, out = sys.argv[1], sys.argv[2]
 con = duckdb.connect(db, read_only=True)
 rows = con.sql(
     "SELECT table_schema, table_name FROM information_schema.tables "
-    "WHERE table_schema IN ('raw', 'staging', 'marts') ORDER BY 1, 2"
+    "WHERE table_schema IN ('raw', 'staging', 'marts') "
+    # sl_import_side_effect is dbt's side effect of writes_at_import, not a model
+    "AND table_name <> 'sl_import_side_effect' ORDER BY 1, 2"
 ).fetchall()
 for schema, name in rows:
     con.sql(
@@ -70,12 +72,14 @@ cp target/manifest.json "$FIXTURE/target/manifest.json"
 rm -rf "$EXPECTED"
 mkdir -p "$EXPECTED/compiled"
 rm -f shop.duckdb
-"$DBT" compile
+"$DBT" compile --exclude tag:introspection
 find target/compiled/shop/models -name '*.sql' -not -path '*.yml/*' -exec cp {} "$EXPECTED/compiled/" \;
 
 rm -f shop.duckdb
 "$DBT" build
 export_tables "$EXPECTED/run1"
+"$DBT" compile --select tag:introspection
+find target/compiled/shop/models -name '*.sql' -not -path '*.yml/*' -exec cp {} "$EXPECTED/compiled/" \;
 
 cp "$RUN2_SEEDS"/*.csv seeds/
 "$DBT" build

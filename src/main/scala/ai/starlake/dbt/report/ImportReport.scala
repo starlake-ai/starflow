@@ -45,7 +45,8 @@ final case class ImportReport(
   entries: List[ReportEntry],
   vars: List[BakedValue],
   envVars: List[BakedValue],
-  general: List[String]
+  general: List[String],
+  warehouseReads: List[BakedValue] = Nil
 ) {
   import EntryStatus._
 
@@ -163,6 +164,12 @@ final case class ImportReport(
       "Baked env vars",
       envVars.map(v =>
         s"`${v.name}` = `${v.value}` in ${v.usedBy.map(u => s"`$u`").mkString(", ")}"
+      )
+    )
+    section(
+      "Warehouse answers",
+      warehouseReads.map(r =>
+        s"${r.usedBy.map(u => s"`$u`").mkString(", ")}: ${r.name} -> ${r.value}"
       )
     )
     section(

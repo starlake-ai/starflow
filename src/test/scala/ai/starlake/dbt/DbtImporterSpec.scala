@@ -2,6 +2,7 @@ package ai.starlake.dbt
 
 import ai.starlake.dbt.report.{BakedValue, EntryStatus}
 import ai.starlake.TestHelper
+import ai.starlake.config.DatasetArea
 import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.TableAttribute
 import com.typesafe.config.ConfigFactory
@@ -201,6 +202,156 @@ class DbtImporterSpec extends TestHelper {
         )
         .get
       written(result, "/transform/s/m.sl.yml") should include regex "connectionRef: \"?bigquery\"?"
+    }
+  }
+
+  private def duckdbConfiguration =
+    ConfigFactory
+      .parseString(
+        s"""
+           |connections.test-fs {
+           |  type = "fs"
+           |}
+           |connections.test-broken {
+           |  type = "jdbc"
+           |  loader = "native"
+           |  options {
+           |    "url": "jdbc:duckdb:/nonexistent-dir/x/y.db"
+           |    "driver": "org.duckdb.DuckDBDriver"
+           |  }
+           |}
+           |connections.test-duckdb {
+           |  type = "jdbc"
+           |  loader = "native"
+           |  options {
+           |    "url": "jdbc:duckdb:$starlakeTestRoot/introspect.db"
+           |    "driver": "org.duckdb.DuckDBDriver"
+           |  }
+           |}
+           |""".stripMargin
+      )
+      .withFallback(super.testConfiguration)
+
+  new WithSettings(duckdbConfiguration) {
+    "--introspect without a connection" should "fail before writing anything" in {
+      val before = snapshot()
+      val result = DbtImporter.run(
+        DbtImportConfig(
+          action = "import",
+          manifest = DbtFixtures.shopManifestPath.toString,
+          introspect = true
+        )
+      )
+      result.isFailure shouldBe true
+      result.failed.get.getMessage shouldBe "--introspect needs a connection: pass --connection, or --profiles with a DuckDB target that has a file"
+      snapshot() shouldBe before
+    }
+
+    private def introspectOn(c: String) =
+      DbtImporter.run(
+        DbtImportConfig(
+          action = "import",
+          manifest = DbtFixtures.shopManifestPath.toString,
+          connection = Some(c),
+          introspect = true,
+          force = true
+        )
+      )
+
+    // earlier tests of this spec left files: what must hold is that this import changed none
+    private def snapshot() =
+      (storageHandler.list(DatasetArea.transform, ".sl.yml", recursive = true) ++
+        storageHandler.list(ProjectWriter.reportPath.getParent, ".md", recursive = false))
+        .map(f => f.path -> f.modificationInstant)
+        .toSet
+
+    "--introspect on a connection that cannot open" should "fail before anything is written" in {
+      val before = snapshot()
+      val result = introspectOn("test-broken")
+      result.isFailure shouldBe true
+      result.failed.get shouldBe a[DbtImportException]
+      result.failed.get.getMessage should startWith(
+        "--introspect: connection test-broken cannot be opened"
+      )
+      snapshot() shouldBe before
+    }
+
+    "--introspect on a connection that is not JDBC" should "fail before anything is written" in {
+      val before = snapshot()
+      val result = introspectOn("test-fs")
+      result.failed.get.getMessage shouldBe "--introspect: connection test-fs is not a JDBC or BigQuery connection"
+      snapshot() shouldBe before
+    }
+
+    "--introspect on a DuckDB connection" should "convert the model that runs a query, and report the answer" in {
+      val result = DbtImporter
+        .run(
+          DbtImportConfig(
+            action = "import",
+            manifest = DbtFixtures.shopManifestPath.toString,
+            connection = Some("test-duckdb"),
+            introspect = true,
+            force = true
+          )
+        )
+        .get
+      result.report.converted.map(_.dbtId) should contain("model.shop.needs_warehouse")
+      result.report.warehouseReads.map(r => (r.name, r.value, r.usedBy)) should contain(
+        ("query: select 42 as answer", "1 row", List("marts.needs_warehouse"))
+      )
+      result.report.general should contain("introspection on connection test-duckdb")
+    }
+
+    private def shopProfiles(duckdbFile: Path): Path = {
+      val file = Files.createTempFile("profiles", ".yml")
+      Files.writeString(
+        file,
+        s"shop:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: \"$duckdbFile\"\n      schema: main\n"
+      )
+      file
+    }
+
+    private def introspectProfiles(profilesFile: Path) =
+      DbtImporter.run(
+        DbtImportConfig(
+          action = "import",
+          manifest = DbtFixtures.shopManifestPath.toString,
+          profiles = Some(profilesFile.toString),
+          introspect = true,
+          force = true
+        )
+      )
+
+    "--introspect with --profiles" should "read dbt's DuckDB file read-only, leaving it unchanged" in {
+      val dir = Files.createTempDirectory("dbt-profile-duckdb")
+      val db = dir.resolve("shop.duckdb")
+      val conn = java.sql.DriverManager.getConnection(s"jdbc:duckdb:$db")
+      try conn.createStatement().execute("CREATE TABLE t AS SELECT 1 AS id")
+      finally conn.close()
+      val bytes = Files.readAllBytes(db).toList
+      val modified = Files.getLastModifiedTime(db)
+      val filesBefore = Files.list(dir).toArray.toList.map(_.toString).sorted
+
+      val result = introspectProfiles(shopProfiles(db)).get
+      result.exitCode shouldBe 0
+      result.report.converted.map(_.dbtId) should contain("model.shop.needs_warehouse")
+      result.report.general should contain("introspection on connection dbt_dev")
+
+      Files.readAllBytes(db).toList shouldBe bytes
+      Files.getLastModifiedTime(db) shouldBe modified
+      Files.list(dir).toArray.toList.map(_.toString).sorted shouldBe filesBefore
+    }
+
+    it should "fail before anything is written when the DuckDB file does not exist" in {
+      val db = Files.createTempDirectory("dbt-profile-duckdb").resolve("missing.duckdb")
+      val before = snapshot()
+      val result = introspectProfiles(shopProfiles(db))
+      result.isFailure shouldBe true
+      result.failed.get shouldBe a[DbtImportException]
+      result.failed.get.getMessage shouldBe
+      s"--introspect: the DuckDB file of the dbt target does not exist: $db"
+      Files.exists(db) shouldBe false
+      snapshot() shouldBe before
     }
   }
 }

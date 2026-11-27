@@ -4,7 +4,7 @@ import ai.starlake.TestHelper
 import ai.starlake.config.DatasetArea
 import ai.starlake.dbt.manifest.{DbtProjectFile, DbtRelations}
 import ai.starlake.dbt.mapping._
-import ai.starlake.dbt.report.{EntryStatus, ImportReport, ReportEntry}
+import ai.starlake.dbt.report.{BakedValue, EntryStatus, ImportReport, ReportEntry}
 import ai.starlake.dbt.write.ProjectWriter
 import ai.starlake.schema.model.TableAttribute
 import ai.starlake.utils.YamlSerde
@@ -140,6 +140,15 @@ class ImportReportSpec extends TestHelper {
       storageHandler.read(task) should include("from staging.stg_orders")
       storageHandler.read(unrelated) shouldBe "select 1"
       storageHandler.exists(ProjectWriter.reportPath) shouldBe true
+    }
+
+    it should "list the warehouse answers per task" in {
+      val r = report.copy(warehouseReads =
+        List(BakedValue("query: select 42 as answer", "1 row", List("marts.needs_warehouse")))
+      )
+      r.toMarkdown should include(
+        "## Warehouse answers\n\n- `marts.needs_warehouse`: query: select 42 as answer -> 1 row\n"
+      )
     }
 
     it should "add the DuckDB connection to application.sl.yml, default only when there is none" in {

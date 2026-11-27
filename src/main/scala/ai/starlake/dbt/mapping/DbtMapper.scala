@@ -122,7 +122,14 @@ object DbtMapper {
         entries,
         baked(mappedModels.map(m => m.entry.target.getOrElse(m.entry.dbtId) -> m.vars)),
         baked(mappedModels.map(m => m.entry.target.getOrElse(m.entry.dbtId) -> m.envVars)),
-        general
+        general,
+        BakedValue.merge(
+          mappedModels.flatMap(m =>
+            m.warehouseReads.map(r =>
+              BakedValue(r.what, r.result, List(m.entry.target.getOrElse(m.entry.dbtId)))
+            )
+          )
+        )
       )
     )
   }

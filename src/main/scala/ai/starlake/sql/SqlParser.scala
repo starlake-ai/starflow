@@ -156,7 +156,7 @@ object SqlParser extends LazyLogging {
   /** Parses without logging. Callers that treat a parse failure as an expected outcome (they have a
     * fallback) use this so a benign degradation does not surface as an ERROR.
     */
-  private def parseQuietly(sql: String): Statement = {
+  private[starlake] def parseQuietly(sql: String): Statement = {
     val features = new Consumer[CCJSqlParser] {
       override def accept(t: CCJSqlParser): Unit = {
         t.withTimeOut(60 * 1000)

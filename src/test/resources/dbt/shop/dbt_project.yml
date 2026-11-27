@@ -32,3 +32,5 @@ models:
       +schema: marts
     other:
       +schema: marts
+    introspection:
+      +schema: marts
