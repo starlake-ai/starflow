@@ -33,13 +33,16 @@ class SCD2ValidityTemplatesSpec extends TestHelper {
       columns: List[String] = List("id", "label", "updated_at"),
       startTsType: Option[String] = None,
       endTsType: Option[String] = None,
-      startTs: String = "valid_from"
+      startTs: String = "valid_from",
+      timestamp: Option[String] = Some("updated_at"),
+      checkColumns: Option[List[String]] = None
     ): String =
       new TransformStrategiesBuilder().buildTransform(
         WriteStrategy(
           `type` = Some(WriteStrategyType.SCD2),
           key = List("id"),
-          timestamp = Some("updated_at"),
+          timestamp = timestamp,
+          checkColumns = checkColumns,
           startTs = Some(startTs),
           endTs = Some("valid_to"),
           startTsType = startTsType,
@@ -183,6 +186,76 @@ class SCD2ValidityTemplatesSpec extends TestHelper {
           // the timestamp of the changes
           inserts.foreach(_.count(_ == "updated_at") shouldBe 2)
         }
+      }
+    }
+
+    /** A column, quoted for the engine */
+    private def quoted(engine: String, column: String): String = {
+      val quote = settings.appConfig.jdbcEngines(engine).quote
+      s"$quote$column$quote"
+    }
+
+    /** The places where a template tests for a new version: the generic JDBC template renders two
+      * MERGE statements
+      */
+    private def sites(strategyBuilder: String): Int = if (strategyBuilder == "jdbc") 4 else 2
+
+    "The SCD2 template with checkColumns" should "open a version when a checked column differs, a null on one side included" in {
+      builders.foreach { case (strategyBuilder, engine) =>
+        withClue(strategyBuilder) {
+          val sql = render(
+            strategyBuilder,
+            engine,
+            tableExists = true,
+            timestamp = None,
+            checkColumns = Some(List("label"))
+          )
+          val label = quoted(engine, "label")
+          occurrences(sql, s".$label <> ") shouldBe sites(strategyBuilder)
+          occurrences(sql, s".$label IS NULL AND ") shouldBe sites(strategyBuilder)
+          occurrences(sql, s".$label IS NOT NULL AND ") shouldBe sites(strategyBuilder)
+          sql should not include "updated_at <"
+          sql should not include "updated_at >"
+          sql should not include "1 = 1"
+        }
+      }
+    }
+
+    it should "compare every column but the key and the validity columns with '*'" in {
+      builders.foreach { case (strategyBuilder, engine) =>
+        withClue(strategyBuilder) {
+          val sql = render(
+            strategyBuilder,
+            engine,
+            tableExists = true,
+            timestamp = None,
+            checkColumns = Some(List("*"))
+          )
+          occurrences(sql, s".${quoted(engine, "label")} <> ") shouldBe sites(strategyBuilder)
+          occurrences(sql, s".${quoted(engine, "updated_at")} <> ") shouldBe sites(strategyBuilder)
+          occurrences(sql, s".${quoted(engine, "id")} <> ") shouldBe 0
+        }
+      }
+    }
+
+    "The SCD2 template with a timestamp" should "compare the timestamps" in {
+      builders.foreach { case (strategyBuilder, engine) =>
+        withClue(strategyBuilder) {
+          val sql = render(strategyBuilder, engine, tableExists = true)
+          occurrences(sql, ".updated_at < ") shouldBe sites(strategyBuilder)
+          sql should not include " <> "
+        }
+      }
+    }
+
+    "The Trino, MySQL and SQL Server SCD2 templates" should "open a version for every incoming row without a timestamp or checkColumns" in {
+      builders.filter { case (b, _) => Set("trino", "mysql", "sqlserver").contains(b) }.foreach {
+        case (strategyBuilder, engine) =>
+          withClue(strategyBuilder) {
+            val sql = render(strategyBuilder, engine, tableExists = true, timestamp = None)
+            occurrences(sql, "1 = 1") shouldBe 2
+            sql should not include "S. >"
+          }
       }
     }
   }

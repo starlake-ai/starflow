@@ -32,3 +32,6 @@
 
 {# The value of an SCD2 validity column at the time of the run: a date for a DATE column (#1885) #}
 {% macro scd2Now(now, columnType) %}{% if columnType == 'DATE' %}CAST({{ now }} AS DATE){% else %}{{ now }}{% endif %}{% endmacro %}
+
+{# Whether an incoming row is a new version of the current row of its key (SCD2): a later timestamp, or a change in one of the checkColumns, a null on one side included. Every incoming row without either. #}
+{% macro renderStrategyChanged(existing, incoming) %}{% if strategyTimestamp != "" %}{{ existing }}.{{ strategyTimestamp }} < {{ incoming }}.{{ strategyTimestamp }}{% elif quotedStrategyCheckColumns|length > 0 %}({% for column in quotedStrategyCheckColumns %}({{ existing }}.{{ column }} <> {{ incoming }}.{{ column }} OR ({{ existing }}.{{ column }} IS NULL AND {{ incoming }}.{{ column }} IS NOT NULL) OR ({{ existing }}.{{ column }} IS NOT NULL AND {{ incoming }}.{{ column }} IS NULL)){% if not loop.last %} OR {% endif %}{% endfor %}){% else %}1 = 1{% endif %}{% endmacro %}

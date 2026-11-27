@@ -1,4 +1,4 @@
-{%  if strategyTimestamp != ""  %}
+{%  if strategyTimestamp != "" or strategyCheckColumns|length > 0  %}
     MERGE INTO {{ tableFullName }} SL_EXISTING USING (
     WITH SL_INCOMING AS
     {% if strategyOn == 'TARGET' %}
@@ -14,13 +14,13 @@
     SELECT {{ renderStrategyKeyAsPseudo(strategyKey, 'SL_INCOMING') }}, SL_INCOMING.* FROM SL_INCOMING
     LEFT JOIN {{ tableFullName }} SL_EXISTING
     ON ({{ strategyKeyJoinCondition }} AND SL_EXISTING.{{strategyEndTs}} IS NULL)
-    WHERE  {{ renderStrategyKeyIsNull('SL_EXISTING', strategyKey) }} OR SL_EXISTING.{{strategyTimestamp}} < SL_INCOMING.{{strategyTimestamp}}
+    WHERE  {{ renderStrategyKeyIsNull('SL_EXISTING', strategyKey) }} OR {{ renderStrategyChanged('SL_EXISTING', 'SL_INCOMING') }}
     UNION ALL
     -- All line present in the source and target that are current in the target
     SELECT {{ renderStrategyKeyAsNullPseudo(strategyKey) }}, SL_INCOMING.* FROM SL_INCOMING
     INNER JOIN {{ tableFullName }} SL_EXISTING
     ON ({{ strategyKeyJoinCondition }} AND SL_EXISTING.{{strategyEndTs}} IS NULL)
-    WHERE  SL_EXISTING.{{strategyTimestamp}} < SL_INCOMING.{{strategyTimestamp}}
+    WHERE  {{ renderStrategyChanged('SL_EXISTING', 'SL_INCOMING') }}
     ) SL_INCOMING
     ON ({{ renderStrategyJoinConditionWithPseudo('SL_INCOMING', 'SL_EXISTING', strategyKey) }})
     WHEN MATCHED THEN UPDATE SET {{ strategyEndTs }} = {{ scd2Now('CURRENT_TIMESTAMP', strategyEndTsType) }}
