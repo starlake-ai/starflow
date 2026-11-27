@@ -247,6 +247,12 @@ assembly / assemblyExcludedJars := {
 }
 
 
+// Jinjava 2.7.7+ keeps the Java 11 classes of its relocated jsoup under META-INF/versions/11 at
+// their unrelocated path, which jarjar reports as misplaced. Without this, the shading fails the
+// build on them; with it, it drops them, as the merge strategy above discards META-INF/** anyway
+// (jsoup falls back to its Java 8 HTTP client, which Jinjava never uses).
+assembly / assemblyFailOnShadeError := false
+
 assembly / assemblyShadeRules := Seq(
   // poi needs a newer version of commons-compress (> 1.17) than the one shipped with spark 2.4.X
   ShadeRule.rename("org.apache.commons.compress.**" -> "poiShade.commons.compress.@1").inAll,

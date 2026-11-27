@@ -54,7 +54,7 @@ object Versions {
   val testContainers = "0.44.1"
   val gcpCloudLogging = "3.44.0"
   val gcpDataCatalog = "1.102.0"
-  val jinja = "2.7.4" // forces dependency override on guava; 2.7.7 breaks sbt assembly (see .scala-steward.conf)
+  val jinja = "2.8.5" // forces dependency override on guava
   val snowflakeJDBC = "4.3.4" // spark-snowflake 3.2.x requires >= 4.0.2
   val snowflakeSpark: String = "3.2.3-spark_4.1" // no spark_4.3 build; the 4.1 one runs on 4.3
   val duckdb = "2.0.0.1"
