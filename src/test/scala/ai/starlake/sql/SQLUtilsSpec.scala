@@ -146,7 +146,8 @@ class SQLUtilsSpec extends TestHelper {
           Nil,
           SQLUtils.fromsRegex,
           "FROM",
-          new ConnectionInfo(FS, None, Some("parquet"), None, None, Map.empty)
+          new ConnectionInfo(FS, None, Some("parquet"), None, None, Map.empty),
+          Nil
         )
       resultSQL should equal(
         """with mycte as (

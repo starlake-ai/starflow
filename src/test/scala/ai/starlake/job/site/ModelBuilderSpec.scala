@@ -192,9 +192,9 @@ class ModelBuilderSpec extends IntegrationTestBase with SiteFixture {
         settings.schemaHandler(),
         List("sales.orders", "refdata.fx_rates", "refdata.undeclared", "customers")
       )
-      tables.map { case (domain, t) => s"$domain.${t.name}" } shouldBe
-      List("sales.orders", "refdata.fx_rates", ".customers")
-      tables.head._2.attrs.map(_._1) shouldBe List("amount", "customer_id", "id")
+      tables.map { case (database, domain, t) => s"$database.$domain.${t.name}" } shouldBe
+      List(".sales.orders", ".refdata.fx_rates", "..customers")
+      tables.head._3.attrs.map(_._1) shouldBe List("amount", "customer_id", "id")
   }
 
   it should "build with the production defaults" in withFixture { implicit settings =>

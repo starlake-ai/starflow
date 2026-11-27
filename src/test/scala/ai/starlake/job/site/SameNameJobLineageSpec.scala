@@ -7,8 +7,8 @@ import better.files.File
   * layout (`metadata/load/sales` and `metadata/transform/sales`). The fixture copy gets a job
   * `sales` with two tasks: `daily_orders` reads the load table `sales.orders`, and `top_orders`
   * reads the task `sales.daily_orders`. Whichever of the two `sales` entries comes first in
-  * `objectNames`, one of these lookups used to miss (#2029). The shared fixture and its golden model
-  * are left unchanged.
+  * `objectNames`, one of these lookups used to miss (#2029). The shared fixture and its golden
+  * model are left unchanged.
   */
 class SameNameJobLineageSpec extends IntegrationTestBase with SiteFixture {
 
@@ -55,9 +55,9 @@ class SameNameJobLineageSpec extends IntegrationTestBase with SiteFixture {
         None,
         declaredOnly = true
       )
-    tables.map { case (domain, t) => s"$domain.${t.name}" } shouldBe
+    tables.map { case (_, domain, t) => s"$domain.${t.name}" } shouldBe
     List("sales.orders", "sales.daily_orders")
-    tables.head._2.attrs.map(_._1) shouldBe List("amount", "customer_id", "id")
+    tables.head._3.attrs.map(_._1) shouldBe List("amount", "customer_id", "id")
   }
 
   "The site" should "draw the column lineage of tasks that read a table of their job's name" in

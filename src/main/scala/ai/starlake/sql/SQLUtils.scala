@@ -98,21 +98,44 @@ object SQLUtils extends LazyLogging {
 
   // --- Transformation methods (kept — depend on refs/domains/tasks/settings) ---
 
+  /** Resolves the table references of the FROM and JOIN clauses: through `refs` first, then through
+    * the load `domains` and the `tasks`, then, for a reference cited with its domain, through the
+    * `externals` (the domains of metadata/external, as `SchemaHandler.externalsForSql` gives them).
+    */
   def substituteRefInSQLSelect(
     sql: String,
     refs: RefDesc,
     domains: List[DomainInfo],
     tasks: List[AutoTaskInfo],
-    connection: ConnectionInfo
+    connection: ConnectionInfo,
+    externals: List[DomainInfo]
   )(implicit
     settings: Settings
   ): String = {
     logger.debug(s"Source SQL: $sql")
     val fromResolved =
-      buildSingleSQLQueryForRegex(sql, refs, domains, tasks, fromsRegex, "FROM", connection)
+      buildSingleSQLQueryForRegex(
+        sql,
+        refs,
+        domains,
+        tasks,
+        fromsRegex,
+        "FROM",
+        connection,
+        externals
+      )
     logger.debug(s"fromResolved SQL: $fromResolved")
     val joinAndFromResolved =
-      buildSingleSQLQueryForRegex(fromResolved, refs, domains, tasks, joinRegex, "JOIN", connection)
+      buildSingleSQLQueryForRegex(
+        fromResolved,
+        refs,
+        domains,
+        tasks,
+        joinRegex,
+        "JOIN",
+        connection,
+        externals
+      )
     logger.debug(s"joinAndFromResolved SQL: $joinAndFromResolved")
     joinAndFromResolved
   }
@@ -124,7 +147,8 @@ object SQLUtils extends LazyLogging {
     tasks: List[AutoTaskInfo],
     fromOrJoinRegex: Regex,
     keyword: String,
-    connection: ConnectionInfo
+    connection: ConnectionInfo,
+    externals: List[DomainInfo]
   )(implicit
     settings: Settings
   ): String = {
@@ -149,7 +173,7 @@ object SQLUtils extends LazyLogging {
 
         tablesFound.foreach { tableFound =>
           val resolvedTableName =
-            resolveTableNameInSql(tableFound, refs, domains, tasks, ctes, connection)
+            resolveTableNameInSql(tableFound, refs, domains, tasks, externals, ctes, connection)
           source = replaceTableRef(source, tableFound, resolvedTableName)
         }
         resolvedSQL += sql.substring(startIndex, regex.start) + source
@@ -183,6 +207,7 @@ object SQLUtils extends LazyLogging {
     refs: RefDesc,
     domains: List[DomainInfo],
     tasks: List[AutoTaskInfo],
+    externals: List[DomainInfo],
     ctes: List[String],
     connection: ConnectionInfo
   )(implicit
@@ -199,7 +224,7 @@ object SQLUtils extends LazyLogging {
       val databaseDomainTableRef =
         activeEnvRefs.getOutputRef(tableTuple).map(_.toSQLString(connection))
       val resolvedTableName = databaseDomainTableRef.getOrElse {
-        resolveTableRefInDomainsAndJobs(tableTuple, domains, tasks) match {
+        resolveTableRefInDomainsAndJobs(tableTuple, domains, tasks, externals) match {
           case Success((database, domain, table)) =>
             ai.starlake.schema.model.OutputRef(database, domain, table).toSQLString(connection)
           case Failure(e) =>
@@ -221,7 +246,8 @@ object SQLUtils extends LazyLogging {
   private def resolveTableRefInDomainsAndJobs(
     tableComponents: List[String],
     domains: List[DomainInfo],
-    tasks: List[AutoTaskInfo]
+    tasks: List[AutoTaskInfo],
+    externals: List[DomainInfo]
   )(implicit
     settings: Settings
   ): Try[(String, String, String)] = Try {
@@ -264,10 +290,14 @@ object SQLUtils extends LazyLogging {
             .orElse(tasksByTable.headOption.map(task => (task.database, task.domain)))
             .getOrElse((None, ""))
         } else {
-          logger.info(
-            s"Table $table not found in any domain or task; This is probably a CTE or a temporary table"
-          )
-          (None, domainComponent.getOrElse(""))
+          resolveTableRefInExternals(domainComponent, table, externals).getOrElse {
+            val where =
+              if (domainComponent.isDefined) "domain, task or external domain" else "domain or task"
+            logger.info(
+              s"Table $table not found in any $where; This is probably a CTE or a temporary table"
+            )
+            (None, domainComponent.getOrElse(""))
+          }
         }
         val databaseName = database.orElse(settings.appConfig.getDefaultDatabase()).getOrElse("")
         (databaseName, domain, table)
@@ -275,6 +305,43 @@ object SQLUtils extends LazyLogging {
         throw new Exception(s"Invalid table reference ${tableComponents.mkString(".")}")
     }
   }
+
+  /** The database and the name of the external domain that declares the table, for a reference
+    * cited with its domain, `domain.table` (#2038).
+    *
+    * The externals are consulted only when no load domain and no task declares the table, so a
+    * reference that resolved before keeps its resolution: a load domain or a task wins over an
+    * external of the same name. A table cited without its domain is left as before, since it may be
+    * a temporary table or a CTE that shares its name with an external table.
+    *
+    * The `database` given is the one of the external domain as the caller passes it: see
+    * `SchemaHandler.externalsForSql`, which keeps it only when the domain writes it with a
+    * variable. It is written on every engine, as the one of a load domain is; blank, it gives the
+    * default database, like a table that nothing declares. When external domains of that name
+    * declare the table with different databases, the reference is left as before.
+    */
+  private def resolveTableRefInExternals(
+    domainComponent: Option[String],
+    table: String,
+    externals: List[DomainInfo]
+  ): Option[(Option[String], String)] =
+    domainComponent.flatMap { domainName =>
+      val matches = externals.filter { dom =>
+        dom.finalName.equalsIgnoreCase(domainName) &&
+        dom.tables.exists(_.finalName.equalsIgnoreCase(table))
+      }
+      matches.map(_.database.map(_.trim).filter(_.nonEmpty)).distinct match {
+        case Nil             => None
+        case database :: Nil => Some((database, matches.head.finalName))
+        case databases =>
+          logger.warn(
+            s"Table $domainName.$table is declared by external domains of different databases (${databases
+                .map(_.getOrElse("<default>"))
+                .mkString(", ")}): left unresolved"
+          )
+          None
+      }
+    }
 
   // --- Transpilation methods (kept — depend on external JSQLTranspiler) ---
 
