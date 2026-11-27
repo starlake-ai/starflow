@@ -1,0 +1,10 @@
+---
+version: 1
+load:
+  name: "scd2check"
+  metadata:
+    directory: "__SL_TEST_ROOT__/scd2check"
+    format: "DSV"
+    withHeader: true
+    separator: ";"
+    loader: "native"

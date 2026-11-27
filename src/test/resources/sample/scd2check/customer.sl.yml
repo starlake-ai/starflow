@@ -1,0 +1,20 @@
+---
+version: 1
+table:
+  name: "customer"
+  pattern: "SCD2CHECK.*.csv"
+  metadata:
+    writeStrategy:
+      type: "SCD2"
+      key: ["id"]
+      checkColumns: ["*"]
+      startTs: "valid_from"
+      endTs: "valid_to"
+  attributes:
+    - name: "id"
+      type: "long"
+      required: true
+    - name: "label"
+      type: "string"
+    - name: "note"
+      type: "string"
