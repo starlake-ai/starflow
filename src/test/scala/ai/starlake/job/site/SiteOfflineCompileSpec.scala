@@ -12,8 +12,8 @@ import scala.util.Try
   * typed columns (`syncYamlWithDb`, on by default), which on BigQuery reads and may create the
   * dataset; reading the BigQuery table of an `OVERWRITE` task, to know whether it requires a
   * partition filter; running a `SELECT *` on a JDBC sink to resolve its columns. The credentials
-  * point to a missing file, so no BigQuery client can be created, and the DuckDB file of the default
-  * connection does not exist, so any connection to it would create it.
+  * point to a missing file, so no BigQuery client can be created, and the DuckDB file of the
+  * default connection does not exist, so any connection to it would create it.
   */
 class SiteOfflineCompileSpec extends IntegrationTestBase with SiteFixture {
 

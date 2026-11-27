@@ -127,17 +127,20 @@ class ColLineage(
     domainName: String,
     tableName: String,
     sql: String,
-    tablesWithColumnNames: List[(String, TableWithNameAndType)]
+    tablesWithColumnNames: List[(String, String, TableWithNameAndType)]
   ): ColLineage.Lineage = {
     var jdbcMetadata = new JdbcMetaData("", "")
-    tablesWithColumnNames.foreach { case (domainName, table) =>
+    // Each table goes under the catalog the SQL cites it with ("" for a two-part name): the
+    // resolver looks a three-part name up in the catalog of its first part (#2039)
+    tablesWithColumnNames.foreach { case (database, domainName, table) =>
       val jdbcColumns = table.attrs.map { case (attrName, attrType, comment) =>
         new JdbcColumn(attrName)
       }
+      val citedName = (if (database.isEmpty) "" else s"$database.") + s"$domainName.${table.name}"
       logger.info(
-        s"Adding table $domainName.${table.name} with ${jdbcColumns.size} columns ${jdbcColumns.map(_.columnName).mkString(", ")}"
+        s"Adding table $citedName with ${jdbcColumns.size} columns ${jdbcColumns.map(_.columnName).mkString(", ")}"
       )
-      jdbcMetadata = jdbcMetadata.addTable("", domainName, table.name, jdbcColumns.asJava)
+      jdbcMetadata = jdbcMetadata.addTable(database, domainName, table.name, jdbcColumns.asJava)
     }
 
     val res: JdbcResultSetMetaData =

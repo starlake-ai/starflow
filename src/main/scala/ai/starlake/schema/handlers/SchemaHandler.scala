@@ -950,19 +950,27 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
   /** Columns of the given tables, looked up in the declared domains and task outputs. A table that
     * is not declared is read from the warehouse, unless `declaredOnly` is set, in which case it is
     * left out.
+    *
+    * Each table comes with the database it is cited with, the first part of a three-part name, ""
+    * otherwise: the column lineage registers the table under that catalog, which the SQL names
+    * (#2039). The lookup itself ignores it, so a table cited with and without its database is the
+    * same declared table, listed once per name.
+    *
+    * @return
+    *   (database as cited, domain, table)
     */
   def getTablesWithColumnNames(
     tableNames: List[String],
     accessToken: Option[String],
     declaredOnly: Boolean = false
-  ): List[(String, TableWithNameAndType)] = {
+  ): List[(String, String, TableWithNameAndType)] = {
     val objects = objectNames()
     tableNames.flatMap { tableFullName =>
       val tableComponents = tableFullName.split('.')
-      val (domainName, tableName) = tableComponents match {
-        case Array(dbName, domainName, tableName) => (domainName, tableName)
-        case Array(domainName, tableName)         => (domainName, tableName)
-        case Array(tableName)                     => (null, tableName)
+      val (database, domainName, tableName) = tableComponents match {
+        case Array(database, domainName, tableName) => (database, domainName, tableName)
+        case Array(domainName, tableName)           => ("", domainName, tableName)
+        case Array(tableName)                       => ("", null, tableName)
         case _ => throw new Exception(s"Invalid table name $tableFullName")
       }
       val domainNameAndTable =
@@ -1040,7 +1048,7 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
                 }
               }
         }
-      domainNameAndTable
+      domainNameAndTable.map { case (domain, table) => (database, domain, table) }
     }
   }
 
@@ -2268,7 +2276,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       refs(),
       domains(),
       tasks(),
-      allVars
+      allVars,
+      externals()
     )
 
   def transpileAndSubstituteSelectStatement(
@@ -2284,7 +2293,8 @@ class SchemaHandler(storage: StorageHandler, cliEnv: Map[String, String] = Map.e
       domains(),
       tasks(),
       allVars,
-      test
+      test,
+      externals()
     )
 
   def deleteTablePK(

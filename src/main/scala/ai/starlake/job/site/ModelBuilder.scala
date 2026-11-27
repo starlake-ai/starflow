@@ -473,7 +473,7 @@ object ModelBuilder {
   private[site] def declaredTablesWithColumns(
     schemaHandler: SchemaHandler,
     tableNames: List[String]
-  ): List[(String, TableWithNameAndType)] =
+  ): List[(String, String, TableWithNameAndType)] =
     schemaHandler.getTablesWithColumnNames(tableNames, None, declaredOnly = true)
 
   /** Same steps as ColLineage.sqlColLineage, with the referenced tables read from the declared
