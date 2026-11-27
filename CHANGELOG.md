@@ -3,6 +3,7 @@
 
 # 1.9.2:
 __Before upgrading__: the changes that can affect an existing project, detailed in the entries below.
+- **Orchestration templates** (starlake-airflow 0.6.21, starlake-dagster 0.5.11, starlake-orchestration 0.5.8, starlake-snowflake 0.4.3): with `data_cycle_enabled` and a declared `data_cycle`, a dependency that fires in every period of the cycle is checked from the start of the period, without freshness widening (starlake-ai/starlake-orchestration#167). A transform run can now fail when a triggering event and an event accepted by the start check carry the same run variable with different values, unless it is declared `union` (starlake-ai/starlake-orchestration#168).
 - **BigQuery permissions**:
   - Row access policies are now replaced one by one, which needs `bigquery.rowAccessPolicies.update` (#1913).
   - A transform in `OVERWRITE` now reads its table: it needs `bigquery.tables.getData`, the Fine-Grained Reader role on columns with a policy tag and, on a table that requires a partition filter, `bigquery.tables.update` (#1938).
@@ -187,6 +188,10 @@ __Bug fix__:
 - **`compare --commit1` / `--commit2` with an unknown commit fails**: the archive of the commit was piped to `tar`, whose status hid the error of `git`, so on macOS the comparison ran against an empty project. The command now fails with the error of `git`.
 
 __Improvement__:
+- **Orchestration templates move to starlake-airflow 0.6.21, starlake-dagster 0.5.11, starlake-orchestration 0.5.8 and starlake-snowflake 0.4.3** (from 0.6.20, 0.5.10, 0.5.7 and 0.4.2), and the bundled wheels with them:
+  - load DAGs publish the freshness of their tables in their events, so a consumer checks a triggering dataset with its producer's freshness (starlake-ai/starlake-orchestration#166);
+  - a delivery spread over several ticks (e.g. `0 6 1-3 * *`) is checked from the start of the declared data cycle, on Airflow, Dagster and Snowflake (starlake-ai/starlake-orchestration#167);
+  - the run variables of the events accepted by the start check reach the transforms (starlake-ai/starlake-orchestration#168).
 - **`starlake site` builds a full documentation site**, as a single page that opens from the file system with no network access:
   - search over tables, tasks, columns, tags and SQL, a project tree and a database tree;
   - a lineage graph of the whole project, down to the column, with selectors (`+orders`, `orders+`, `2+orders+1`, `@orders`, `tag:`, `domain:`, `job:`, `dag:`, `kind:`, `engine:`), export to SVG or PNG;

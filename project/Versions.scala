@@ -67,11 +67,11 @@ object Versions {
   val jSqlTranspiler = "1.17"
   val jSqlParser = "5.4.272"
   val starlakejdbc = "0.10"
-  val airflowTemplates = "0.6.20"
+  val airflowTemplates = "0.6.21"
   val jSqlFormatter = "5.4.3"
-  val dagsterTemplates = "0.5.10"
-  val orchestrationTemplates = "0.5.7"
-  val snowflakeTemplates = "0.4.2"
+  val dagsterTemplates = "0.5.11"
+  val orchestrationTemplates = "0.5.8"
+  val snowflakeTemplates = "0.4.3"
   // Spark 4.3 build, resolved from the starlake-streaming GitHub release. Its assembly bundles
   // spark-sql-kafka and Hadoop, so it must match the Spark line exactly: 1.4.0 (Spark 4.1.3)
   // shadows Spark 4.3's Kafka source with NoSuchMethodError.
