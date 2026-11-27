@@ -184,7 +184,7 @@ class Parquet2CSVSpec extends TestHelper {
           |--schema `<value>`|*Optional*|Schema name to convert. If not specified, all schemas are converted.
           |--write_mode `<value>`|*Optional*|One of Set(OVERWRITE, APPEND)
           |""".stripMargin
-      println(Parquet2CSVCmd.markdown(1))
+      // options sorted by name and flags without a value, as CliConfig.markdown renders them (#2017)
       Parquet2CSVCmd.markdown(1).replaceAll("\\s", "") shouldEqual expected.replaceAll("\\s", "")
     }
   }
