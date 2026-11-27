@@ -10,13 +10,16 @@ class SCD2CheckColumnsBuilderSpec extends TestHelper {
   new WithSettings() {
     private def parameters(
       checkColumns: Option[List[String]],
-      columns: List[String] = List("id", "Label", "note", "valid_from")
+      columns: List[String] = List("id", "Label", "note", "valid_from"),
+      strategyType: WriteStrategyType = WriteStrategyType.SCD2,
+      on: Option[MergeOn] = None
     ): Map[String, Any] =
       TransformStrategiesBuilder
         .StrategiesGenerationContext(
           WriteStrategy(
-            `type` = Some(WriteStrategyType.SCD2),
+            `type` = Some(strategyType),
             key = List("id"),
+            on = on,
             checkColumns = checkColumns,
             startTs = Some("valid_from"),
             endTs = Some("valid_to")
@@ -74,6 +77,38 @@ class SCD2CheckColumnsBuilderSpec extends TestHelper {
       list(parameters(Some(List("label")), columns = Nil), "strategyCheckColumns") shouldBe List(
         "label"
       )
+    }
+
+    it should "be kept as written when the SELECT lists its columns with a star" in {
+      list(
+        parameters(Some(List("label")), columns = List("t.*", "x")),
+        "strategyCheckColumns"
+      ) shouldBe List("label")
+    }
+
+    "checkColumns '*' with a star in the columns of the query" should "stop the run" in {
+      val error = intercept[IllegalArgumentException](
+        parameters(Some(List("*")), columns = List("*"))
+      )
+      error.getMessage shouldBe
+      "checkColumns: '*' needs the columns of the query, which Starlake cannot list for dom.t"
+    }
+
+    "checkColumns on another strategy than SCD2" should "be ignored" in {
+      val map = parameters(
+        Some(List("nope")),
+        strategyType = WriteStrategyType.UPSERT_BY_KEY
+      )
+      list(map, "strategyCheckColumns") shouldBe Nil
+      list(map, "quotedStrategyCheckColumns") shouldBe Nil
+    }
+
+    "checkColumns with on SOURCE_AND_TARGET" should "stop the run" in {
+      val error = intercept[IllegalArgumentException](
+        parameters(Some(List("note")), on = Some(MergeOn.SOURCE_AND_TARGET))
+      )
+      error.getMessage shouldBe
+      "checkColumns cannot be used with on: SOURCE_AND_TARGET, which needs a timestamp to keep one incoming row per key, for dom.t"
     }
 
     "A strategy without checkColumns" should "pass no check column" in {

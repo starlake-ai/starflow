@@ -221,7 +221,7 @@ class SCD2ValidityTemplatesSpec extends TestHelper {
       }
     }
 
-    it should "compare every column but the key and the validity columns with '*'" in {
+    it should "compare every column of the query but the key with '*'" in {
       builders.foreach { case (strategyBuilder, engine) =>
         withClue(strategyBuilder) {
           val sql = render(

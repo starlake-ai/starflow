@@ -124,6 +124,15 @@ abstract class SCD2CheckColumnsSpecBase(engine: String) extends EngineSpec {
           execute(s"UPDATE $domain.src SET label = 'b'")
           run(checkColumns) shouldBe true
           versions() shouldBe List(("a", null, false), ("a", "x", false), ("b", "x", true))
+          // a value to null
+          execute(s"UPDATE $domain.src SET note = NULL")
+          run(checkColumns) shouldBe true
+          versions() shouldBe List(
+            ("a", null, false),
+            ("a", "x", false),
+            ("b", "x", false),
+            ("b", null, true)
+          )
         }
     }
 

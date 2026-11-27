@@ -76,6 +76,15 @@ class SparkSCD2CheckColumnsSpec extends TestHelper {
           sparkSession.sql("UPDATE scd2spark.src SET label = 'b'")
           run(checkColumns) shouldBe true
           versions() shouldBe List(("a", null, false), ("a", "x", false), ("b", "x", true))
+          // a value to null
+          sparkSession.sql("UPDATE scd2spark.src SET note = NULL")
+          run(checkColumns) shouldBe true
+          versions() shouldBe List(
+            ("a", null, false),
+            ("a", "x", false),
+            ("b", "x", false),
+            ("b", null, true)
+          )
         }
     }
 

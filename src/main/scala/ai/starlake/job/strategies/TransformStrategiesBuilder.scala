@@ -304,8 +304,14 @@ object TransformStrategiesBuilder {
       */
     private def checkColumns()(implicit settings: Settings): Map[String, Any] = {
       val table = s"${tableComponents.domain}.${tableComponents.name}"
-      val names = SQLUtils.unquoteAgressive(tableComponents.columnNames)
-      val columns = strategy.checkColumns.getOrElse(Nil) match {
+      val listed = SQLUtils.unquoteAgressive(tableComponents.columnNames)
+      // A star in the columns means that Starlake cannot list them
+      val names = if (listed.exists(_.endsWith("*"))) Nil else listed
+      val requested =
+        if (strategy.getEffectiveType() == WriteStrategyType.SCD2)
+          strategy.checkColumns.getOrElse(Nil)
+        else Nil
+      val columns = requested match {
         case Nil => Nil
         case List("*") if names.isEmpty =>
           throw new IllegalArgumentException(
@@ -332,6 +338,10 @@ object TransformStrategiesBuilder {
               )
           }
       }
+      if (columns.nonEmpty && strategy.on.contains(MergeOn.SOURCE_AND_TARGET))
+        throw new IllegalArgumentException(
+          s"checkColumns cannot be used with on: SOURCE_AND_TARGET, which needs a timestamp to keep one incoming row per key, for $table"
+        )
       Map(
         "strategyCheckColumns" -> asJavaList(columns),
         "quotedStrategyCheckColumns" -> asJavaList(
