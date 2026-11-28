@@ -17,6 +17,11 @@ object LookMLConverter extends LazyLogging {
     */
   def convert(modelName: String, model: JsonNode, connection: String): Seq[(String, String)] = {
     val tables = elems(model, "tables")
+    tables.filter(_.has("hierarchies")).foreach { t =>
+      logger.info(
+        s"Table '${t.path("name").asText()}': hierarchies ignored, the LookML export does not support them"
+      )
+    }
     val metricsByView =
       assignModelMetrics(model, tables.map(_.path("name").asText()), sanitize)
     val views = tables.map { table =>

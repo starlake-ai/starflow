@@ -1,0 +1,7 @@
+unique_name: revenue
+object_type: metric
+label: revenue
+description: Net revenue
+calculation_method: sum
+dataset: lineitem
+column: _sl_revenue

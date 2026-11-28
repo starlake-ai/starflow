@@ -1,0 +1,42 @@
+unique_name: orders order_calendar Dimension
+object_type: dimension
+label: order_calendar
+type: time
+is_degenerate: true
+hierarchies:
+  - unique_name: orders order_calendar Hierarchy
+    label: order_calendar
+    levels:
+      - unique_name: orders order_calendar year
+      - unique_name: orders order_calendar quarter
+      - unique_name: orders order_calendar month
+      - unique_name: orders order_calendar day
+level_attributes:
+  - unique_name: orders order_calendar year
+    label: o_orderdate year
+    dataset: orders
+    key_columns: [o_orderdate_year]
+    name_column: o_orderdate_year
+    sort_column: o_orderdate_year
+    time_unit: year
+  - unique_name: orders order_calendar quarter
+    label: o_orderdate quarter
+    dataset: orders
+    key_columns: [o_orderdate_year, o_orderdate_quarter]
+    name_column: o_orderdate_quarter
+    sort_column: o_orderdate_quarter
+    time_unit: quarter
+  - unique_name: orders order_calendar month
+    label: o_orderdate month
+    dataset: orders
+    key_columns: [o_orderdate_year, o_orderdate_month]
+    name_column: o_orderdate_month
+    sort_column: o_orderdate_month
+    time_unit: month
+  - unique_name: orders order_calendar day
+    label: o_orderdate day
+    dataset: orders
+    key_columns: [O_ORDERDATE]
+    name_column: O_ORDERDATE
+    sort_column: O_ORDERDATE
+    time_unit: day

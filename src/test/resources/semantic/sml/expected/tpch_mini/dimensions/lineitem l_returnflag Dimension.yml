@@ -1,0 +1,19 @@
+unique_name: lineitem l_returnflag Dimension
+object_type: dimension
+label: l_returnflag
+description: Return flag
+type: standard
+is_degenerate: true
+hierarchies:
+  - unique_name: lineitem l_returnflag Hierarchy
+    label: l_returnflag
+    levels:
+      - unique_name: lineitem l_returnflag
+level_attributes:
+  - unique_name: lineitem l_returnflag
+    label: l_returnflag
+    description: Return flag
+    dataset: lineitem
+    key_columns: [L_RETURNFLAG]
+    name_column: L_RETURNFLAG
+    sort_column: L_RETURNFLAG

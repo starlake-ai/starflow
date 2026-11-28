@@ -1,0 +1,6 @@
+unique_name: tpch_mini - TPCH.SF1
+object_type: connection
+label: tpch_mini - TPCH.SF1
+as_connection: snowflake_prod
+database: TPCH
+schema: SF1

@@ -1,0 +1,5 @@
+unique_name: running_total
+object_type: metric_calc
+label: running_total
+description: "TODO Starflow: translate original SQL to MDX: SUM(orders.o_totalprice) OVER (ORDER BY orders.o_orderdate)"
+expression: "NULL"

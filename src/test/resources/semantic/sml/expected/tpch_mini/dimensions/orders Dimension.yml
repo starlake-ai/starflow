@@ -1,0 +1,47 @@
+unique_name: orders Dimension
+object_type: dimension
+label: orders
+type: standard
+hierarchies:
+  - unique_name: orders Hierarchy
+    label: orders
+    levels:
+      - unique_name: orders o_orderkey
+        secondary_attributes:
+          - unique_name: orders o_custkey
+            label: o_custkey
+            dataset: orders
+            key_columns: [O_CUSTKEY]
+            name_column: O_CUSTKEY
+            sort_column: O_CUSTKEY
+          - unique_name: orders o_orderstatus
+            label: o_orderstatus
+            dataset: orders
+            key_columns: [O_ORDERSTATUS]
+            name_column: O_ORDERSTATUS
+            sort_column: O_ORDERSTATUS
+          - unique_name: orders o_orderdate
+            label: o_orderdate
+            dataset: orders
+            key_columns: [O_ORDERDATE]
+            name_column: O_ORDERDATE
+            sort_column: O_ORDERDATE
+level_attributes:
+  - unique_name: orders o_orderkey
+    label: o_orderkey
+    dataset: orders
+    key_columns: [O_ORDERKEY]
+    name_column: O_ORDERKEY
+    sort_column: O_ORDERKEY
+    is_unique_key: true
+relationships:
+  - unique_name: orders_to_customers
+    from:
+      dataset: orders
+      join_columns: [O_CUSTKEY]
+      hierarchy: orders Hierarchy
+      level: orders o_orderkey
+    to:
+      dimension: customers Dimension
+      level: customers c_custkey
+    type: embedded

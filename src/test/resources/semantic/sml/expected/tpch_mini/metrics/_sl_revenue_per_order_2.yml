@@ -1,0 +1,7 @@
+unique_name: _sl_revenue_per_order_2
+object_type: metric
+label: _sl_revenue_per_order_2
+calculation_method: count distinct
+dataset: orders
+column: O_ORDERKEY
+is_hidden: true
