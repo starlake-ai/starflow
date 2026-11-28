@@ -1,99 +1,41 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this **Starlake / Starflow** project.
 
-## Project Overview
+The full contract is in [AGENTS.md](AGENTS.md) — what this project contains, where
+to look things up, and how to hand back a change. Read it before your first edit.
+The rules below are the part you must never skip.
 
-This is a **Starlake Starflow** data pipeline project ("StarBake") — a sample bakery analytics system demonstrating data ingestion, transformation, and KPI computation. The default engine is **DuckDB** (configurable via environment files).
+@AGENTS.md
 
-## Starflow CLI
+## Ground rules
 
-Before running any `starlake` command, verify the CLI is available in the PATH by running `starlake --version`. If not found, ask the user for the path to the starlake executable. On Windows, the command is `starlake.cmd` instead of `starlake`.
+**1 — Never assume. Read the project first.**
+Do not answer a question about this project from a template, from a sample you
+have seen elsewhere, or from an earlier turn in the conversation. List the
+directory, open the file, run the command. A name that looks familiar because
+another Starlake project uses it is a reason to check, not a reason to trust.
 
-The CLI is silent by default — exit code 0 with empty stdout means success, not a no-op. To see execution logs (SQL run, write strategies, audit inserts), prefix the command with `SL_LOG_LEVEL=info`.
+**2 — Never invent syntax.** YAML keys, CLI flags, expectation macro names and
+write strategies either exist in this project's authorities or they do not
+exist. YAML keys → `metadata/starlake.json`, the JSON Schema for every `.sl.yml`.
+Expectation macros → `ls metadata/expectations/`, and that listing is the whole
+list. CLI flags → `starlake <command> --help`. A key you half-remember from
+documentation is not evidence: if you cannot point to where a name comes from,
+do not write it.
 
-## Key Commands
+**3 — Cite where each answer came from.** For every non-trivial claim, name the
+file you read or the command you ran. "According to `metadata/load/x/y.sl.yml`"
+is an answer; "typically, Starlake uses…" is a guess wearing an answer's clothes.
 
-```bash
-# Validate project configuration
-starlake validate
+**4 — Run the gate. Do not predict it.** After any change to `metadata/`, run
+`starlake validate` — and `starlake test` / `starlake dag-generate` when they
+apply — and report the real output. Never write "this should validate".
 
-# Load source data (CSV/JSON) into the warehouse
-# Always specify --domains, --tables, and --files explicitly
-starlake load --domains starbake --tables customers --files "${SL_ROOT}/datasets/incoming/starbake/customers.csv"
-starlake load --domains starbake --tables orders --files "${SL_ROOT}/datasets/incoming/starbake/orders.json"
-starlake load --domains starbake --tables products --files "${SL_ROOT}/datasets/incoming/starbake/products.json"
+**5 — Change only what was asked.** One table, one task, one file. Do not
+reformat, reorder attributes, "fix" neighbouring files, or delete comments you
+did not write. Attribute order is part of a table's contract.
 
-# Run a specific transformation
-starlake transform --name starbake_analytics.customer_purchase_history
-starlake transform --name starbake_analytics.order_items_analysis
-starlake transform --name starbake_kpis.overall_kpis
-# Run a transformation (use --recursive to execute all upstream dependencies in order)
-starlake transform --name starbake_kpis.overall_kpis --recursive
-
-# Auto-infer schema and load
-starlake autoload
-
-# Generate DAGs for orchestration
-starlake dag-generate
-
-# Print settings / test a connection
-starlake settings
-
-# Run integration tests
-starlake test
-
-# Switch environment (default: DuckDB)
-export SL_ENV=BQ        # BigQuery
-export SL_ENV=PG        # PostgreSQL
-export SL_ENV=SNOW      # Snowflake
-export SL_ENV=REDSHIFT  # Redshift
-```
-
-## Architecture
-
-### Data Pipeline Flow
-
-```
-datasets/incoming/starbake/     →  Load (metadata/load/)
-    customers.*.csv                    ↓
-    orders.*.json               →  starbake domain tables
-    products.*.json                    ↓
-                                   Transform (metadata/transform/)
-                                       ↓
-                               starbake_analytics/
-                                 ├─ customer_purchase_history
-                                 └─ order_items_analysis
-                                       ↓
-                               starbake_kpis/
-                                 └─ overall_kpis
-```
-
-### Project Structure
-
-- **`metadata/application.sl.yml`** — Main config: connections (DuckDB, BigQuery, Snowflake, PostgreSQL, Redshift), DAG references, schedule presets
-- **`metadata/env.sl.yml`** — Default env vars (`activeConnection: duckdb`). Override with `metadata/env.{BQ,PG,SNOW,...}.sl.yml`
-- **`metadata/load/starbake/`** — Source table schemas (3 tables). Each `.sl.yml` defines pattern, format, attributes, write strategy
-- **`metadata/transform/`** — SQL transformations with paired `.sl.yml` (task metadata) + `.sql` (query) files
-- **`metadata/types/`** — Custom data types with DDL mappings for each engine
-- **`metadata/expectations/`** — Jinja2 data quality templates (completeness, uniqueness, volume, etc.)
-- **`metadata/dags/`** — DAG definitions for Airflow (shell/Cloud Run/Fargate), Dagster, and Snowflake native
-- **`metadata/external/`** — External table definitions for reading outputs
-- **`datasets/`** — Sample data files and DuckDB database
-
-### Configuration Conventions
-
-- All metadata files use `.sl.yml` extension and start with `version: 1`
-- Variables use `{{VAR_NAME}}` Mustache-style templating, resolved from env files or shell environment
-- Load tables define `pattern`, `metadata.format` (DSV/JSON_FLAT), and `writeStrategy`
-- Transform tasks pair a `.sl.yml` (columns, domain, write strategy) with a `.sql` file (query logic)
-- SQL uses DuckDB syntax by default; alternative Snowflake/Redshift syntax is often commented in `.sql` files
-
-
-<claude-mem-context>
-# Recent Activity
-
-<!-- This section is auto-generated by claude-mem. Edit content outside the tags. -->
-
-*No recent activity*
-</claude-mem-context>
+**6 — "I checked, and it is not there" is a correct answer.** So is "I don't
+know". A plausible answer that turns out to be invented costs more than a
+question.
