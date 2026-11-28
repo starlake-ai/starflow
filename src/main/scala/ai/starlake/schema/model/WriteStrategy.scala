@@ -14,6 +14,7 @@ case class WriteStrategy(
   types: Option[Map[String, String]] = None,
   key: List[String] = Nil,
   timestamp: Option[String] = None,
+  checkColumns: Option[List[String]] = None,
   queryFilter: Option[String] = None,
   on: Option[MergeOn] = None, // target or both (on source and target
   startTs: Option[String] = None,
@@ -26,13 +27,14 @@ case class WriteStrategy(
     val keyStr = key.mkString(",")
     val typeStr = `type`.map(_.toString).getOrElse("")
     val timestampStr = timestamp.getOrElse("")
+    val checkColumnsStr = checkColumns.map(_.mkString(",")).getOrElse("")
     val queryFilterStr = queryFilter.getOrElse("")
     val onStr = on.map(_.toString).getOrElse("")
     val startTsStr = startTs.getOrElse("")
     val endTsStr = endTs.getOrElse("")
     val startTsTypeStr = startTsType.getOrElse("")
     val endTsTypeStr = endTsType.getOrElse("")
-    s"WriteStrategy(type=$typeStr, key=$keyStr, timestamp=$timestampStr, queryFilter=$queryFilterStr, on=$onStr, startTs=$startTsStr, endTs=$endTsStr, startTsType=$startTsTypeStr, endTsType=$endTsTypeStr)"
+    s"WriteStrategy(type=$typeStr, key=$keyStr, timestamp=$timestampStr, checkColumns=$checkColumnsStr, queryFilter=$queryFilterStr, on=$onStr, startTs=$startTsStr, endTs=$endTsStr, startTsType=$startTsTypeStr, endTsType=$endTsTypeStr)"
   }
 
   /** The names of the SCD2 validity columns: `startTs` and `endTs`, or the global
@@ -164,12 +166,7 @@ case class WriteStrategy(
             "WriteStrategy",
             s"key must be defined for scd2 strategy in table: $tableName"
           )
-        if (timestamp.isEmpty)
-          errorList += ValidationMessage(
-            Error,
-            "WriteStrategy",
-            s"timestamp must be defined for scd2 strategy in table: $tableName"
-          )
+        errorList ++= checkChangeDetection(tableName, table)
         errorList ++= checkValidityColumnTypes(
           tableName,
           if (taskAttributes.nonEmpty) taskAttributes else table.map(_.attributes).getOrElse(Nil)
@@ -195,10 +192,57 @@ case class WriteStrategy(
       case WriteStrategyType.APPEND    =>
       case _                           =>
     }
+    if (checkColumns.isDefined && getEffectiveType() != WriteStrategyType.SCD2)
+      errorList += ValidationMessage(
+        Severity.Warning,
+        "WriteStrategy",
+        s"checkColumns is only used by the scd2 strategy and is ignored in table: $tableName"
+      )
     if (errorList.isEmpty)
       Right(true)
     else
       Left(errorList.toList)
+  }
+
+  /** How SCD2 detects a new version of a key: a later `timestamp`, or a change in one of the
+    * `checkColumns`, exclusively. Without a timestamp, `on: SOURCE_AND_TARGET` has no order to keep
+    * one incoming row per key.
+    */
+  private def checkChangeDetection(
+    tableName: String,
+    table: Option[SchemaInfo]
+  ): List[ValidationMessage] = {
+    def error(message: String): ValidationMessage =
+      ValidationMessage(Error, "WriteStrategy", s"$message in table: $tableName")
+    (timestamp, checkColumns) match {
+      case (None, None) =>
+        List(error("timestamp or checkColumns must be defined for scd2 strategy"))
+      case (Some(_), Some(_)) =>
+        List(error("timestamp and checkColumns cannot be used together"))
+      case (None, Some(Nil)) =>
+        List(error("checkColumns cannot be empty"))
+      case (None, Some(columns)) =>
+        val star =
+          if (columns.contains("*") && columns.size > 1)
+            List(error("checkColumns: '*' must be its only entry"))
+          else Nil
+        val sourceAndTarget =
+          if (on.contains(MergeOn.SOURCE_AND_TARGET))
+            List(
+              error(
+                "checkColumns cannot be used with on: SOURCE_AND_TARGET, which needs a timestamp to keep one incoming row per key,"
+              )
+            )
+          else Nil
+        val unknown = table.toList.filter(_.attributes.nonEmpty).flatMap { table =>
+          columns
+            .filterNot(_ == "*")
+            .filterNot(column => table.attributes.exists(_.getFinalName().equalsIgnoreCase(column)))
+            .map(column => error(s"checkColumns: '$column' does not exist"))
+        }
+        star ++ sourceAndTarget ++ unknown
+      case (Some(_), None) => Nil
+    }
   }
 
   /** The types of the SCD2 validity columns (#1885):

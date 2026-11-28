@@ -16,7 +16,7 @@ FROM {{ tableFullName }} T
 INNER JOIN #SL_INCOMING S
 ON {{ renderStrategyKeyJoinCondition('T', 'S', strategyKey) }}
 WHERE T.{{ strategyEndTs }} IS NULL 
-AND S.{{ strategyTimestamp }} > T.{{ strategyTimestamp }};
+AND {{ renderStrategyChanged('T', 'S') }};
 
 INSERT INTO {{ tableFullName }} ({{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, "") }}, {{ quote }}{{ strategyStartTs }}{{ quote }}, {{ quote }}{{ strategyEndTs }}{{ quote }})
 SELECT {{ renderColumnsWithoutScd2(tableColumnNamesWithoutValidity, 'S.') }}, {{ scd2Now('CURRENT_TIMESTAMP', strategyStartTsType) }}, NULL
@@ -24,6 +24,6 @@ FROM #SL_INCOMING S
 LEFT JOIN {{ tableFullName }} T 
 ON {{ renderStrategyKeyJoinCondition('T', 'S', strategyKey) }} AND T.{{ strategyEndTs }} IS NULL
 WHERE {{ renderStrategyKeyIsNull('T', strategyKey) }}
-OR S.{{ strategyTimestamp }} > T.{{ strategyTimestamp }};
+OR {{ renderStrategyChanged('T', 'S') }};
 
 DROP TABLE #SL_INCOMING;

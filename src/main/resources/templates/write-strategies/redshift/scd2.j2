@@ -1,6 +1,6 @@
 {% SET tableFullNameIncoming = '{{ tableFullName }}_INCOMING' %}
 
-{%  if strategyTimestamp != ""  %}
+{%  if strategyTimestamp != "" or strategyCheckColumns|length > 0  %}
 CREATE OR REPLACE VIEW #SL_INCOMING AS 
 {% if strategyOn == 'TARGET' %}
     {{ selectStatement }};
@@ -15,13 +15,13 @@ CREATE TABLE {{ tableFullNameIncoming }} AS
     SELECT {{ renderStrategyKeyAsPseudo(strategyKey, '#SL_INCOMING') }}, #SL_INCOMING.* FROM #SL_INCOMING
     LEFT JOIN {{ tableFullName }} SL_EXISTING 
     ON ({{ renderStrategyKeyJoinCondition('#SL_INCOMING','SL_EXISTING',strategyKey) }} AND SL_EXISTING.{{strategyEndTs}} IS NULL)
-    WHERE  {{ renderStrategyKeyIsNull('SL_EXISTING', strategyKey) }} OR SL_EXISTING.{{strategyTimestamp}} < #SL_INCOMING.{{strategyTimestamp}}
+    WHERE  {{ renderStrategyKeyIsNull('SL_EXISTING', strategyKey) }} OR {{ renderStrategyChanged('SL_EXISTING', '#SL_INCOMING') }}
     UNION ALL
     -- All line present in the source and target that are current in the target
     SELECT {{ renderStrategyKeyAsNullPseudo(strategyKey) }}, #SL_INCOMING.* FROM #SL_INCOMING
     INNER JOIN {{ tableFullName }} SL_EXISTING
     ON ({{ renderStrategyKeyJoinCondition('#SL_INCOMING','SL_EXISTING',strategyKey) }} AND SL_EXISTING.{{strategyEndTs}} IS NULL)
-    WHERE  SL_EXISTING.{{strategyTimestamp}} < #SL_INCOMING.{{strategyTimestamp}};
+    WHERE  {{ renderStrategyChanged('SL_EXISTING', '#SL_INCOMING') }};
 
 
 MERGE INTO {{ tableFullName }} USING {{ tableFullNameIncoming }}

@@ -283,7 +283,9 @@ object TransformStrategiesBuilder {
         .toAllSinks()
         .format
         .getOrElse(settings.appConfig.defaultWriteFormat)
-      strategy.asMap(jdbcEngine) ++ tableComponents.asMap(jdbcEngine) ++ validityColumns() ++ Map(
+      strategy.asMap(jdbcEngine) ++ tableComponents.asMap(
+        jdbcEngine
+      ) ++ validityColumns() ++ checkColumns() ++ Map(
         "selectStatement"           -> selectStatement,
         "tableExists"               -> targetTableExists,
         "tableTruncate"             -> truncate,
@@ -293,6 +295,59 @@ object TransformStrategiesBuilder {
         "quotedPartitionPruningKey" -> quotedPartitionPruningKey
       ) ++ jdbcEngine.asMap() ++ sinkConfig.asMap(jdbcEngine)
 
+    }
+
+    /** The columns that SCD2 compares to detect a new version (`checkColumns`), in the spelling of
+      * the SELECT, and quoted for the engine. `*` names the columns of the SELECT without the key
+      * and the validity columns. A listed column is kept as written when Starlake cannot list the
+      * columns of the SELECT.
+      */
+    private def checkColumns()(implicit settings: Settings): Map[String, Any] = {
+      val table = s"${tableComponents.domain}.${tableComponents.name}"
+      val listed = SQLUtils.unquoteAgressive(tableComponents.columnNames)
+      // A star in the columns means that Starlake cannot list them
+      val names = if (listed.exists(_.endsWith("*"))) Nil else listed
+      val requested =
+        if (strategy.getEffectiveType() == WriteStrategyType.SCD2)
+          strategy.checkColumns.getOrElse(Nil)
+        else Nil
+      val columns = requested match {
+        case Nil => Nil
+        case List("*") if names.isEmpty =>
+          throw new IllegalArgumentException(
+            s"checkColumns: '*' needs the columns of the query, which Starlake cannot list for $table"
+          )
+        case List("*") =>
+          val (start, end) = strategy.validityColumns()
+          val excluded = SQLUtils.unquoteAgressive(strategy.key) ++ List(start, end)
+          val compared = names.filterNot(name => excluded.exists(_.equalsIgnoreCase(name)))
+          if (compared.isEmpty)
+            throw new IllegalArgumentException(
+              s"checkColumns: '*' leaves no column to compare for $table"
+            )
+          compared
+        case listed if names.isEmpty => SQLUtils.unquoteAgressive(listed)
+        case listed =>
+          SQLUtils.unquoteAgressive(listed).map { column =>
+            names
+              .find(_.equalsIgnoreCase(column))
+              .getOrElse(
+                throw new IllegalArgumentException(
+                  s"checkColumns: '$column' is not a column of the query for $table"
+                )
+              )
+          }
+      }
+      if (columns.nonEmpty && strategy.on.contains(MergeOn.SOURCE_AND_TARGET))
+        throw new IllegalArgumentException(
+          s"checkColumns cannot be used with on: SOURCE_AND_TARGET, which needs a timestamp to keep one incoming row per key, for $table"
+        )
+      Map(
+        "strategyCheckColumns" -> asJavaList(columns),
+        "quotedStrategyCheckColumns" -> asJavaList(
+          columns.map(column => s"${jdbcEngine.quote}$column${jdbcEngine.quote}")
+        )
+      )
     }
 
     /** The SCD2 validity columns: their column types for the engine (#1885), whether the SELECT
