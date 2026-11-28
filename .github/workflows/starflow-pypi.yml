@@ -1,0 +1,60 @@
+name: starflow-pypi
+# Tests the `starflow` launcher (python/starflow-cli) and publishes it to PyPI
+# on every release tag. The wheel's version is stamped from the tag here, so the
+# tree keeps 0.0.0.dev0 and the release scripts need no extra version file:
+# `uvx starflow serve` then installs the core release matching that version.
+#
+# Required repo secret: PYPI_TOKEN (scoped to the `starflow` PyPI project).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version without the leading v (e.g. 1.8.9). Tag v<version> must already exist.'
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*.*.*"
+      - "!v*-SNAPSHOT"
+  pull_request:
+    paths:
+      - 'python/starflow-cli/**'
+      - '.github/workflows/starflow-pypi.yml'
+
+defaults:
+  run:
+    working-directory: python/starflow-cli
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Unit tests
+        run: uv run --group dev pytest -q
+
+  publish:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Stamp version
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not a release version: $version"; exit 1; }
+          sed -i -E "s/^__version__ = .*/__version__ = \"$version\"/" src/starflow_cli/__init__.py
+          grep -q "__version__ = \"$version\"" src/starflow_cli/__init__.py
+      - name: Build
+        run: uv build
+      - name: Publish
+        run: uv publish --token "${{ secrets.PYPI_TOKEN }}"
