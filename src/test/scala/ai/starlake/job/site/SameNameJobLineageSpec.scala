@@ -7,8 +7,8 @@ import better.files.File
   * layout (`metadata/load/sales` and `metadata/transform/sales`). The fixture copy gets a job
   * `sales` with two tasks: `daily_orders` reads the load table `sales.orders`, and `top_orders`
   * reads the task `sales.daily_orders`. Whichever of the two `sales` entries comes first in
-  * `objectNames`, one of these lookups used to miss (#2029). The shared fixture and its golden model
-  * are left unchanged.
+  * `objectNames`, one of these lookups used to miss (#2029). The shared fixture and its golden
+  * model are left unchanged.
   */
 class SameNameJobLineageSpec extends IntegrationTestBase with SiteFixture {
 
